@@ -30,6 +30,11 @@ concurrency:
 
 jobs:
   deploy:
+    # GitHub Free personal accounts cannot enable Pages for private
+    # repositories. Keep the workflow definition ready for a public/eligible
+    # repository, but make a private repository's docs push a clean skip
+    # instead of attempting an impossible deployment.
+    if: ${{ github.event.repository.visibility == 'public' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
