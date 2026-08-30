@@ -14,7 +14,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Keep production compilation as an explicit CI gate. CodeQL runs in
+  # source-only mode below so it does not need to trace every generated
+  # third-party grammar during the security scan.
+  build:
+    name: Build native binary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+
+      - name: Build production binary
+        run: scripts/build.sh
+
   analyze:
+    needs: build
     runs-on: ubuntu-latest
     # CodeQL needs security-events: write to upload results; scoped to this job so
     # the workflow's top-level token stays read-only (Scorecard TokenPermissions).
@@ -25,18 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           languages: c-cpp
-          build-mode: manual
+          build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Build for CodeQL analysis
-        run: scripts/build.sh
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
