@@ -1,0 +1,54 @@
+name: ClusterFuzzLite
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**'
+      - '.clusterfuzzlite/**'
+      - '.github/workflows/cflite.yml'
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: 'Total fuzzing time for a manual run'
+        required: false
+        default: '60'
+
+permissions: read-all
+
+jobs:
+  fuzzing:
+    name: Fuzz (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          language: c
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz_seconds || 600 }}
+          mode: ${{ github.event_name == 'workflow_dispatch' && 'batch' || 'code-change' }}
+          sanitizer: ${{ matrix.sanitizer }}
+          output-sarif: true
+
+      - name: Upload fuzzing SARIF
+        if: always() && steps.build.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          sarif_file: cifuzz-sarif/results.sarif
+          checkout_path: cifuzz-sarif
