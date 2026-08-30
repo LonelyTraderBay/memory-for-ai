@@ -1,4 +1,4 @@
-# Binding ownership policy for codebase-memory-mcp.
+# Binding ownership policy for memory-for-ai.
 #
 # This repository is user-owned, so ownership is expressed with individual
 # GitHub handles rather than organization teams.
@@ -9,53 +9,53 @@
 # approval for the matching path.
 
 # Default owner gate: every pull request crosses the project owner's desk.
-* @DeusData
+* @LonelyTraderBay
 
 # Security-sensitive and authority-sensitive surfaces.
-/.github/ @DeusData
-/scripts/ @DeusData
-/Makefile.cbm @DeusData
-/SECURITY.md @DeusData
-/docs/SECURITY-DISCLOSURE.md @DeusData
-/CONTRIBUTING.md @DeusData
-/CODE_OF_CONDUCT.md @DeusData
-/DCO @DeusData
-/LICENSE @DeusData
-/MAINTAINERS.md @DeusData
+/.github/ @LonelyTraderBay
+/scripts/ @LonelyTraderBay
+/Makefile.cbm @LonelyTraderBay
+/SECURITY.md @LonelyTraderBay
+/docs/SECURITY-DISCLOSURE.md @LonelyTraderBay
+/CONTRIBUTING.md @LonelyTraderBay
+/CODE_OF_CONDUCT.md @LonelyTraderBay
+/DCO @LonelyTraderBay
+/LICENSE @LonelyTraderBay
+/MAINTAINERS.md @LonelyTraderBay
 
 # Release and distribution surfaces.
-/pkg/ @DeusData
-/install.sh @DeusData
-/install.ps1 @DeusData
-/server.json @DeusData
-/glama.json @DeusData
-/flake.nix @DeusData
-/flake.lock @DeusData
-/THIRD_PARTY.md @DeusData
-/vendored/ @DeusData
-/internal/cbm/vendored/ @DeusData
+/pkg/ @LonelyTraderBay
+/install.sh @LonelyTraderBay
+/install.ps1 @LonelyTraderBay
+/server.json @LonelyTraderBay
+/glama.json @LonelyTraderBay
+/flake.nix @LonelyTraderBay
+/flake.lock @LonelyTraderBay
+/THIRD_PARTY.md @LonelyTraderBay
+/vendored/ @LonelyTraderBay
+/internal/cbm/vendored/ @LonelyTraderBay
 
 # Core product surfaces.
-/src/foundation/ @DeusData
-/src/store/ @DeusData
-/src/cypher/ @DeusData
-/src/graph_buffer/ @DeusData
-/src/mcp/ @DeusData
-/src/cli/ @DeusData
-/src/discover/ @DeusData
-/src/watcher/ @DeusData
-/src/pipeline/ @DeusData
-/src/git/ @DeusData
-/src/semantic/ @DeusData
-/src/simhash/ @DeusData
-/src/traces/ @DeusData
-/src/ui/ @DeusData
+/src/foundation/ @LonelyTraderBay
+/src/store/ @LonelyTraderBay
+/src/cypher/ @LonelyTraderBay
+/src/graph_buffer/ @LonelyTraderBay
+/src/mcp/ @LonelyTraderBay
+/src/cli/ @LonelyTraderBay
+/src/discover/ @LonelyTraderBay
+/src/watcher/ @LonelyTraderBay
+/src/pipeline/ @LonelyTraderBay
+/src/git/ @LonelyTraderBay
+/src/semantic/ @LonelyTraderBay
+/src/simhash/ @LonelyTraderBay
+/src/traces/ @LonelyTraderBay
+/src/ui/ @LonelyTraderBay
 
 # Extraction, language support, and graph UI.
-/internal/cbm/ @DeusData
-/tools/ @DeusData
-/graph-ui/ @DeusData
+/internal/cbm/ @LonelyTraderBay
+/tools/ @LonelyTraderBay
+/graph-ui/ @LonelyTraderBay
 
 # Test and reproduction infrastructure.
-/tests/ @DeusData
-/test-infrastructure/ @DeusData
+/tests/ @LonelyTraderBay
+/test-infrastructure/ @LonelyTraderBay

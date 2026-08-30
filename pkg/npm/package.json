@@ -1,16 +1,16 @@
 {
-  "name": "codebase-memory-mcp",
+  "name": "memory-for-ai",
   "version": "0.10.8",
   "description": "Fast code intelligence for AI coding agents — installs a verified native runtime set",
-  "mcpName": "io.github.DeusData/codebase-memory-mcp",
+  "mcpName": "io.github.LonelyTraderBay/memory-for-ai",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DeusData/codebase-memory-mcp.git"
+    "url": "git+https://github.com/LonelyTraderBay/memory-for-ai.git"
   },
-  "homepage": "https://github.com/DeusData/codebase-memory-mcp",
+  "homepage": "https://github.com/LonelyTraderBay/memory-for-ai",
   "bugs": {
-    "url": "https://github.com/DeusData/codebase-memory-mcp/issues"
+    "url": "https://github.com/LonelyTraderBay/memory-for-ai/issues"
   },
   "keywords": [
     "mcp",
@@ -23,7 +23,7 @@
     "tree-sitter"
   ],
   "bin": {
-    "codebase-memory-mcp": "./bin.js"
+    "memory-for-ai": "./bin.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",

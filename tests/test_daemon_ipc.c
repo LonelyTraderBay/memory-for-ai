@@ -590,7 +590,7 @@ TEST(daemon_ipc_windows_generation_address_binds_account_key_and_nonce) {
     ASSERT_TRUE(strcmp(address_a, address_b) != 0);
     ASSERT_TRUE(strcmp(address_a, address_other_key) != 0);
     ASSERT_TRUE(strcmp(address_a, address_other_nonce) != 0);
-    ASSERT_STR_EQ(address_a, "\\\\.\\pipe\\cbm-daemon-"
+    ASSERT_STR_EQ(address_a, "\\\\.\\pipe\\memory-for-ai-daemon-"
                              "e861648d9f8bc786dce31bbb16eda2ab"
                              "ffa330a770752832ab5f2e4feaa506f1");
     ASSERT_TRUE(strstr(address_a, "S-1-") == NULL);
@@ -605,9 +605,9 @@ TEST(daemon_ipc_windows_legacy_names_are_frozen_for_migration) {
                                                        "0123456789abcdef", pipe_name, startup_name);
 
     ASSERT_TRUE(derived);
-    ASSERT_STR_EQ(pipe_name, "\\\\.\\pipe\\cbm-daemon-72380d6ef7f19c0c-"
+    ASSERT_STR_EQ(pipe_name, "\\\\.\\pipe\\memory-for-ai-daemon-72380d6ef7f19c0c-"
                              "0123456789abcdef");
-    ASSERT_STR_EQ(startup_name, "Local\\cbm-daemon-72380d6ef7f19c0c-"
+    ASSERT_STR_EQ(startup_name, "Local\\memory-for-ai-daemon-72380d6ef7f19c0c-"
                                 "0123456789abcdef-startup");
     PASS();
 }
@@ -618,7 +618,7 @@ TEST(daemon_ipc_windows_rendezvous_record_is_exact_and_canonical) {
         0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95,
         0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
     };
-    static const char address[] = "\\\\.\\pipe\\cbm-daemon-"
+    static const char address[] = "\\\\.\\pipe\\memory-for-ai-daemon-"
                                   "0123456789abcdef0123456789abcdef"
                                   "0123456789abcdef0123456789abcdef";
     uint8_t record[CBM_DAEMON_IPC_WINDOWS_RENDEZVOUS_RECORD_SIZE];
@@ -648,7 +648,7 @@ TEST(daemon_ipc_windows_rendezvous_record_is_exact_and_canonical) {
 
     memcpy(corrupt, record, sizeof(corrupt));
     const size_t address_offset = 8U + CBM_DAEMON_IPC_WINDOWS_NONCE_SIZE;
-    corrupt[address_offset + strlen("\\\\.\\pipe\\cbm-daemon-")] = 'A';
+    corrupt[address_offset + strlen("\\\\.\\pipe\\memory-for-ai-daemon-")] = 'A';
     ASSERT_FALSE(cbm_daemon_ipc_windows_rendezvous_record_decode(corrupt, sizeof(corrupt),
                                                                  decoded_nonce, decoded_address));
     PASS();
@@ -1266,7 +1266,7 @@ TEST(daemon_ipc_windows_rendezvous_bridges_concurrent_lifetime_owner) {
      * concurrent-owner bridge under test is exercised deterministically. */
     cbm_private_file_lock_status_t lifetime_status =
         startup_observed
-            ? cbm_private_file_lock_try_acquire(directory, "cbm-lifetime.lock",
+            ? cbm_private_file_lock_try_acquire(directory, "mfa-lifetime.lock",
                                                 CBM_PRIVATE_FILE_LOCK_EX, &lifetime_owner)
             : CBM_PRIVATE_FILE_LOCK_IO;
     ipc_test_win_lock_release(&record_reader);
@@ -1692,8 +1692,8 @@ TEST(daemon_ipc_endpoint_is_namespaced_by_instance_key) {
             a_address && other_address && strcmp(a_address, other_address) != 0;
 #ifdef _WIN32
         address_contains_key = a_address &&
-                               strncmp(a_address, "\\\\.\\pipe\\cbm-daemon-",
-                                       strlen("\\\\.\\pipe\\cbm-daemon-")) == 0 &&
+                               strncmp(a_address, "\\\\.\\pipe\\memory-for-ai-daemon-",
+                                       strlen("\\\\.\\pipe\\memory-for-ai-daemon-")) == 0 &&
                                strstr(a_address, key_a) == NULL && other_address &&
                                strstr(other_address, key_b) == NULL;
 #else
@@ -2871,7 +2871,7 @@ static bool ipc_test_socket_identity_path(char out[TEST_PATH_CAP], const char *s
 static bool ipc_test_socket_anchor_path(char out[TEST_PATH_CAP], const char *runtime_dir,
                                         const char *key) {
     int written =
-        runtime_dir && key ? snprintf(out, TEST_PATH_CAP, "%s/cbm-%s.anc", runtime_dir, key) : -1;
+        runtime_dir && key ? snprintf(out, TEST_PATH_CAP, "%s/mfa-%s.anc", runtime_dir, key) : -1;
     return written > 0 && written < TEST_PATH_CAP;
 }
 
@@ -3151,7 +3151,7 @@ TEST(daemon_ipc_posix_child_participant_handoff_retains_legacy_bridge) {
     if (endpoint) {
         ipc_test_copy_path(runtime_dir, cbm_daemon_ipc_endpoint_runtime_dir(endpoint));
         int path_length =
-            snprintf(legacy_path, sizeof(legacy_path), "%s/cbm-%s.lock", runtime_dir, key);
+            snprintf(legacy_path, sizeof(legacy_path), "%s/mfa-%s.lock", runtime_dir, key);
         parent_ok = path_length > 0 && path_length < (int)sizeof(legacy_path);
     }
     int startup_result =
@@ -4156,7 +4156,7 @@ TEST(daemon_ipc_macos_rejects_allow_acl_on_ancestor_without_mutation) {
 
     bool parent_ok = ipc_test_parent_new(parent, "mac-acl-ancestor-allow");
     int runtime_written = parent_ok
-                              ? snprintf(runtime_dir, sizeof(runtime_dir), "%s/cbm-daemon-%lu",
+                              ? snprintf(runtime_dir, sizeof(runtime_dir), "%s/memory-for-ai-daemon-%lu",
                                          parent, (unsigned long)geteuid())
                               : -1;
     int acl_fixture = parent_ok ? ipc_test_macos_set_mutating_acl(parent, false) : -1;
@@ -4308,7 +4308,7 @@ TEST(daemon_ipc_macos_lock_acl_injection_invalidates_retained_startup) {
     int startup_result =
         endpoint ? cbm_daemon_ipc_startup_lock_try_acquire(endpoint, &startup) : -1;
     int path_written = startup_result == 1 ? snprintf(startup_path, sizeof(startup_path),
-                                                      "%s/cbm-%s.startup-v2.lock", runtime_dir, key)
+                                                      "%s/mfa-%s.startup-v2.lock", runtime_dir, key)
                                            : -1;
     bool path_ok = path_written > 0 && path_written < (int)sizeof(startup_path);
     int acl_fixture = path_ok ? ipc_test_macos_set_mutating_acl(startup_path, false) : -1;

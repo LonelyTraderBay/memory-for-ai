@@ -377,7 +377,7 @@ static int semantic_manifest_walk_controls(semantic_manifest_builder_t *builder,
         }
         bool root_control =
             (!rel_dir || !rel_dir[0]) &&
-            (strcmp(name, ".cbmignore") == 0 || strcmp(name, ".codebase-memory.json") == 0);
+            (strcmp(name, ".cbmignore") == 0 || strcmp(name, ".memory-for-ai.json") == 0);
         if (path_info.is_regular && (strcmp(name, ".gitignore") == 0 || root_control ||
                                      semantic_manifest_package_control(name))) {
             rc = semantic_manifest_add(builder, project, rel_path, abs_path);
@@ -722,7 +722,7 @@ static bool *classify_files(cbm_file_info_t *files, int file_count, cbm_file_has
  * Without this distinction, a fast-mode reindex after a full-mode index
  * would silently purge every file under `tools/`, `scripts/`, `bin/`,
  * `build/`, `docs/`, `__tests__/`, etc. — see task
- * claude-connectors/codebase-memory-index-repository-is-destructive-...
+ * claude-connectors/memory-for-ai-index-repository-is-destructive-...
  * and the 2026-04-13 Skyline incident (packages/mcp/src/tools/ vanished
  * from a live graph mid-session).
  *

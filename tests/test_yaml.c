@@ -829,7 +829,7 @@ TEST(yaml_indentation_dedent) {
 
 TEST(yaml_smoke_cgrconfig) {
     const char *yaml =
-        "# codebase-memory config\n"
+        "# memory-for-ai config\n"
         "mode: fast\n"
         "\n"
         "http_linker:\n"

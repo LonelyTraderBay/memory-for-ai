@@ -1,0 +1,27 @@
+{
+  "version": "0.8.1",
+  "description": "Fast code intelligence engine — native executable with verified runtime assets",
+  "homepage": "https://github.com/LonelyTraderBay/memory-for-ai",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v0.8.1/memory-for-ai-windows-amd64.zip",
+      "hash": "a602ad090ed3f49d86c55472f73f27ad7055222806a82358f2e08513e027f00f",
+      "bin": "memory-for-ai.exe"
+    }
+  },
+  "checkver": {
+    "github": "https://github.com/LonelyTraderBay/memory-for-ai"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v$version/memory-for-ai-windows-amd64.zip",
+        "hash": {
+          "url": "https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v$version/checksums.txt",
+          "find": "([a-f0-9]{64})\\s+memory-for-ai-windows-amd64\\.zip"
+        }
+      }
+    }
+  }
+}

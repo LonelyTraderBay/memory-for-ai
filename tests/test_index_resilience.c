@@ -102,7 +102,7 @@ static cbm_store_t *ri_index_capture(RProj *lp, char **out_resp) {
         home = "/tmp";
     }
     char cache_dir[512];
-    snprintf(cache_dir, sizeof(cache_dir), "%s/.cache/codebase-memory-mcp", home);
+    snprintf(cache_dir, sizeof(cache_dir), "%s/.cache/memory-for-ai", home);
     cbm_mkdir(cache_dir);
     snprintf(lp->dbpath, sizeof(lp->dbpath), "%s/%s.db", cache_dir, lp->project);
     unlink(lp->dbpath);
@@ -149,7 +149,7 @@ TEST(index_oversized_file_reported) {
     char logpath[700];
     snprintf(logpath, sizeof(logpath), "%s/skip.log", lp.tmpdir);
     cbm_setenv("CBM_MAX_FILE_BYTES", "1048576", 1); /* 1 MiB cap */
-    cbm_setenv("CBM_INDEX_LOG", logpath, 1);        /* deterministic logfile path */
+    cbm_setenv("MFA_INDEX_LOG", logpath, 1);        /* deterministic logfile path */
 
     char *resp = NULL;
     cbm_store_t *store = ri_index_capture(&lp, &resp);
@@ -158,7 +158,7 @@ TEST(index_oversized_file_reported) {
      * leaks into other tests in this process — cbm_max_file_bytes() reads env
      * on every file. */
     cbm_unsetenv("CBM_MAX_FILE_BYTES");
-    cbm_unsetenv("CBM_INDEX_LOG");
+    cbm_unsetenv("MFA_INDEX_LOG");
 
     if (!resp) {
         FAIL("no MCP response");
@@ -238,7 +238,7 @@ TEST(index_clean_run_no_logfile) {
 
     /* Defensive: make sure no stray low cap / log override leaks in. */
     cbm_unsetenv("CBM_MAX_FILE_BYTES");
-    cbm_unsetenv("CBM_INDEX_LOG");
+    cbm_unsetenv("MFA_INDEX_LOG");
 
     char *resp = NULL;
     cbm_store_t *store = ri_index_capture(&lp, &resp);
@@ -312,11 +312,11 @@ TEST(index_parse_partial_reported) {
 
     char logpath[700];
     snprintf(logpath, sizeof(logpath), "%s/coverage.log", lp.tmpdir);
-    cbm_setenv("CBM_INDEX_LOG", logpath, 1);
+    cbm_setenv("MFA_INDEX_LOG", logpath, 1);
 
     char *resp = NULL;
     cbm_store_t *store = ri_index_capture(&lp, &resp);
-    cbm_unsetenv("CBM_INDEX_LOG");
+    cbm_unsetenv("MFA_INDEX_LOG");
 
     if (!resp) {
         FAIL("no MCP response");
@@ -731,7 +731,7 @@ TEST(index_relative_repo_path_canonicalized) {
         home = "/tmp";
     }
     char cache_dir[512];
-    snprintf(cache_dir, sizeof(cache_dir), "%s/.cache/codebase-memory-mcp", home);
+    snprintf(cache_dir, sizeof(cache_dir), "%s/.cache/memory-for-ai", home);
     cbm_mkdir(cache_dir);
     snprintf(lp.dbpath, sizeof(lp.dbpath), "%s/%s.db", cache_dir, lp.project);
     unlink(lp.dbpath);

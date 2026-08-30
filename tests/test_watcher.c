@@ -222,7 +222,7 @@ TEST(watcher_poll_nonexistent_path) {
  * ══════════════════════════════════════════════════════════════════ */
 
 /* Shared fixture for the stale-root pruning tests: a temp project root, a
- * temp CBM_CACHE_DIR seeded with db/-wal/-shm files for "stale-project",
+ * temp MFA_CACHE_DIR seeded with db/-wal/-shm files for "stale-project",
  * and saved copies of the env vars the tests override. */
 typedef struct {
     char rootdir[256];
@@ -248,11 +248,11 @@ static bool prune_fixture_setup(prune_fixture_t *f, const char *grace_s) {
         return false;
     }
 
-    f->had_cache_dir = cbm_safe_getenv("CBM_CACHE_DIR", f->saved_cache_dir,
+    f->had_cache_dir = cbm_safe_getenv("MFA_CACHE_DIR", f->saved_cache_dir,
                                        sizeof(f->saved_cache_dir), NULL) != NULL;
     f->had_grace = cbm_safe_getenv("CBM_WATCHER_PRUNE_GRACE_S", f->saved_grace,
                                    sizeof(f->saved_grace), NULL) != NULL;
-    cbm_setenv("CBM_CACHE_DIR", f->cachedir, 1);
+    cbm_setenv("MFA_CACHE_DIR", f->cachedir, 1);
     cbm_setenv("CBM_WATCHER_PRUNE_GRACE_S", grace_s, 1);
 
     snprintf(f->db_path, sizeof(f->db_path), "%s/stale-project.db", f->cachedir);
@@ -266,9 +266,9 @@ static bool prune_fixture_setup(prune_fixture_t *f, const char *grace_s) {
 
 static void prune_fixture_teardown(prune_fixture_t *f) {
     if (f->had_cache_dir) {
-        cbm_setenv("CBM_CACHE_DIR", f->saved_cache_dir, 1);
+        cbm_setenv("MFA_CACHE_DIR", f->saved_cache_dir, 1);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     if (f->had_grace) {
         cbm_setenv("CBM_WATCHER_PRUNE_GRACE_S", f->saved_grace, 1);

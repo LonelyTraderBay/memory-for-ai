@@ -37,9 +37,9 @@ UNIX = ("linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64",
 WINDOWS = ("windows-amd64", "windows-arm64")
 MCPB = ("darwin-amd64", "darwin-arm64", "linux-amd64-portable",
         "linux-arm64-portable", "windows-amd64", "windows-arm64")
-ARCHIVES = tuple(f"codebase-memory-mcp-{t}.tar.gz" for t in UNIX) + \
-           tuple(f"codebase-memory-mcp-{t}.zip" for t in WINDOWS) + \
-           tuple(f"codebase-memory-mcp-{t}.mcpb" for t in MCPB)
+ARCHIVES = tuple(f"memory-for-ai-{t}.tar.gz" for t in UNIX) + \
+           tuple(f"memory-for-ai-{t}.zip" for t in WINDOWS) + \
+           tuple(f"memory-for-ai-{t}.mcpb" for t in MCPB)
 
 # Deliberately byte-IDENTICAL across every archive: the extractor must collapse
 # them to one scan object each, or the gate pays to scan the same bytes 8 times
@@ -62,7 +62,7 @@ def target_of(archive):
 
 def make_manifest(entry_point):
     return (
-        '{"manifest_version": "0.3", "name": "codebase-memory-mcp",'
+        '{"manifest_version": "0.3", "name": "memory-for-ai",'
         ' "version": "0.0.0-test", "server": {"type": "binary",'
         f' "entry_point": "{entry_point}",'
         ' "mcp_config": {"command": "${__dirname}/' + entry_point + '", "args": []}}}'
@@ -76,14 +76,14 @@ def members(archive):
     # assertion below depends on that.
     binary_bytes = b"binary bytes of " + target_of(archive).encode()
     if archive.endswith(".mcpb"):
-        binary = "server/codebase-memory-mcp.exe" if windows else "server/codebase-memory-mcp"
+        binary = "server/memory-for-ai.exe" if windows else "server/memory-for-ai"
         return {
             "manifest.json": make_manifest(binary),
             binary: binary_bytes,
             "server/LICENSE": SHARED_LICENSE,
             "server/THIRD_PARTY_NOTICES.md": SHARED_NOTICES,
         }
-    binary = "codebase-memory-mcp.exe" if windows else "codebase-memory-mcp"
+    binary = "memory-for-ai.exe" if windows else "memory-for-ai"
     installer = "install.ps1" if windows else "install.sh"
     return {
         binary: binary_bytes,
@@ -222,7 +222,7 @@ if result.returncode == 0:
     fail("extractor accepted a 1-archive matrix under --expect-archives=14")
 
 # ── 3. MCPB manifest contract — a structurally broken bundle must not ship ──
-BROKEN_MCPB = "codebase-memory-mcp-darwin-arm64.mcpb"
+BROKEN_MCPB = "memory-for-ai-darwin-arm64.mcpb"
 
 
 def rewrite_mcpb(directory, manifest_bytes):
@@ -240,14 +240,14 @@ def rewrite_mcpb(directory, manifest_bytes):
 for label, slug, manifest_bytes, expect in (
     ("unparseable manifest.json", "m1", b"{not json", "not valid JSON"),
     ("manifest without a version", "m2",
-     make_manifest("server/codebase-memory-mcp").replace(b'"version": "0.0.0-test", ', b""),
+     make_manifest("server/memory-for-ai").replace(b'"version": "0.0.0-test", ', b""),
      "lacks a version"),
     ("manifest entry_point outside the bundle", "m3",
      make_manifest("server/other-binary"),
      "not a member"),
     ("manifest command not targeting the entry_point", "m4",
-     make_manifest("server/codebase-memory-mcp").replace(
-         b'${__dirname}/server/codebase-memory-mcp', b"/usr/bin/env"),
+     make_manifest("server/memory-for-ai").replace(
+         b'${__dirname}/server/memory-for-ai', b"/usr/bin/env"),
      "does not target the entry_point"),
 ):
     case = fixtures / slug

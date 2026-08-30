@@ -256,7 +256,7 @@ int cbm_mkstemp(char *tmpl) {
         return CBM_NOT_FOUND;
     }
     /* Wide-API expansion and open: worker staging files land inside
-     * CBM_CACHE_DIR, which users may place at non-ASCII paths; the ANSI CRT
+     * MFA_CACHE_DIR, which users may place at non-ASCII paths; the ANSI CRT
      * (_mktemp/_open) mangles those bytes in the local codepage. */
     wchar_t *wide_template = cbm_utf8_to_wide(buf);
     if (!wide_template || !_wmktemp(wide_template)) {

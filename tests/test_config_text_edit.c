@@ -17,8 +17,8 @@
 #include <unistd.h>
 #endif
 
-#define CTE_BEGIN "<!-- codebase-memory-mcp:start -->"
-#define CTE_END "<!-- codebase-memory-mcp:end -->"
+#define CTE_BEGIN "<!-- memory-for-ai:start -->"
+#define CTE_END "<!-- memory-for-ai:end -->"
 #define CTE_LIMIT (16U * 1024U * 1024U)
 #define CTE_PATH_CAP 1024U
 
@@ -282,9 +282,9 @@ TEST(config_text_owned_document_write_remove_exact_only) {
 TEST(config_text_owned_document_migrates_exact_releases_only) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
-    const char *current = "name: codebase-memory\ntier: verify\n";
-    const char *released[] = {"name: codebase-memory\n", "name: codebase-memory\nlegacy: 2\n"};
-    const char *modified = "name: codebase-memory\nuser-note: keep\n";
+    const char *current = "name: memory-for-ai\ntier: verify\n";
+    const char *released[] = {"name: memory-for-ai\n", "name: memory-for-ai\nlegacy: 2\n"};
+    const char *modified = "name: memory-for-ai\nuser-note: keep\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
 
     ASSERT_EQ(cbm_text_migrate_owned_document(path, current, released, 2U), 0);
@@ -636,7 +636,7 @@ TEST(config_text_write_owned_document_if_unchanged_rejects_stale_snapshot) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
     const char *original = "name: Continue\n";
-    const char *updated = "name: Continue\nmcpServers:\n  - name: codebase-memory-mcp\n";
+    const char *updated = "name: Continue\nmcpServers:\n  - name: memory-for-ai\n";
     const char *winner = "name: Continue\nuser-setting: preserved\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, original), 0);

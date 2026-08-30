@@ -56,7 +56,7 @@ find "$HOME" -type f > "$TMPDIR/created_files.txt" 2>/dev/null || true
 #   .claude/settings.json
 #   .continue/config.yaml
 #   .codeium/config.json
-#   .local/bin/codebase-memory-mcp
+#   .local/bin/memory-for-ai
 #   Various agent config dirs
 
 EXPECTED_PATTERNS=(
@@ -151,7 +151,7 @@ for SKILLS_DIR in "${SKILL_DIRS[@]}"; do
         done
 
         # Check for unexpected URLs
-        if grep -oE 'https?://[^\s"'"'"']+' "$skill_file" 2>/dev/null | grep -v 'github.com/DeusData' | grep -v 'localhost' | grep -v '127.0.0.1' > "$TMPDIR/sec_skill_urls" 2>/dev/null; then
+        if grep -oE 'https?://[^\s"'"'"']+' "$skill_file" 2>/dev/null | grep -v 'github.com/LonelyTraderBay' | grep -v 'localhost' | grep -v '127.0.0.1' > "$TMPDIR/sec_skill_urls" 2>/dev/null; then
             while IFS= read -r url; do
                 echo "REVIEW: Skill '$basename' contains URL: $url"
             done < "$TMPDIR/sec_skill_urls"

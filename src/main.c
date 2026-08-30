@@ -1,5 +1,5 @@
 /*
- * main.c — Entry point for codebase-memory-mcp.
+ * main.c — Entry point for memory-for-ai.
  *
  * Modes:
  *   (default)       Run as MCP server on stdin/stdout (JSON-RPC 2.0)
@@ -64,6 +64,7 @@ enum {
 #include "foundation/log.h"
 #include "foundation/diagnostics.h"
 #include "foundation/platform.h"
+#include "foundation/product.h"
 #include "foundation/workspace.h"
 #include "foundation/compat.h"
 #include "foundation/compat_fs.h"
@@ -198,7 +199,7 @@ static void main_local_maintenance_finish(cbm_daemon_maintenance_monitor_t **mon
 static _Noreturn void main_coordination_cleanup_fail_stop(const char *component) {
     cbm_log_error("coordination.cleanup_timeout", "component", component, "action", "process_exit");
     (void)fprintf(stderr,
-                  "codebase-memory-mcp: coordination cleanup timed out (%s); "
+                  "memory-for-ai: coordination cleanup timed out (%s); "
                   "terminating so the OS releases retained claims\n",
                   component ? component : "unknown");
     (void)fflush(stdout);
@@ -539,7 +540,7 @@ static bool client_start_parent_watchdog(pid_t initial_ppid) {
 
 /* ── CLI mode ───────────────────────────────────────────────────── */
 
-#define CLI_USAGE "Usage: codebase-memory-mcp cli [--progress] [--json] <tool_name> [json_args]\n"
+#define CLI_USAGE "Usage: memory-for-ai cli [--progress] [--json] <tool_name> [json_args]\n"
 
 /* Extract text content from MCP tool result envelope and print it.
  * MCP results: {"content":[{"type":"text","text":"..."}],"isError":...}
@@ -895,18 +896,18 @@ static int run_cli(int argc, char **argv, cbm_project_lock_manager_t *project_lo
 /* ── Help ───────────────────────────────────────────────────────── */
 
 static void print_help(void) {
-    printf("codebase-memory-mcp %s\n\n", CBM_VERSION);
+    printf("memory-for-ai %s\n\n", CBM_VERSION);
     printf("Usage:\n");
-    printf("  codebase-memory-mcp              Run MCP server on stdio\n");
-    printf("  codebase-memory-mcp cli [--progress] [--json] <tool> [args]\n");
+    printf("  memory-for-ai              Run MCP server on stdio\n");
+    printf("  memory-for-ai cli [--progress] [--json] <tool> [args]\n");
     printf("                                      Run one tool locally, then exit\n");
-    printf("  codebase-memory-mcp install [-y|-n] [--force] [--dry-run] "
+    printf("  memory-for-ai install [-y|-n] [--force] [--dry-run] "
            "[--dir=<path>] [--skip-config]\n");
-    printf("  codebase-memory-mcp uninstall [-y|-n] [--dry-run]\n");
-    printf("  codebase-memory-mcp update [-y|-n]\n");
-    printf("  codebase-memory-mcp config <list|get|set|reset>\n");
-    printf("  codebase-memory-mcp --version    Print version\n");
-    printf("  codebase-memory-mcp --help       Print this help\n");
+    printf("  memory-for-ai uninstall [-y|-n] [--dry-run]\n");
+    printf("  memory-for-ai update [-y|-n]\n");
+    printf("  memory-for-ai config <list|get|set|reset>\n");
+    printf("  memory-for-ai --version    Print version\n");
+    printf("  memory-for-ai --help       Print this help\n");
     printf("\nUI options:\n");
     printf("  --ui=true    Enable HTTP graph visualization (persisted)\n");
     printf("  --ui=false   Disable HTTP graph visualization (persisted)\n");
@@ -986,9 +987,9 @@ static int main_run_allow_root(int argc, char **argv) {
         }
         if (!path && !list_only) {
             (void)fprintf(stderr,
-                          "usage: codebase-memory-mcp allow-root [--approve-sensitive] <path>\n"
-                          "       codebase-memory-mcp allow-root --approve-manifest <project>\n"
-                          "       codebase-memory-mcp allow-root --list\n");
+                          "usage: memory-for-ai allow-root [--approve-sensitive] <path>\n"
+                          "       memory-for-ai allow-root --approve-manifest <project>\n"
+                          "       memory-for-ai allow-root --list\n");
             return EXIT_FAILURE;
         }
         return 0;
@@ -1049,7 +1050,7 @@ static int handle_subcommand(int argc, char **argv, cbm_project_lock_manager_t *
     }
     for (int i = SKIP_ONE; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0) {
-            printf("codebase-memory-mcp %s\n", CBM_VERSION);
+            printf("memory-for-ai %s\n", CBM_VERSION);
             return 0;
         }
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1248,7 +1249,7 @@ static main_build_identity_status_t main_build_identity(cbm_daemon_build_identit
      * fingerprint joins the account-wide cohort. Keeping an original symlink
      * spelling in the environment would let a later retarget move storage
      * while the process still advertises the old canonical root. */
-    if (cbm_setenv("CBM_CACHE_DIR", canonical_cache, 1) != 0) {
+    if (cbm_setenv(CBM_PRODUCT_CACHE_ENV, canonical_cache, 1) != 0) {
         return MAIN_BUILD_IDENTITY_CACHE_ENVIRONMENT;
     }
     cbm_sha256_hex(canonical_cache, strlen(canonical_cache), cache_fingerprint);
@@ -1526,7 +1527,7 @@ static void main_report_client_failure(cbm_daemon_process_role_t role, const cha
                       escaped);
         (void)fflush(stdout);
     }
-    (void)fprintf(stderr, "codebase-memory-mcp: %s\n", detail);
+    (void)fprintf(stderr, "memory-for-ai: %s\n", detail);
 }
 
 static void main_report_client_bootstrap_failure(cbm_daemon_process_role_t role,
@@ -1557,7 +1558,7 @@ static cbm_daemon_bootstrap_status_t main_client_bootstrap_with_upgrade(
         return status;
     }
     (void)fprintf(stderr,
-                  "codebase-memory-mcp: retiring the active permanent daemon (%s, pid %lu) for "
+                  "memory-for-ai: retiring the active permanent daemon (%s, pid %lu) for "
                   "this newer build (%s)\n",
                   active.semantic_version, (unsigned long)active.daemon_pid,
                   config->identity->semantic_version);
@@ -1566,8 +1567,8 @@ static cbm_daemon_bootstrap_status_t main_client_bootstrap_with_upgrade(
                                                         CBM_DAEMON_RUNTIME_ACTIVATION_UPDATE,
                                                         MAIN_MCP_STARTUP_TIMEOUT_MS, &drain) ||
         !drain.accepted) {
-        (void)fprintf(stderr, "codebase-memory-mcp: the active daemon did not accept the "
-                              "upgrade drain; run `codebase-memory-mcp daemon stop`\n");
+        (void)fprintf(stderr, "memory-for-ai: the active daemon did not accept the "
+                              "upgrade drain; run `memory-for-ai daemon stop`\n");
         return status;
     }
     return cbm_daemon_bootstrap_execute(config, result);
@@ -1609,7 +1610,7 @@ static char *main_local_cli_daemon_execute(const char *tool_name, const char *ar
     }
     if (bootstrap.daemon_spawned) {
         (void)fprintf(stderr, "hint: this command started a temporary CBM daemon. "
-                              "`codebase-memory-mcp daemon start` keeps one warm and removes this "
+                              "`memory-for-ai daemon start` keeps one warm and removes this "
                               "startup cost from every CLI command.\n");
     }
     char session_root[MAIN_PATH_CAP];
@@ -1703,9 +1704,9 @@ static void main_hook_report_absent_daemon(const char *hook_dialect) {
     if (!main_hook_absent_notice_due()) {
         return;
     }
-    (void)fprintf(stderr, "codebase-memory-mcp: no CBM daemon is running, so graph "
+    (void)fprintf(stderr, "memory-for-ai: no CBM daemon is running, so graph "
                           "augmentation is skipped. Start an MCP session or run "
-                          "`codebase-memory-mcp daemon start` to enable it.\n");
+                          "`memory-for-ai daemon start` to enable it.\n");
     const char *notice = cbm_hook_admission_notice(CBM_HOOK_ADMISSION_DAEMON_ABSENT, hook_dialect);
     if (notice) {
         (void)fputs(notice, stdout);
@@ -2247,7 +2248,7 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
         }
     }
     if (!arguments_valid || !subcommand) {
-        (void)fprintf(stderr, "usage: codebase-memory-mcp daemon <start|stop|status> "
+        (void)fprintf(stderr, "usage: memory-for-ai daemon <start|stop|status> "
                               "[--open] [--port=N]\n");
         return EXIT_FAILURE;
     }
@@ -2259,7 +2260,7 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
     if (strcmp(subcommand, "status") == 0) {
         if (!active) {
             printf("daemon: not running\n");
-            printf("hint: `codebase-memory-mcp daemon start` keeps a daemon warm so CLI "
+            printf("hint: `memory-for-ai daemon start` keeps a daemon warm so CLI "
                    "commands and hooks skip the per-command startup cost.\n");
             return EXIT_FAILURE;
         }
@@ -2372,7 +2373,7 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
                                               : "the permanent daemon could not be started");
         if (start_status == CBM_DAEMON_BOOTSTRAP_CONFLICT) {
             (void)fprintf(stderr, "hint: a daemon of a different build is active; "
-                                  "`codebase-memory-mcp daemon stop` retires it.\n");
+                                  "`memory-for-ai daemon stop` retires it.\n");
         }
         return EXIT_FAILURE;
     }
@@ -2410,7 +2411,7 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
     } else {
         printf("daemon: started (permanent)\n");
     }
-    printf("It survives idle periods and session ends; `codebase-memory-mcp daemon stop` "
+    printf("It survives idle periods and session ends; `memory-for-ai daemon stop` "
            "retires it.\n");
     int ui_result =
         (CBM_EMBEDDED_FILE_COUNT > 0)
@@ -2448,7 +2449,7 @@ int main(int argc, char **argv) {
         cbm_log_set_crash_durable(true);
     }
     if (role == CBM_DAEMON_PROCESS_INVALID) {
-        (void)fprintf(stderr, "codebase-memory-mcp: invalid internal process arguments\n");
+        (void)fprintf(stderr, "memory-for-ai: invalid internal process arguments\n");
         return EXIT_FAILURE;
     }
 #ifndef _WIN32
@@ -2464,7 +2465,7 @@ int main(int argc, char **argv) {
     cbm_mcp_tool_profile_t tool_profile = CBM_MCP_TOOL_PROFILE_ALL;
     if (role == CBM_DAEMON_PROCESS_MCP_CLIENT &&
         cbm_mcp_parse_tool_profile_args(argc, (const char *const *)argv, &tool_profile) != 0) {
-        (void)fprintf(stderr, "codebase-memory-mcp: --tool-profile requires the supported value "
+        (void)fprintf(stderr, "memory-for-ai: --tool-profile requires the supported value "
                               "'analysis' or 'scout'\n");
         return 2;
     }
@@ -2563,7 +2564,7 @@ int main(int argc, char **argv) {
             const char *why = cbm_daemon_ipc_validation_detail();
             (void)fprintf(
                 stderr,
-                "codebase-memory-mcp: secure CLI coordination could not be created (%s)%s%s\n",
+                "memory-for-ai: secure CLI coordination could not be created (%s)%s%s\n",
                 coordination_failure, (why && why[0]) ? ": " : "", (why && why[0]) ? why : "");
             goto local_cli_cleanup;
         }
@@ -2579,7 +2580,7 @@ int main(int argc, char **argv) {
             if (cohort_status == CBM_VERSION_COHORT_CONFLICT) {
                 (void)cbm_version_cohort_log_conflict(&cohort_conflict);
             }
-            (void)fprintf(stderr, "codebase-memory-mcp: %s\n",
+            (void)fprintf(stderr, "memory-for-ai: %s\n",
                           formatted ? message
                                     : "CLI exact-build admission could not be verified; retry "
                                       "after active CBM operations exit");
@@ -2592,7 +2593,7 @@ int main(int argc, char **argv) {
                                                  &maintenance_context, EXIT_FAILURE, "CLI command");
         if (!maintenance_monitor) {
             (void)fprintf(stderr,
-                          "codebase-memory-mcp: CLI maintenance observer could not start safely\n");
+                          "memory-for-ai: CLI maintenance observer could not start safely\n");
             goto local_cli_cleanup;
         }
 
@@ -2606,14 +2607,14 @@ int main(int argc, char **argv) {
                  * that the OS has not reclaimed. "Busy" alone sent reporters
                  * hunting for a CBM session that had already exited. */
                 (void)fprintf(stderr,
-                              "codebase-memory-mcp: CLI startup coordination stayed busy for "
+                              "memory-for-ai: CLI startup coordination stayed busy for "
                               "%d seconds. Either another CBM command is still running, or a "
                               "previous one was force-killed and the operating system has not "
                               "released its lock yet. Check for running CBM processes; if there "
                               "are none, retry shortly.\n",
                               MAIN_STARTUP_CONTENTION_CEILING_MS / 1000);
             } else {
-                (void)fprintf(stderr, "codebase-memory-mcp: CLI startup coordination could not "
+                (void)fprintf(stderr, "memory-for-ai: CLI startup coordination could not "
                                       "be verified safely; retry after active CBM sessions "
                                       "exit\n");
             }
@@ -2624,7 +2625,7 @@ int main(int argc, char **argv) {
             if (seal_status == 0) {
                 (void)cbm_version_cohort_log_uncoordinated_daemon(&local_identity);
             }
-            (void)fprintf(stderr, "codebase-memory-mcp: CBM CLI could not start because a "
+            (void)fprintf(stderr, "memory-for-ai: CBM CLI could not start because a "
                                   "pre-coordination or unverified CBM generation is active; close "
                                   "all CBM sessions and commands, then retry\n");
             goto local_cli_cleanup;
@@ -2637,19 +2638,19 @@ int main(int argc, char **argv) {
             daemon_presence != CBM_VERSION_COHORT_DAEMON_COORDINATED) {
             if (daemon_presence == CBM_VERSION_COHORT_DAEMON_UNCOORDINATED) {
                 (void)cbm_version_cohort_log_uncoordinated_daemon(&local_identity);
-                (void)fprintf(stderr, "codebase-memory-mcp: CBM CLI could not start because "
+                (void)fprintf(stderr, "memory-for-ai: CBM CLI could not start because "
                                       "an active pre-coordination or unverified CBM daemon is "
                                       "running. Close all CBM sessions and commands, then "
                                       "retry.\n");
             } else {
-                (void)fprintf(stderr, "codebase-memory-mcp: active daemon coordination could "
+                (void)fprintf(stderr, "memory-for-ai: active daemon coordination could "
                                       "not be verified safely; retry after active CBM sessions "
                                       "exit\n");
             }
             goto local_cli_cleanup;
         }
         if (!cbm_daemon_ipc_local_transition_begin_work(local_transition)) {
-            (void)fprintf(stderr, "codebase-memory-mcp: CLI startup coordination could not enter "
+            (void)fprintf(stderr, "memory-for-ai: CLI startup coordination could not enter "
                                   "local work safely\n");
             goto local_cli_cleanup;
         }
@@ -2678,7 +2679,7 @@ int main(int argc, char **argv) {
     cbm_daemon_build_identity_t identity;
     if (!main_resolve_executable(argv[0], executable_path)) {
         (void)fprintf(stderr,
-                      "codebase-memory-mcp: exact executable identity could not be verified "
+                      "memory-for-ai: exact executable identity could not be verified "
                       "(executable-path)\n");
         return role == CBM_DAEMON_PROCESS_HOOK_CLIENT ? EXIT_SUCCESS : EXIT_FAILURE;
     }
@@ -2686,7 +2687,7 @@ int main(int argc, char **argv) {
     if (identity_status != MAIN_BUILD_IDENTITY_OK) {
         const char *validation_detail = cbm_daemon_ipc_validation_detail();
         (void)fprintf(stderr,
-                      "codebase-memory-mcp: exact executable identity could not be verified "
+                      "memory-for-ai: exact executable identity could not be verified "
                       "(%s)%s%s\n",
                       main_build_identity_status_name(identity_status),
                       validation_detail[0] ? " - " : "", validation_detail);
@@ -2902,7 +2903,7 @@ int main(int argc, char **argv) {
         if (client_cohort_status == CBM_VERSION_COHORT_CONFLICT) {
             (void)cbm_version_cohort_log_conflict(&client_cohort_conflict);
         }
-        (void)fprintf(stderr, "codebase-memory-mcp: %s\n",
+        (void)fprintf(stderr, "memory-for-ai: %s\n",
                       formatted ? message : "client exact-build admission failed");
         if (role == CBM_DAEMON_PROCESS_HOOK_CLIENT &&
             client_cohort_status == CBM_VERSION_COHORT_CONFLICT) {
@@ -2924,7 +2925,7 @@ int main(int argc, char **argv) {
                 char conflict_detail[CBM_DAEMON_CONFLICT_MESSAGE_SIZE];
                 if (cbm_daemon_conflict_format(&hook_connect.conflict, conflict_detail,
                                                sizeof(conflict_detail))) {
-                    (void)fprintf(stderr, "codebase-memory-mcp: %s\n", conflict_detail);
+                    (void)fprintf(stderr, "memory-for-ai: %s\n", conflict_detail);
                 }
                 main_hook_report_conflicted_daemon(hook_dialect);
             } else {
@@ -2970,7 +2971,7 @@ int main(int argc, char **argv) {
     if (role == CBM_DAEMON_PROCESS_MCP_CLIENT &&
         !main_set_client_context(g_daemon_client, NULL, tool_profile, NULL, NULL,
                                  MAIN_CONNECT_TIMEOUT_MS)) {
-        (void)fprintf(stderr, "codebase-memory-mcp: daemon session context was rejected\n");
+        (void)fprintf(stderr, "memory-for-ai: daemon session context was rejected\n");
         (void)cbm_daemon_runtime_client_close(g_daemon_client, MAIN_CLOSE_TIMEOUT_MS);
         g_daemon_client = NULL;
         (void)main_version_cohort_close(&client_cohort_lease, &client_cohort_manager);
@@ -2990,21 +2991,21 @@ int main(int argc, char **argv) {
         if (update_mask != 0 && cbm_daemon_application_client_set_ui_config(
                                     g_daemon_client, update_mask, ui_enabled, ui_port,
                                     MAIN_CONNECT_TIMEOUT_MS) != CBM_DAEMON_RUNTIME_APPLICATION_OK) {
-            (void)fprintf(stderr, "codebase-memory-mcp: daemon UI configuration update failed\n");
+            (void)fprintf(stderr, "memory-for-ai: daemon UI configuration update failed\n");
             (void)cbm_daemon_runtime_client_close(g_daemon_client, MAIN_CLOSE_TIMEOUT_MS);
             g_daemon_client = NULL;
             (void)main_version_cohort_close(&client_cohort_lease, &client_cohort_manager);
             return EXIT_FAILURE;
         }
         if (explicitly_enabled && !(CBM_EMBEDDED_FILE_COUNT > 0)) {
-            (void)fprintf(stderr, "codebase-memory-mcp: --ui requested, but this binary was built "
+            (void)fprintf(stderr, "memory-for-ai: --ui requested, but this binary was built "
                                   "without UI support; rebuild with `make -f Makefile.cbm "
                                   "cbm-with-ui`.\n");
         }
     }
 #ifndef _WIN32
     if (!client_start_parent_watchdog(process_initial_ppid)) {
-        (void)fprintf(stderr, "codebase-memory-mcp: parent-death watchdog could not start\n");
+        (void)fprintf(stderr, "memory-for-ai: parent-death watchdog could not start\n");
         (void)cbm_daemon_runtime_client_close(g_daemon_client, MAIN_CLOSE_TIMEOUT_MS);
         g_daemon_client = NULL;
         (void)main_version_cohort_close(&client_cohort_lease, &client_cohort_manager);

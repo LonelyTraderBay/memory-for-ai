@@ -97,12 +97,12 @@ cbm_test_runtime_init() {
     _CBM_TEST_RUNTIME_CREATED_ROOT="$root"
     _CBM_TEST_RUNTIME_PRODUCT_RUNTIME="$product_runtime"
     _CBM_TEST_RUNTIME_PRODUCT_CACHE="$product_cache"
-    export CBM_RUNTIME_DIR="$product_runtime" CBM_CACHE_DIR="$product_cache"
+    export MFA_RUNTIME_DIR="$product_runtime" MFA_CACHE_DIR="$product_cache"
 }
 
 _cbm_test_runtime_daemon() {
-    CBM_RUNTIME_DIR="$_CBM_TEST_RUNTIME_PRODUCT_RUNTIME" \
-        CBM_CACHE_DIR="$_CBM_TEST_RUNTIME_PRODUCT_CACHE" "$1" daemon "$2"
+    MFA_RUNTIME_DIR="$_CBM_TEST_RUNTIME_PRODUCT_RUNTIME" \
+        MFA_CACHE_DIR="$_CBM_TEST_RUNTIME_PRODUCT_CACHE" "$1" daemon "$2"
 }
 
 cbm_test_runtime_cleanup() {

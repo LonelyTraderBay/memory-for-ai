@@ -1,23 +1,23 @@
-PackageIdentifier: DeusData.CodebaseMemoryMcp
+PackageIdentifier: LonelyTraderBay.MemoryForAi
 PackageVersion: 0.8.1
 PackageLocale: en-US
-Publisher: DeusData
-PublisherUrl: https://github.com/DeusData
-PublisherSupportUrl: https://github.com/DeusData/codebase-memory-mcp/issues
-PackageName: codebase-memory-mcp
-PackageUrl: https://github.com/DeusData/codebase-memory-mcp
+Publisher: LonelyTraderBay
+PublisherUrl: https://github.com/LonelyTraderBay
+PublisherSupportUrl: https://github.com/LonelyTraderBay/memory-for-ai/issues
+PackageName: memory-for-ai
+PackageUrl: https://github.com/LonelyTraderBay/memory-for-ai
 License: MIT
-LicenseUrl: https://github.com/DeusData/codebase-memory-mcp/blob/main/LICENSE
+LicenseUrl: https://github.com/LonelyTraderBay/memory-for-ai/blob/main/LICENSE
 ShortDescription: Fast code intelligence engine for AI coding agents
 Description: |-
-  codebase-memory-mcp is a native MCP server distributed as a verified runtime
+  memory-for-ai is a native MCP server distributed as a verified runtime
   set. The portable archive keeps its authenticated release-owned assets with the
   executable registered by WinGet. It indexes codebases at extreme speed and
   exposes 14 MCP tools for AI coding agents. Full indexes an average repository
   in milliseconds, the Linux kernel (28M LOC) in 3 minutes. Supports 155 languages
   via vendored tree-sitter grammars. No hosted service or API key. Plug and play
   across 11 coding agents including Claude Code, Codex CLI, and Zed.
-Moniker: codebase-memory-mcp
+Moniker: memory-for-ai
 Tags:
   - mcp
   - ai
@@ -26,6 +26,6 @@ Tags:
   - codebase
   - developer-tools
   - tree-sitter
-ReleaseNotesUrl: https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.8.1
+ReleaseNotesUrl: https://github.com/LonelyTraderBay/memory-for-ai/releases/tag/v0.8.1
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

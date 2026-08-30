@@ -16,8 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CBM_DAEMON_INTERNAL_ARG "--cbm-daemon-internal"
-#define CBM_DAEMON_PERMANENT_ARG "--cbm-daemon-permanent"
+#define CBM_DAEMON_INTERNAL_ARG "--memory-for-ai-daemon-internal"
+#define CBM_DAEMON_PERMANENT_ARG "--memory-for-ai-daemon-permanent"
 #define CBM_DAEMON_BOOTSTRAP_LAUNCH_ARGC 3U
 
 typedef enum {

@@ -10,6 +10,7 @@
 #include "foundation/log.h"
 #include "foundation/macos_acl.h"
 #include "foundation/private_file_lock_internal.h"
+#include "foundation/product.h"
 #include "foundation/sha256.h"
 #include "foundation/secure_random.h"
 
@@ -161,11 +162,13 @@ bool cbm_daemon_ipc_windows_legacy_names(const char *canonical_runtime_parent,
         hash *= UINT64_C(1099511628211);
     }
     int pipe_length =
-        snprintf(pipe_out, CBM_DAEMON_IPC_WINDOWS_NAME_CAP, "\\\\.\\pipe\\cbm-daemon-%016llx-%s",
+        snprintf(pipe_out, CBM_DAEMON_IPC_WINDOWS_NAME_CAP,
+                 "\\\\.\\pipe\\" CBM_PRODUCT_RUNTIME_PREFIX "%016llx-%s",
                  (unsigned long long)hash, instance_key);
     int mutex_length =
         snprintf(startup_mutex_out, CBM_DAEMON_IPC_WINDOWS_NAME_CAP,
-                 "Local\\cbm-daemon-%016llx-%s-startup", (unsigned long long)hash, instance_key);
+                 "Local\\" CBM_PRODUCT_RUNTIME_PREFIX "%016llx-%s-startup",
+                 (unsigned long long)hash, instance_key);
     return pipe_length > 0 && (size_t)pipe_length < CBM_DAEMON_IPC_WINDOWS_NAME_CAP &&
            mutex_length > 0 && (size_t)mutex_length < CBM_DAEMON_IPC_WINDOWS_NAME_CAP;
 }
@@ -182,7 +185,7 @@ static bool windows_sid_valid(const uint8_t *sid, size_t sid_length) {
 }
 
 static bool windows_pipe_address_valid(const char *address) {
-    static const char prefix[] = "\\\\.\\pipe\\cbm-daemon-";
+    static const char prefix[] = "\\\\.\\pipe\\" CBM_PRODUCT_RUNTIME_PREFIX;
     if (!address || strncmp(address, prefix, sizeof(prefix) - 1U) != 0) {
         return false;
     }
@@ -200,7 +203,7 @@ bool cbm_daemon_ipc_windows_generation_address(
     const uint8_t *sid, size_t sid_length, const char *instance_key,
     const uint8_t nonce[CBM_DAEMON_IPC_WINDOWS_NONCE_SIZE],
     char address_out[CBM_DAEMON_IPC_WINDOWS_NAME_CAP]) {
-    static const uint8_t domain[] = "cbm-daemon-win-pipe-v1";
+    static const uint8_t domain[] = CBM_PRODUCT_DAEMON_DOMAIN "-win-pipe-v1";
     if (!windows_sid_valid(sid, sid_length) || !instance_key_valid(instance_key) || !nonce ||
         !address_out) {
         return false;
@@ -222,7 +225,7 @@ bool cbm_daemon_ipc_windows_generation_address(
     }
     digest_hex[CBM_SHA256_HEX_LEN] = '\0';
     int written = snprintf(address_out, CBM_DAEMON_IPC_WINDOWS_NAME_CAP,
-                           "\\\\.\\pipe\\cbm-daemon-%s", digest_hex);
+                           "\\\\.\\pipe\\" CBM_PRODUCT_RUNTIME_PREFIX "%s", digest_hex);
     return written > 0 && (size_t)written < CBM_DAEMON_IPC_WINDOWS_NAME_CAP;
 }
 
@@ -893,14 +896,18 @@ cbm_daemon_ipc_endpoint_t *cbm_daemon_ipc_endpoint_new(const char *instance_key,
     endpoint->dir_fd = -1;
     endpoint->runtime_dir =
         string_format("%s%s%s%lu", parent, parent[strlen(parent) - 1] == '/' ? "" : "/",
-                      "cbm-daemon-", (unsigned long)geteuid());
-    endpoint->socket_name = string_format("cbm-%s.sock", instance_key);
-    endpoint->socket_anchor_name = string_format("cbm-%s.anc", instance_key);
-    endpoint->socket_identity_name = string_format("cbm-%s.sock.identity", instance_key);
-    endpoint->socket_pending_name = string_format("cbm-%s.sock.pending", instance_key);
-    endpoint->lock_name = string_format("cbm-%s.lock", instance_key);
-    endpoint->startup_v2_lock_name = string_format("cbm-%s.startup-v2.lock", instance_key);
-    endpoint->lifetime_lock_name = string_format("cbm-%s.lifetime.lock", instance_key);
+                      CBM_PRODUCT_RUNTIME_PREFIX, (unsigned long)geteuid());
+    endpoint->socket_name = string_format("%s%s.sock", CBM_PRODUCT_IPC_PREFIX, instance_key);
+    endpoint->socket_anchor_name = string_format("%s%s.anc", CBM_PRODUCT_IPC_PREFIX, instance_key);
+    endpoint->socket_identity_name =
+        string_format("%s%s.sock.identity", CBM_PRODUCT_IPC_PREFIX, instance_key);
+    endpoint->socket_pending_name =
+        string_format("%s%s.sock.pending", CBM_PRODUCT_IPC_PREFIX, instance_key);
+    endpoint->lock_name = string_format("%s%s.lock", CBM_PRODUCT_IPC_PREFIX, instance_key);
+    endpoint->startup_v2_lock_name =
+        string_format("%s%s.startup-v2.lock", CBM_PRODUCT_IPC_PREFIX, instance_key);
+    endpoint->lifetime_lock_name =
+        string_format("%s%s.lifetime.lock", CBM_PRODUCT_IPC_PREFIX, instance_key);
     if (!endpoint->runtime_dir || !endpoint->socket_name || !endpoint->socket_anchor_name ||
         !endpoint->socket_identity_name || !endpoint->socket_pending_name || !endpoint->lock_name ||
         !endpoint->startup_v2_lock_name || !endpoint->lifetime_lock_name ||
@@ -1478,7 +1485,7 @@ static int private_directory_tree_open(const char *directory_path) {
                  * directory we are already in — but the message printed
                  * `component`, the child about to be entered. So #1537 read
                  * "ancestor '.cache'" when /Users/<user> was refusing, and
-                 * #1621 read "cbm-daemon-501" when /private/tmp was. Both
+                 * #1621 read "memory-for-ai-daemon-501" when /private/tmp was. Both
                  * reporters inspected a directory that was not the one
                  * refusing, found it clean, and said so — correctly. Naming the
                  * containing directory is the difference between a report we
@@ -4788,7 +4795,8 @@ cbm_daemon_ipc_endpoint_t *cbm_daemon_ipc_endpoint_new(const char *instance_key,
     bool legacy_names_ok =
         cbm_daemon_ipc_windows_legacy_names(parent_utf8, instance_key, legacy_pipe, legacy_startup);
     endpoint->runtime_dir =
-        string_format("%s%scbm-daemon-%s", parent_utf8, has_separator ? "" : "/", instance_key);
+        string_format("%s%s%s%s", parent_utf8, has_separator ? "" : "/",
+                      CBM_PRODUCT_RUNTIME_PREFIX, instance_key);
     endpoint->legacy_pipe_name = legacy_names_ok ? utf8_to_wide(legacy_pipe) : NULL;
     endpoint->legacy_startup_mutex_name = legacy_names_ok ? utf8_to_wide(legacy_startup) : NULL;
     (void)memcpy(endpoint->instance_key, instance_key, sizeof(endpoint->instance_key));
@@ -4871,9 +4879,10 @@ cbm_private_file_lock_status_t cbm_daemon_ipc_private_lock_directory_new(
     return status;
 }
 
-static const char WIN_STARTUP_V2_LOCK_NAME[] = "cbm-startup-v2.lock";
-static const char WIN_PARTICIPANT_GROUP_LOCK_NAME[] = "cbm-participant-group-v1.lock";
-static const char WIN_LIFETIME_LOCK_NAME[] = "cbm-lifetime.lock";
+static const char WIN_STARTUP_V2_LOCK_NAME[] = CBM_PRODUCT_IPC_PREFIX "startup-v2.lock";
+static const char WIN_PARTICIPANT_GROUP_LOCK_NAME[] =
+    CBM_PRODUCT_IPC_PREFIX "participant-group-v1.lock";
+static const char WIN_LIFETIME_LOCK_NAME[] = CBM_PRODUCT_IPC_PREFIX "lifetime.lock";
 
 static void win_private_lock_release_complete(cbm_private_file_lock_t **lock_io) {
     uint64_t deadline = ipc_deadline_after(CBM_DAEMON_IPC_COORDINATION_CLEANUP_MS);

@@ -83,9 +83,9 @@ MCPB_TARGETS = (
     "windows-arm64",
 )
 CANONICAL_ARCHIVES = frozenset(
-    [f"codebase-memory-mcp-{target}.tar.gz" for target in UNIX_TARGETS]
-    + [f"codebase-memory-mcp-{target}.zip" for target in WINDOWS_TARGETS]
-    + [f"codebase-memory-mcp-{target}.mcpb" for target in MCPB_TARGETS]
+    [f"memory-for-ai-{target}.tar.gz" for target in UNIX_TARGETS]
+    + [f"memory-for-ai-{target}.zip" for target in WINDOWS_TARGETS]
+    + [f"memory-for-ai-{target}.mcpb" for target in MCPB_TARGETS]
 )
 # One composition ships; the association column is retained so the schema stays
 # stable for the gate and release-notes consumers.
@@ -324,7 +324,7 @@ def validate_namespace(archive_name: str, names: Iterable[str]) -> Dict[str, str
     # platform detection by name is sound for every container kind.
     windows = "-windows-" in archive_name
     if archive_name.endswith(".mcpb"):
-        binary = "server/codebase-memory-mcp.exe" if windows else "server/codebase-memory-mcp"
+        binary = "server/memory-for-ai.exe" if windows else "server/memory-for-ai"
         fixed = {
             "manifest.json": "runtime",
             binary: "binary",
@@ -332,7 +332,7 @@ def validate_namespace(archive_name: str, names: Iterable[str]) -> Dict[str, str
             "server/THIRD_PARTY_NOTICES.md": "runtime",
         }
     else:
-        binary = "codebase-memory-mcp.exe" if windows else "codebase-memory-mcp"
+        binary = "memory-for-ai.exe" if windows else "memory-for-ai"
         installer = "install.ps1" if windows else "install.sh"
         fixed = {
             binary: "binary",

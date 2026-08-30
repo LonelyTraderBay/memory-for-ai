@@ -131,7 +131,7 @@ static int agent_write_rovo_override(const char *config_path, const char *mcp_pa
 
 static char *agent_deep_same_name_json(size_t depth) {
     static const char prefix[] = "{\"mcpServers\":";
-    static const char leaf[] = "{\"codebase-memory-mcp\":{\"command\":\"foreign\",\"args\":[]}}";
+    static const char leaf[] = "{\"memory-for-ai\":{\"command\":\"foreign\",\"args\":[]}}";
     size_t prefix_length = strlen(prefix);
     size_t leaf_length = strlen(leaf);
     if (depth > (SIZE_MAX - leaf_length - 2U) / (prefix_length + 1U)) {
@@ -221,13 +221,13 @@ TEST(agent_clients_visual_studio_cleanup_survives_missing_command) {
     ASSERT(!cbm_agent_client_detect(CBM_AGENT_CLIENT_VISUAL_STUDIO, &options));
     ASSERT(cbm_agent_client_cleanup_candidate(CBM_AGENT_CLIENT_VISUAL_STUDIO, &options));
 
-    const char *foreign = "{\"servers\":{\"codebase-memory-mcp\":{\"type\":\"stdio\","
+    const char *foreign = "{\"servers\":{\"memory-for-ai\":{\"type\":\"stdio\","
                           "\"command\":\"C:/User/tool.exe\",\"args\":[]}}}\n";
     char *dir = NULL;
     char *path = agent_fixture(foreign, &dir);
     ASSERT_NOT_NULL(path);
     ASSERT_EQ(cbm_agent_client_remove_mcp(CBM_AGENT_CLIENT_VISUAL_STUDIO, path,
-                                          "C:/Tools/codebase-memory-mcp.exe"),
+                                          "C:/Tools/memory-for-ai.exe"),
               CBM_AGENT_EDIT_FOREIGN);
     char *after = agent_read(path);
     ASSERT_NOT_NULL(after);
@@ -339,7 +339,7 @@ TEST(agent_clients_resolve_documented_paths_and_precedence) {
         0);
     ASSERT_STR_EQ(path, "/xdg/gitlab/duo/mcp.json");
     ASSERT_EQ(cbm_agent_client_resolve_path(CBM_AGENT_CLIENT_AMP, &options, path, sizeof(path)), 0);
-    ASSERT_STR_EQ(path, "/home/tester/.config/agents/skills/codebase-memory/mcp.json");
+    ASSERT_STR_EQ(path, "/home/tester/.config/agents/skills/memory-for-ai/mcp.json");
     ASSERT_EQ(cbm_agent_client_resolve_path(CBM_AGENT_CLIENT_DEVIN, &options, path, sizeof(path)),
               0);
     ASSERT_STR_EQ(path, "/home/tester/.config/devin/config.json");
@@ -801,7 +801,7 @@ TEST(agent_clients_cody_uses_literal_dotted_key_without_feature_or_permission_ed
     ASSERT_NULL(strstr(installed, "autoApprove"));
     free(installed);
 
-    const char *foreign = "{\"cody.mcpServers\":{\"codebase-memory-mcp\":{\"command\":\"foreign\","
+    const char *foreign = "{\"cody.mcpServers\":{\"memory-for-ai\":{\"command\":\"foreign\","
                           "\"args\":[]}},\"cody.enabled\":false}\n";
     ASSERT_EQ(th_write_file(path, foreign), 0);
     ASSERT_EQ(cbm_agent_client_install_mcp(CBM_AGENT_CLIENT_SOURCEGRAPH_CODY, path, "/usr/bin/cbm"),
@@ -823,7 +823,7 @@ TEST(agent_clients_json_schemas_are_exact_and_policy_neutral) {
         {CBM_AGENT_CLIENT_KIMI, "\"mcpServers\""},
         {CBM_AGENT_CLIENT_GITLAB_DUO, "\"type\": \"stdio\""},
         {CBM_AGENT_CLIENT_ROVO_DEV, "\"transport\": \"stdio\""},
-        {CBM_AGENT_CLIENT_AMP, "\"codebase-memory-mcp\""},
+        {CBM_AGENT_CLIENT_AMP, "\"memory-for-ai\""},
         {CBM_AGENT_CLIENT_DEVIN, "\"mcpServers\""},
         {CBM_AGENT_CLIENT_TABNINE, "\"mcpServers\""},
         {CBM_AGENT_CLIENT_VISUAL_STUDIO, "\"servers\""},
@@ -875,9 +875,9 @@ TEST(agent_clients_new_standard_json_profiles_preserve_foreign_entries) {
     for (size_t i = 0U; i < sizeof(clients) / sizeof(clients[0]); i++) {
         const char *foreign =
             clients[i] == CBM_AGENT_CLIENT_POCHI
-                ? "{\"mcp\":{\"codebase-memory-mcp\":{\"command\":\"foreign\","
+                ? "{\"mcp\":{\"memory-for-ai\":{\"command\":\"foreign\","
                   "\"args\":[]}}}\n"
-                : "{\"mcpServers\":{\"codebase-memory-mcp\":{\"command\":\"foreign\","
+                : "{\"mcpServers\":{\"memory-for-ai\":{\"command\":\"foreign\","
                   "\"args\":[]}}}\n";
         char *dir = NULL;
         char *path = agent_fixture(foreign, &dir);
@@ -896,7 +896,7 @@ TEST(agent_clients_new_standard_json_profiles_preserve_foreign_entries) {
 
 TEST(agent_clients_refuse_foreign_and_preserve_modified_entries) {
     const char *foreign =
-        "{\"mcpServers\":{\"codebase-memory-mcp\":{\"command\":\"foreign\",\"args\":[]}}}\n";
+        "{\"mcpServers\":{\"memory-for-ai\":{\"command\":\"foreign\",\"args\":[]}}}\n";
     char *dir = NULL;
     char *path = agent_fixture(foreign, &dir);
     ASSERT_NOT_NULL(path);
@@ -986,7 +986,7 @@ TEST(agent_clients_remove_only_canonical_and_missing_is_noop) {
               CBM_AGENT_EDIT_OK);
     char *after = agent_read(path);
     ASSERT_NOT_NULL(after);
-    ASSERT_NULL(strstr(after, "codebase-memory-mcp"));
+    ASSERT_NULL(strstr(after, "memory-for-ai"));
     ASSERT_NOT_NULL(strstr(after, "\"keep\":true"));
     free(after);
     free(path);
@@ -1063,10 +1063,10 @@ TEST(agent_clients_continue_uses_owned_yaml_sequence_item) {
         CBM_AGENT_EDIT_OK);
     char *first = agent_read(path);
     ASSERT_NOT_NULL(first);
-    ASSERT_NOT_NULL(strstr(first, "  - name: codebase-memory-mcp\n"));
+    ASSERT_NOT_NULL(strstr(first, "  - name: memory-for-ai\n"));
     ASSERT_NOT_NULL(strstr(first, "    command: \"/opt/cbm path/#quoted\"\n"));
     ASSERT_NOT_NULL(strstr(first, "  - name: other\n"));
-    ASSERT_EQ(agent_occurrences(first, "name: codebase-memory-mcp"), 1U);
+    ASSERT_EQ(agent_occurrences(first, "name: memory-for-ai"), 1U);
     ASSERT_EQ(
         cbm_agent_client_install_mcp(CBM_AGENT_CLIENT_CONTINUE, path, "/opt/cbm path/#quoted"),
         CBM_AGENT_EDIT_OK);
@@ -1075,7 +1075,7 @@ TEST(agent_clients_continue_uses_owned_yaml_sequence_item) {
     ASSERT_EQ(cbm_agent_client_remove_mcp(CBM_AGENT_CLIENT_CONTINUE, path, "/opt/cbm path/#quoted"),
               CBM_AGENT_EDIT_OK);
     char *removed = agent_read(path);
-    ASSERT_NULL(strstr(removed, "name: codebase-memory-mcp"));
+    ASSERT_NULL(strstr(removed, "name: memory-for-ai"));
     ASSERT_NOT_NULL(strstr(removed, "name: other"));
     free(first);
     free(second);
@@ -1086,7 +1086,7 @@ TEST(agent_clients_continue_uses_owned_yaml_sequence_item) {
 }
 
 TEST(agent_clients_continue_refuses_foreign_same_name_and_nonsequence_section) {
-    const char *foreign = "mcpServers:\n  - name: \"codebase-memory-mcp\"\n"
+    const char *foreign = "mcpServers:\n  - name: \"memory-for-ai\"\n"
                           "    command: foreign\n    args: []\n";
     char *dir = NULL;
     char *path = agent_fixture(foreign, &dir);
@@ -1116,7 +1116,7 @@ TEST(agent_clients_continue_refuses_foreign_same_name_and_nonsequence_section) {
  * added afterwards would have been silently missing for that client. This pins
  * the property that makes generation worth doing: EVERY registry tool appears. */
 TEST(client_adapter_pi_registers_every_registry_tool) {
-    char *js = cbm_client_adapter_pi("/usr/local/bin/codebase-memory-mcp");
+    char *js = cbm_client_adapter_pi("/usr/local/bin/memory-for-ai");
     ASSERT_NOT_NULL(js);
 
     int count = cbm_mcp_tool_count();
@@ -1135,7 +1135,7 @@ TEST(client_adapter_pi_registers_every_registry_tool) {
      * would make every install fail. */
     ASSERT_NULL(strstr(js, CBM_ADAPTER_MARKER_START));
     ASSERT_NULL(strstr(js, CBM_ADAPTER_MARKER_END));
-    ASSERT_NOT_NULL(strstr(js, "Generated by codebase-memory-mcp"));
+    ASSERT_NOT_NULL(strstr(js, "Generated by memory-for-ai"));
     free(js);
     PASS();
 }
@@ -1148,7 +1148,7 @@ TEST(client_adapter_pi_registers_every_registry_tool) {
  * whole time this was broken: it checked WHICH tools were listed, never whether
  * the file Pi loads is loadable. */
 TEST(client_adapter_pi_default_exports_its_factory_issue1550) {
-    char *js = cbm_client_adapter_pi("/usr/local/bin/codebase-memory-mcp");
+    char *js = cbm_client_adapter_pi("/usr/local/bin/memory-for-ai");
     ASSERT_NOT_NULL(js);
     ASSERT_NOT_NULL(strstr(js, "export default function (pi)"));
     /* The old shape must be gone: a bare `export function register(pi)` is the
@@ -1164,7 +1164,7 @@ TEST(client_adapter_pi_default_exports_its_factory_issue1550) {
  * a 422 "missing field parameters", and the tool is uncallable because Pi
  * invokes `execute`, never `run`. Pin the corrected shape. */
 TEST(client_adapter_pi_emits_parameters_and_execute) {
-    char *js = cbm_client_adapter_pi("/usr/local/bin/codebase-memory-mcp");
+    char *js = cbm_client_adapter_pi("/usr/local/bin/memory-for-ai");
     ASSERT_NOT_NULL(js);
     ASSERT_NOT_NULL(strstr(js, "execute: async (toolCallId, params, signal, _onUpdate, ctx) => {"));
     ASSERT_NOT_NULL(strstr(js, ", params, signal ?? ctx?.signal)"));
@@ -1187,7 +1187,7 @@ TEST(client_adapter_pi_emits_parameters_and_execute) {
  * bridge must keep arguments out of process listings and feed the existing
  * stdin transport only after all child handlers are attached. */
 TEST(client_adapter_pi_sends_arguments_over_stdin_issue1834) {
-    char *js = cbm_client_adapter_pi("/usr/local/bin/codebase-memory-mcp");
+    char *js = cbm_client_adapter_pi("/usr/local/bin/memory-for-ai");
     ASSERT_NOT_NULL(js);
 
     const char *spawn = strstr(js, "spawn(BIN, ['cli', '--json', tool], {");
@@ -1225,7 +1225,7 @@ TEST(client_adapter_pi_sends_arguments_over_stdin_issue1834) {
  * must throw rather than return a result without content; AbortSignal must
  * kill the cli child. String-shape only; a live Pi process is not gated. */
 TEST(client_adapter_pi_wraps_result_and_honors_abort) {
-    char *js = cbm_client_adapter_pi("/usr/local/bin/codebase-memory-mcp");
+    char *js = cbm_client_adapter_pi("/usr/local/bin/memory-for-ai");
     ASSERT_NOT_NULL(js);
     ASSERT_NOT_NULL(strstr(js, "return { content, details: result ?? {} };"));
     ASSERT_NOT_NULL(strstr(js, "if (result && typeof result === 'object' && result.error)"));
@@ -1279,7 +1279,7 @@ TEST(client_adapter_escapes_windows_paths_and_quotes) {
  * PreToolUse. #616's payload omitted it, so the plugin produced zero bytes and
  * was a silent no-op for six weeks. Pin the field into the generated payload. */
 TEST(client_adapter_opencode_sends_the_required_hook_event) {
-    char *js = cbm_client_adapter_opencode("/usr/local/bin/codebase-memory-mcp");
+    char *js = cbm_client_adapter_opencode("/usr/local/bin/memory-for-ai");
     ASSERT_NOT_NULL(js);
     ASSERT_NOT_NULL(strstr(js, "hook_event_name: 'PreToolUse'"));
     ASSERT_NOT_NULL(strstr(js, "tool.execute.after"));

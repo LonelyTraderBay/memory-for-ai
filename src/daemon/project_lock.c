@@ -8,7 +8,7 @@
 
 enum { PROJECT_LOCK_KEY_CAP = 4096 };
 
-static const char PROJECT_SET_KEY[] = "cbm-project-set-v1";
+static const char PROJECT_SET_KEY[] = "mfa-project-set-v1";
 
 struct cbm_project_lock_manager {
     cbm_private_lock_directory_t *directory;
@@ -24,7 +24,7 @@ static bool project_lock_key(const char *project, char out[PROJECT_LOCK_KEY_CAP]
     if (!project || !project[0] || strcmp(project, "*") == 0) {
         return false;
     }
-    static const char prefix[] = "cbm-project-v1:";
+    static const char prefix[] = "mfa-project-v1:";
     size_t prefix_length = sizeof(prefix) - 1U;
     size_t project_length = strnlen(project, PROJECT_LOCK_KEY_CAP);
     if (project_length == 0 || project_length >= PROJECT_LOCK_KEY_CAP ||

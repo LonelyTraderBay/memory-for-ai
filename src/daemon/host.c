@@ -16,6 +16,7 @@
 #include "foundation/log.h"
 #include "foundation/mem.h"
 #include "foundation/platform.h"
+#include "foundation/product.h"
 #include "foundation/secure_random.h"
 #include "foundation/sha256.h"
 #include "mcp/index_supervisor.h"
@@ -135,7 +136,8 @@ static bool host_log_open(char conflict_log_out[HOST_PATH_CAP]) {
         return false;
     }
     g_host_log_file =
-        cbm_daemon_ipc_private_log_open(logs, "cbm-daemon.log", HOST_OPERATION_LOG_CAP);
+        cbm_daemon_ipc_private_log_open(logs, CBM_PRODUCT_NAME "-daemon.log",
+                                        HOST_OPERATION_LOG_CAP);
     if (!g_host_log_file) {
         conflict_log_out[0] = '\0';
         return false;
@@ -953,7 +955,7 @@ int cbm_daemon_host_run(const cbm_daemon_host_config_t *config) {
     cbm_ui_log_init();
     char conflict_log[HOST_PATH_CAP];
     if (!host_log_open(conflict_log)) {
-        (void)fprintf(stderr, "codebase-memory: daemon log path is not private or safe\n");
+        (void)fprintf(stderr, "memory-for-ai: daemon log path is not private or safe\n");
         return -1;
     }
     cbm_version_cohort_manager_t *cohort_manager = cbm_version_cohort_manager_new(config->endpoint);
@@ -976,7 +978,7 @@ int cbm_daemon_host_run(const cbm_daemon_host_config_t *config) {
         if (cohort_status == CBM_VERSION_COHORT_CONFLICT) {
             (void)cbm_version_cohort_log_conflict(&cohort_conflict);
         }
-        (void)fprintf(stderr, "codebase-memory: %s\n",
+        (void)fprintf(stderr, "memory-for-ai: %s\n",
                       formatted ? message : "daemon exact-build admission failed");
         host_cohort_close(&cohort_lease, &cohort_manager);
         host_log_close();
@@ -985,7 +987,7 @@ int cbm_daemon_host_run(const cbm_daemon_host_config_t *config) {
     cbm_daemon_ipc_participant_guard_t *participant_guard = NULL;
     if (cbm_daemon_ipc_participant_guard_try_join(config->endpoint, &participant_guard) != 1) {
         cbm_log_error("daemon.start_failed", "component", "participant");
-        (void)fprintf(stderr, "codebase-memory: daemon participant admission failed\n");
+        (void)fprintf(stderr, "memory-for-ai: daemon participant admission failed\n");
         host_participant_guard_close(&participant_guard);
         host_cohort_close(&cohort_lease, &cohort_manager);
         host_log_close();

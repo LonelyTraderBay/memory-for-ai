@@ -155,13 +155,13 @@ TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate) {
              "%s/cbm-code-discovery-gate", hooks_dir);
     rp409_write_file(script_path,
         "#!/bin/bash\n"
-        "# Gate hook: nudges Claude toward codebase-memory-mcp for code discovery.\n"
+        "# Gate hook: nudges Claude toward memory-for-ai for code discovery.\n"
         "# First Grep/Glob/Read per session -> block. Subsequent -> allow.\n"
         "# PPID = Claude Code process PID, unique per session.\n"
         "GATE=/tmp/cbm-code-discovery-gate-$PPID\n"
         "if [ -f \"$GATE\" ]; then exit 0; fi\n"
         "touch \"$GATE\"\n"
-        "echo 'BLOCKED: use codebase-memory-mcp' >&2\n"
+        "echo 'BLOCKED: use memory-for-ai' >&2\n"
         "exit 2\n");
 
     /* Pre-seed settings.json with a stale CMM hook entry (old matcher). */
@@ -178,7 +178,7 @@ TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate) {
      * install_claude_code_config in src/cli/cli.c lines 3045-3046). */
     int rc = cbm_upsert_claude_hooks(settings_path);
     ASSERT_EQ(rc, 0);
-    cbm_install_hook_gate_script(tmpdir, "/usr/local/bin/codebase-memory-mcp");
+    cbm_install_hook_gate_script(tmpdir, "/usr/local/bin/memory-for-ai");
 
     /* ── Assert the gate script was OVERWRITTEN with the non-blocking shim ── */
     const char *script_data = rp409_read_file(script_path);

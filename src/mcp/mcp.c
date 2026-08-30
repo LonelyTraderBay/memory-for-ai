@@ -60,6 +60,7 @@ enum {
 #include "foundation/mem.h"
 #include "foundation/diagnostics.h"
 #include "foundation/platform.h"
+#include "foundation/product.h"
 #include "foundation/compat.h"
 #include "foundation/compat_fs.h"
 #include "foundation/compat_thread.h"
@@ -409,7 +410,7 @@ static const tool_def_t TOOLS[] = {
      "\"Override the derived project name. Non-ASCII bytes are encoded and unsafe path characters "
      "are normalized.\"},"
      "\"persistence\":{\"type\":\"boolean\",\"default\":false,\"description\":"
-     "\"Write compressed artifact to .codebase-memory/graph.db.zst for team sharing. "
+     "\"Write compressed artifact to .memory-for-ai/graph.db.zst for team sharing. "
      "Teammates can bootstrap from the artifact instead of full re-indexing.\"}"
      "},\"required\":[\"repo_path\"]}"},
 
@@ -1349,7 +1350,7 @@ static char *cbm_mcp_initialize_response_for_profile(const char *params_json,
     yyjson_mut_obj_add_str(doc, root, "protocolVersion", version);
 
     yyjson_mut_val *impl = yyjson_mut_obj(doc);
-    yyjson_mut_obj_add_str(doc, impl, "name", "codebase-memory-mcp");
+    yyjson_mut_obj_add_str(doc, impl, "name", "memory-for-ai");
     yyjson_mut_obj_add_str(doc, impl, "version", cbm_cli_get_version());
     yyjson_mut_obj_add_val(doc, root, "serverInfo", impl);
 
@@ -1491,7 +1492,7 @@ static const char *cache_dir(char *buf, size_t bufsz);
 static bool is_project_db_file(const char *name, size_t len);
 bool cbm_validate_project_name(const char *project);
 
-/* #1025: agents naturally pass the repo FOLDER name ("codebase-memory-mcp"),
+/* #1025: agents naturally pass the repo FOLDER name ("memory-for-ai"),
  * but indexed project names derive from the full path
  * (E:\project\graph\x -> "E-project-graph-x"), so the exact lookup fails
  * while list_projects clearly shows the project. When no <project>.db exists,
@@ -2498,7 +2499,7 @@ static bool project_has_adr(cbm_store_t *store, const char *project, const char 
     }
 
     char adr_path[CBM_SZ_4K];
-    snprintf(adr_path, sizeof(adr_path), "%s/.codebase-memory/adr.md", root_path);
+    snprintf(adr_path, sizeof(adr_path), "%s/.memory-for-ai/adr.md", root_path);
     struct stat adr_st;
     return stat(adr_path, &adr_st) == 0;
 }
@@ -7945,7 +7946,7 @@ static bool add_persisted_failure_summaries(yyjson_mut_doc *doc, yyjson_mut_val 
 
 /* Write the FULL (uncapped) skip list to a per-run logfile — ONLY when >=1 file
  * was skipped (no logfile on a clean run). Location:
- *   $CBM_INDEX_LOG (override) else <cache_dir>/logs/<project>-<epoch>.log
+ *   $MFA_INDEX_LOG (override) else <cache_dir>/logs/<project>-<epoch>.log
  * Returns true and fills out_path on success. */
 static bool write_skip_logfile(const char *project, const cbm_file_error_t *errs, int count,
                                char *out_path, size_t out_sz) {
@@ -7953,7 +7954,7 @@ static bool write_skip_logfile(const char *project, const cbm_file_error_t *errs
         return false;
     }
     char path[CBM_SZ_1K];
-    const char *override = getenv("CBM_INDEX_LOG");
+    const char *override = getenv(CBM_PRODUCT_INDEX_LOG_ENV);
     if (override && override[0]) {
         snprintf(path, sizeof(path), "%s", override);
     } else {
@@ -7978,7 +7979,7 @@ static bool write_skip_logfile(const char *project, const cbm_file_error_t *errs
             partials++;
         }
     }
-    (void)fprintf(f, "# codebase-memory-mcp index coverage report\n");
+    (void)fprintf(f, "# memory-for-ai index coverage report\n");
     (void)fprintf(f, "# project=%s skipped=%d parse_partial=%d\n", project ? project : "",
                   count - partials, partials);
     (void)fprintf(f, "# columns: phase\treason\tpath\n");
@@ -8084,7 +8085,7 @@ static bool build_index_success_response(cbm_mcp_server_t *srv, yyjson_mut_doc *
     yyjson_mut_obj_add_bool(doc, root, "artifact_present", has_artifact);
     if (persistence && has_artifact) {
         yyjson_mut_obj_add_str(doc, root, "artifact_hint",
-                               "Persistent artifact written to .codebase-memory/graph.db.zst. "
+                               "Persistent artifact written to .memory-for-ai/graph.db.zst. "
                                "Commit this file to share the index with teammates.");
     }
 
@@ -11814,7 +11815,7 @@ static void adr_list_sections_from_content(yyjson_mut_doc *doc, yyjson_mut_val *
     yyjson_mut_obj_add_val(doc, root_obj, "sections", sections);
 }
 
-/* Read the legacy file-based ADR (<root>/.codebase-memory/adr.md), used by
+/* Read the legacy file-based ADR (<root>/.memory-for-ai/adr.md), used by
  * older versions. Returns a heap buffer (caller frees) or NULL if missing/
  * empty. Kept only to migrate old ADRs into the store (#256). */
 static char *adr_read_legacy_file(const char *root_path) {
@@ -11822,7 +11823,7 @@ static char *adr_read_legacy_file(const char *root_path) {
         return NULL;
     }
     char adr_path[CBM_SZ_4K];
-    snprintf(adr_path, sizeof(adr_path), "%s/.codebase-memory/adr.md", root_path);
+    snprintf(adr_path, sizeof(adr_path), "%s/.memory-for-ai/adr.md", root_path);
     FILE *fp = cbm_fopen(adr_path, "r");
     if (!fp) {
         return NULL;
@@ -12133,7 +12134,7 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
     }
 
     /* One-time migration: older versions wrote ADRs to a file at
-     * <root>/.codebase-memory/adr.md. A read never waits for the project lease:
+     * <root>/.memory-for-ai/adr.md. A read never waits for the project lease:
      * it returns the legacy content immediately and attempts migration only if
      * a nonblocking acquire succeeds. */
     cbm_adr_t adr;
@@ -12608,7 +12609,7 @@ static void maybe_auto_index(cbm_mcp_server_t *srv) {
 
     if (!auto_index) {
         cbm_log_info("autoindex.skip", "reason", "disabled", "hint",
-                     "run: codebase-memory-mcp config set auto_index true");
+                     "run: memory-for-ai config set auto_index true");
         return;
     }
 

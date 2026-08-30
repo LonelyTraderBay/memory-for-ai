@@ -7,6 +7,7 @@
 #include "daemon/service.h"
 #include "foundation/compat.h"
 #include "foundation/platform.h"
+#include "foundation/product.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -216,16 +217,16 @@ bool cbm_daemon_process_role_requires_client(cbm_daemon_process_role_t role) {
  * command needs this endpoint, `config list` included, so the operator cannot
  * even reconfigure their way out. The only relocation hook was
  * CBM_TEST_DAEMON_RUNTIME_PARENT, compiled out unless CBM_ENABLE_TEST_SEAMS is
- * defined, so a test build started while the shipped build did not. CBM_CACHE_DIR
+ * defined, so a test build started while the shipped build did not. MFA_CACHE_DIR
  * does not help either — it moves the cache, never the rendezvous.
  *
- * CBM_RUNTIME_DIR does NOT relax the check. The directory it names goes through
+ * MFA_RUNTIME_DIR does NOT relax the check. The directory it names goes through
  * exactly the same validation as the default; the operator only chooses an
  * ancestry that passes, and a value that fails is refused rather than ignored.
  * cbm_safe_getenv never truncates: a value too long for the buffer is reported
  * as absent, so no half a path can ever become a runtime parent. */
 static const char *bootstrap_runtime_parent_override(char *buffer, size_t capacity) {
-    const char *value = cbm_safe_getenv("CBM_RUNTIME_DIR", buffer, capacity, NULL);
+    const char *value = cbm_safe_getenv(CBM_PRODUCT_RUNTIME_ENV, buffer, capacity, NULL);
     return value && value[0] != '\0' ? value : NULL;
 }
 
@@ -280,7 +281,7 @@ static uint64_t bootstrap_deadline_after(uint32_t timeout_ms) {
 
 static _Noreturn void bootstrap_cleanup_fail_stop(const char *component) {
     (void)fprintf(stderr,
-                  "codebase-memory-mcp: coordination cleanup failed (%s); "
+                  "memory-for-ai: coordination cleanup failed (%s); "
                   "terminating so the OS releases retained claims\n",
                   component ? component : "unknown");
     (void)fflush(stderr);
@@ -347,7 +348,7 @@ static cbm_daemon_bootstrap_status_t bootstrap_finish_probe(
                            ? connect_result->message
                            : "CBM could not start because a conflicting CBM process is active; "
                              "close all CBM sessions and commands, then retry. If a permanent "
-                             "daemon from another build is running, `codebase-memory-mcp daemon "
+                             "daemon from another build is running, `memory-for-ai daemon "
                              "stop` retires it");
         if (ops->visible_diagnostic) {
             ops->visible_diagnostic(ops->context, result->message);
@@ -991,7 +992,7 @@ static void bootstrap_production_diagnostic(void *context, const char *message) 
     bootstrap_production_context_t *production = context;
 #ifdef _WIN32
     if (production && production->spawn_error != ERROR_SUCCESS) {
-        (void)fprintf(stderr, "codebase-memory-mcp: %s (daemon launch error %lu)\n",
+        (void)fprintf(stderr, "memory-for-ai: %s (daemon launch error %lu)\n",
                       message ? message : "daemon startup failed",
                       (unsigned long)production->spawn_error);
         (void)fflush(stderr);
@@ -999,7 +1000,7 @@ static void bootstrap_production_diagnostic(void *context, const char *message) 
     }
 #elif defined(__APPLE__)
     if (production && production->spawn_error != 0) {
-        (void)fprintf(stderr, "codebase-memory-mcp: %s (daemon launch: %s)\n",
+        (void)fprintf(stderr, "memory-for-ai: %s (daemon launch: %s)\n",
                       message ? message : "daemon startup failed",
                       strerror(production->spawn_error));
         (void)fflush(stderr);
@@ -1008,7 +1009,7 @@ static void bootstrap_production_diagnostic(void *context, const char *message) 
 #else
     (void)production;
 #endif
-    (void)fprintf(stderr, "codebase-memory-mcp: %s\n", message ? message : "daemon startup failed");
+    (void)fprintf(stderr, "memory-for-ai: %s\n", message ? message : "daemon startup failed");
     (void)fflush(stderr);
 }
 

@@ -435,7 +435,7 @@ TEST(httpd_resolves_bare_binary_path_from_path) {
     ASSERT_NOT_NULL(td);
 
     char exe[512];
-    snprintf(exe, sizeof(exe), "%s/codebase-memory-mcp", td);
+    snprintf(exe, sizeof(exe), "%s/memory-for-ai", td);
     FILE *f = fopen(exe, "w");
     ASSERT_NOT_NULL(f);
     fputs("#!/bin/sh\nexit 0\n", f);
@@ -447,7 +447,7 @@ TEST(httpd_resolves_bare_binary_path_from_path) {
 
     char resolved[1024];
     ASSERT_TRUE(
-        cbm_http_server_resolve_binary_path("codebase-memory-mcp", resolved, sizeof(resolved)));
+        cbm_http_server_resolve_binary_path("memory-for-ai", resolved, sizeof(resolved)));
     ASSERT_STR_EQ(resolved, exe);
 
     if (old_path) {
@@ -754,12 +754,12 @@ static int ui_delete_fixture_init(ui_delete_fixture_t *fx) {
     snprintf(fx->cache_dir, sizeof(fx->cache_dir), "%s/cache", fx->tmpdir);
     snprintf(fx->root_dir, sizeof(fx->root_dir), "%s/root", fx->tmpdir);
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     fx->saved_cache_dir = saved ? strdup(saved) : NULL;
     if (th_mkdir_p(fx->cache_dir) != 0 || th_mkdir_p(fx->root_dir) != 0) {
         return -1;
     }
-    cbm_setenv("CBM_CACHE_DIR", fx->cache_dir, 1);
+    cbm_setenv("MFA_CACHE_DIR", fx->cache_dir, 1);
 
     fx->store = cbm_store_open_memory();
     fx->watcher = cbm_watcher_new(fx->store, NULL, NULL);
@@ -772,10 +772,10 @@ static void ui_delete_fixture_cleanup(ui_delete_fixture_t *fx) {
     if (fx->store)
         cbm_store_close(fx->store);
     if (fx->saved_cache_dir) {
-        cbm_setenv("CBM_CACHE_DIR", fx->saved_cache_dir, 1);
+        cbm_setenv("MFA_CACHE_DIR", fx->saved_cache_dir, 1);
         free(fx->saved_cache_dir);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     th_cleanup(fx->tmpdir);
 }

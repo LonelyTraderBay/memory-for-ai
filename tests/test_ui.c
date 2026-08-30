@@ -88,8 +88,8 @@ TEST(config_save_atomically_replaces_a_complete_generation) {
     char *td = cbm_mkdtemp(tmpdir);
     ASSERT_NOT_NULL(td);
 
-    char *old_cache = getenv("CBM_CACHE_DIR") ? strdup(getenv("CBM_CACHE_DIR")) : NULL;
-    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", td, 1), 0);
+    char *old_cache = getenv("MFA_CACHE_DIR") ? strdup(getenv("MFA_CACHE_DIR")) : NULL;
+    ASSERT_EQ(cbm_setenv("MFA_CACHE_DIR", td, 1), 0);
 
     cbm_ui_config_t old_generation = {
         .ui_enabled = false,
@@ -117,7 +117,7 @@ TEST(config_save_atomically_replaces_a_complete_generation) {
         .ui_port = 22222,
     };
     /* Capture everything, clean up, and only then assert: an assert firing
-     * before the env restore leaks CBM_CACHE_DIR into every later test in the
+     * before the env restore leaks MFA_CACHE_DIR into every later test in the
      * process, turning one regression into a cascade. */
     bool saved = cbm_ui_config_save(&new_generation);
 
@@ -138,9 +138,9 @@ TEST(config_save_atomically_replaces_a_complete_generation) {
     cbm_ui_config_load(&loaded);
 
     if (old_cache) {
-        (void)cbm_setenv("CBM_CACHE_DIR", old_cache, 1);
+        (void)cbm_setenv("MFA_CACHE_DIR", old_cache, 1);
     } else {
-        (void)cbm_unsetenv("CBM_CACHE_DIR");
+        (void)cbm_unsetenv("MFA_CACHE_DIR");
     }
     free(old_cache);
     (void)th_rmtree(td);
@@ -202,7 +202,7 @@ TEST(config_corrupt_file) {
 
     /* Ensure directory exists (portable — no system("mkdir -p")) */
     char dir[1024];
-    snprintf(dir, sizeof(dir), "%s/.cache/codebase-memory-mcp", td);
+    snprintf(dir, sizeof(dir), "%s/.cache/memory-for-ai", td);
     cbm_mkdir_p(dir, 0755);
 
     FILE *f = fopen(path, "w");
@@ -238,7 +238,7 @@ TEST(config_missing_fields) {
     cbm_ui_config_path(path, (int)sizeof(path));
 
     char dir[1024];
-    snprintf(dir, sizeof(dir), "%s/.cache/codebase-memory-mcp", td);
+    snprintf(dir, sizeof(dir), "%s/.cache/memory-for-ai", td);
     cbm_mkdir_p(dir, 0755);
 
     FILE *f = fopen(path, "w");

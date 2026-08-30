@@ -156,7 +156,7 @@ struct cbm_pipeline {
     cbm_index_mode_t mode;
     atomic_int cancelled_storage;
     atomic_int *cancelled;
-    bool persistence; /* write .codebase-memory/graph.db.zst after indexing */
+    bool persistence; /* write .memory-for-ai/graph.db.zst after indexing */
 
     /* Indexing state (set during run) */
     cbm_gbuf_t *gbuf;

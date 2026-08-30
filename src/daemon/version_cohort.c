@@ -43,10 +43,10 @@ enum {
 static const unsigned char VERSION_COHORT_RECORD_MAGIC[VERSION_COHORT_RECORD_MAGIC_SIZE] = {
     'C', 'B', 'M', 'C', 'O', 'H', 2, 0,
 };
-static const char VERSION_COHORT_ADMISSION_FILE[] = "cbm-version-cohort-admission-v1.lock";
-static const char VERSION_COHORT_LIFETIME_FILE[] = "cbm-version-cohort-lifetime-v1.lock";
-static const char VERSION_COHORT_MAINTENANCE_FILE[] = "cbm-version-cohort-maintenance-v1.lock";
-static const char VERSION_COHORT_DAEMON_FILE[] = "cbm-version-cohort-daemon-v1.lock";
+static const char VERSION_COHORT_ADMISSION_FILE[] = "mfa-version-cohort-admission-v1.lock";
+static const char VERSION_COHORT_LIFETIME_FILE[] = "mfa-version-cohort-lifetime-v1.lock";
+static const char VERSION_COHORT_MAINTENANCE_FILE[] = "mfa-version-cohort-maintenance-v1.lock";
+static const char VERSION_COHORT_DAEMON_FILE[] = "mfa-version-cohort-daemon-v1.lock";
 
 struct cbm_version_cohort_manager {
     cbm_private_lock_directory_t *directory;

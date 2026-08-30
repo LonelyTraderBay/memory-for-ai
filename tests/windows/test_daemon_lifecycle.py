@@ -15,7 +15,7 @@ suite (the Windows leg's test-infra hang sensitivity is on record).
 Exit code: 0 == lifecycle behaves (green), 1 == regression, 2 == setup error.
 
 Usage:
-    python test_daemon_lifecycle.py <path-to-codebase-memory-mcp[.exe]>
+    python test_daemon_lifecycle.py <path-to-memory-for-ai[.exe]>
 """
 import os
 import re
@@ -26,7 +26,7 @@ import tempfile
 
 def run_cli(binary, cache, args, timeout=60):
     env = dict(os.environ)
-    env["CBM_CACHE_DIR"] = cache
+    env["MFA_CACHE_DIR"] = cache
     return subprocess.run([binary] + args, capture_output=True, timeout=timeout, env=env)
 
 

@@ -13,7 +13,7 @@
 #include <string.h>
 
 static const char *HOME = "/Users/dev";
-static const char *CACHE = "/Users/dev/.cache/codebase-memory-mcp";
+static const char *CACHE = "/Users/dev/.cache/memory-for-ai";
 
 TEST(ws_depth_counts_components_below_the_volume) {
     ASSERT_EQ(cbm_workspace_path_depth("/"), 0);

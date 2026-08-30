@@ -424,7 +424,7 @@ TEST(config_json_like_preserves_jsonc_comments) {
                            "}\n";
     ASSERT_EQ(jl_write(fixture.path, original), 0);
     const char *path[] = {"mcpServers"};
-    ASSERT_EQ(cbm_json_like_upsert_entry(fixture.path, path, 1U, "codebase-memory",
+    ASSERT_EQ(cbm_json_like_upsert_entry(fixture.path, path, 1U, "memory-for-ai",
                                          "{\"command\":\"cbm\"}"),
               0);
     char *content = jl_read(fixture.path);
@@ -433,7 +433,7 @@ TEST(config_json_like_preserves_jsonc_comments) {
     ASSERT(strstr(content, "/* retained server */") != NULL);
     ASSERT(strstr(content, "\"theme\": \"dark\"") != NULL);
     ASSERT(strstr(content, "\"other\": {\"command\": \"other\"}") != NULL);
-    ASSERT(strstr(content, "\"codebase-memory\": {\"command\":\"cbm\"}") != NULL);
+    ASSERT(strstr(content, "\"memory-for-ai\": {\"command\":\"cbm\"}") != NULL);
     free(content);
     jl_fixture_close(&fixture);
     PASS();
@@ -446,20 +446,20 @@ TEST(config_json_like_openclaw_json5_nested_servers) {
         "{ theme: 'dark', mcp: { servers: { other: { command: 'other' }, }, }, }";
     ASSERT_EQ(jl_write(fixture.path, original), 0);
     const char *path[] = {"mcp", "servers"};
-    ASSERT_EQ(cbm_json_like_upsert_entry(fixture.path, path, 2U, "codebase-memory",
+    ASSERT_EQ(cbm_json_like_upsert_entry(fixture.path, path, 2U, "memory-for-ai",
                                          "{\"command\":\"cbm\",\"args\":[]}"),
               0);
     char *content = jl_read(fixture.path);
     ASSERT_NOT_NULL(content);
     ASSERT(strstr(content, "theme: 'dark'") != NULL);
     ASSERT(strstr(content, "other: { command: 'other' }") != NULL);
-    ASSERT(strstr(content, "\"codebase-memory\"") != NULL);
+    ASSERT(strstr(content, "\"memory-for-ai\"") != NULL);
     free(content);
 
-    ASSERT_EQ(cbm_json_like_remove_entry(fixture.path, path, 2U, "codebase-memory"), 0);
+    ASSERT_EQ(cbm_json_like_remove_entry(fixture.path, path, 2U, "memory-for-ai"), 0);
     content = jl_read(fixture.path);
     ASSERT_NOT_NULL(content);
-    ASSERT(strstr(content, "codebase-memory") == NULL);
+    ASSERT(strstr(content, "memory-for-ai") == NULL);
     ASSERT(strstr(content, "theme: 'dark'") != NULL);
     ASSERT(strstr(content, "other: { command: 'other' }") != NULL);
     free(content);
@@ -472,7 +472,7 @@ TEST(config_json_like_creates_missing_nested_path) {
     ASSERT_EQ(jl_fixture_open(&fixture), 0);
     ASSERT_EQ(jl_write(fixture.path, "{\n  \"theme\": \"dark\"\n}\n"), 0);
     const char *path[] = {"mcp", "servers"};
-    ASSERT_EQ(cbm_json_like_upsert_entry(fixture.path, path, 2U, "codebase-memory",
+    ASSERT_EQ(cbm_json_like_upsert_entry(fixture.path, path, 2U, "memory-for-ai",
                                          "{\"command\":\"cbm\"}"),
               0);
     char *content = jl_read(fixture.path);
@@ -480,7 +480,7 @@ TEST(config_json_like_creates_missing_nested_path) {
     ASSERT(strstr(content, "\"theme\": \"dark\"") != NULL);
     ASSERT(strstr(content, "\"mcp\": {") != NULL);
     ASSERT(strstr(content, "\"servers\": {") != NULL);
-    ASSERT(strstr(content, "\"codebase-memory\": {\"command\":\"cbm\"}") != NULL);
+    ASSERT(strstr(content, "\"memory-for-ai\": {\"command\":\"cbm\"}") != NULL);
     free(content);
     jl_fixture_close(&fixture);
     PASS();
@@ -644,7 +644,7 @@ TEST(config_json_like_top_level_array_unique_string) {
                            "    // keep this user comment\n"
                            "  ],\n"
                            "}\n";
-    const char *owned = "~/.config/kilo/rules/codebase-memory-mcp.md";
+    const char *owned = "~/.config/kilo/rules/memory-for-ai.md";
     ASSERT_EQ(jl_write(fixture.path, original), 0);
     ASSERT_EQ(cbm_json_like_add_unique_string(fixture.path, "instructions", owned), 0);
     char *first = jl_read(fixture.path);

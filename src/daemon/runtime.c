@@ -1812,7 +1812,7 @@ static void *runtime_connection_worker(void *opaque) {
      *     ALREADY proved semantic version, build fingerprint, protocol/store/
      *     feature ABI and cache root in the HELLO exchange above — rejecting on
      *     top of that traded a real compatibility proof for an unavailable one,
-     *     and made `npx codebase-memory-mcp` unusable with the daemon. Admit,
+     *     and made `npx memory-for-ai` unusable with the daemon. Admit,
      *     and say so out loud so the weaker check is never invisible. */
     if (!peer_image_verified && !peer_image_fingerprinted) {
         cbm_log_warn("daemon.client_image_unverifiable_admitted", "reason", "image_unverifiable",

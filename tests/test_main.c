@@ -206,10 +206,10 @@ static bool tf_setup_cache_sentinel(void) {
         return false;
     }
     /* Legacy integration fixtures derive DB paths from HOME, while production
-     * cache_dir() prefers CBM_CACHE_DIR. A private HOME plus no inherited cache
+     * cache_dir() prefers MFA_CACHE_DIR. A private HOME plus no inherited cache
      * override keeps both conventions pointed at the same isolated tree. */
     cbm_setenv("HOME", tf_home_sentinel, 1);
-    cbm_unsetenv("CBM_CACHE_DIR");
+    cbm_unsetenv("MFA_CACHE_DIR");
     for (size_t i = 0U; i < sizeof(tf_client_home_overrides) / sizeof(tf_client_home_overrides[0]);
          i++) {
         cbm_unsetenv(tf_client_home_overrides[i]);
@@ -889,7 +889,7 @@ int main(int argc, char **argv) {
     /* Installation tests use this executable as a structurally real candidate.
      * Mirror the production binary's minimal verification contract. */
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        (void)puts("codebase-memory-mcp test-runner");
+        (void)puts("memory-for-ai test-runner");
         return 0;
     }
     int mcp_idxfailclosed_rc = tf_maybe_run_mcp_idxfailclosed_probe(argc, argv);
@@ -972,7 +972,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!g_list_only) {
-        printf("\n  codebase-memory-mcp  C test suite\n");
+        printf("\n  memory-for-ai  C test suite\n");
     }
 
     /* Foundation */

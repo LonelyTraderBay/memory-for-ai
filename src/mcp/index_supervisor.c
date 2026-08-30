@@ -10,6 +10,7 @@
 #include "foundation/log.h"
 #include "foundation/platform.h" /* cbm_safe_getenv, path normalization */
 #include "foundation/profile.h"  /* cbm_profile_active (keep worker log under CBM_PROFILE) */
+#include "foundation/product.h"
 #include "ui/http_server.h"      /* cbm_http_server_resolve_binary_path */
 
 #include <stdio.h>
@@ -521,7 +522,8 @@ static void worker_result_init(cbm_index_worker_result_t *result) {
  * static buffer, which is unsuitable for concurrent daemon starts. */
 static bool worker_cache_dir(char out[INDEX_WORKER_PATH_CAP]) {
     char configured[INDEX_WORKER_PATH_CAP] = {0};
-    if (cbm_safe_getenv("CBM_CACHE_DIR", configured, sizeof(configured), NULL) && configured[0]) {
+    if (cbm_safe_getenv(CBM_PRODUCT_CACHE_ENV, configured, sizeof(configured), NULL) &&
+        configured[0]) {
         int written = snprintf(out, INDEX_WORKER_PATH_CAP, "%s", configured);
         if (written <= 0 || written >= INDEX_WORKER_PATH_CAP) {
             return false;
@@ -536,7 +538,8 @@ static bool worker_cache_dir(char out[INDEX_WORKER_PATH_CAP]) {
     if (!home[0]) {
         return false;
     }
-    int written = snprintf(out, INDEX_WORKER_PATH_CAP, "%s/.cache/codebase-memory-mcp", home);
+    int written = snprintf(out, INDEX_WORKER_PATH_CAP, "%s/.cache/%s", home,
+                           CBM_PRODUCT_CACHE_DIR_NAME);
     if (written <= 0 || written >= INDEX_WORKER_PATH_CAP) {
         return false;
     }

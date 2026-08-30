@@ -30,7 +30,7 @@ each other and from any interactive CBM use on the host.
 Exit code: 0 == all sections green, 1 == regression, 2 == setup error.
 
 Usage:
-    python test_daemon_stability.py <path-to-codebase-memory-mcp[.exe]>
+    python test_daemon_stability.py <path-to-memory-for-ai[.exe]>
 """
 import json
 import os
@@ -48,7 +48,7 @@ STATUS_POLL_S = 0.5
 
 def run_cli(binary, cache, args, stdin=None, timeout=90):
     env = dict(os.environ)
-    env["CBM_CACHE_DIR"] = cache
+    env["MFA_CACHE_DIR"] = cache
     return subprocess.run([binary] + args, capture_output=True, timeout=timeout,
                           env=env, input=stdin)
 
@@ -206,7 +206,7 @@ def section_stop_refuses_busy(binary, work):
             print("SETUP FAIL: permanent daemon did not start for the busy-stop check")
             return False
         env = dict(os.environ)
-        env["CBM_CACHE_DIR"] = cache
+        env["MFA_CACHE_DIR"] = cache
         session = subprocess.Popen([binary], stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                    env=env)

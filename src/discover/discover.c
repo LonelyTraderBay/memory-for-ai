@@ -49,7 +49,7 @@ static const char *ALWAYS_SKIP_DIRS[] = {
     /* Deploy */
     ".vercel", ".netlify", "deploy", "deployed",
     /* Misc */
-    ".codebase-memory", ".qdrant_code_embeddings", ".tmp", "vendor", "vendored", NULL};
+    ".memory-for-ai", ".qdrant_code_embeddings", ".tmp", "vendor", "vendored", NULL};
 
 static const char *FAST_SKIP_DIRS[] = {
     "generated", "gen",           "auto-generated", "fixtures",     "testdata",    "test_data",
@@ -577,7 +577,7 @@ static void walk_cache_dir_snapshot(void) {
 }
 
 /* The cache directory holds every indexed project's graph database. When a custom
- * CBM_CACHE_DIR sits inside a repository — which happens in tests and is legal in
+ * MFA_CACHE_DIR sits inside a repository — which happens in tests and is legal in
  * production — walking into it would pull other projects' databases into this
  * project's file list. Prune it by absolute path.
  *

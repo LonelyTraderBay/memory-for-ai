@@ -41,7 +41,7 @@ FAIL=0
 # ── Case 1 (the bug): toolchain URL present => audit MUST pass (exit 0) ──
 GOOD="$TMP/good.bin"
 make_fixture "$GOOD" \
-    "https://github.com/DeusData/codebase-memory-mcp" \
+    "https://github.com/LonelyTraderBay/memory-for-ai" \
     "https://github.com/msys2/MINGW-packages"
 if bash "$SCRIPT" "$GOOD" >/dev/null 2>&1; then
     echo "PASS: MSYS2 toolchain URL https://github.com/msys2/MINGW-packages is allow-listed"
@@ -72,10 +72,10 @@ fi
 MANIFEST="$TMP/manifest.json"
 cat > "$MANIFEST" <<'JSON'
 {
-  "name": "codebase-memory-mcp",
-  "homepage": "https://github.com/DeusData/codebase-memory-mcp",
-  "documentation": "https://deusdata.github.io/codebase-memory-mcp/",
-  "server": { "command": "codebase-memory-mcp", "args": [] }
+  "name": "memory-for-ai",
+  "homepage": "https://github.com/LonelyTraderBay/memory-for-ai",
+  "documentation": "https://github.com/LonelyTraderBay/memory-for-ai/",
+  "server": { "command": "memory-for-ai", "args": [] }
 }
 JSON
 if bash "$SCRIPT" "$MANIFEST" >/dev/null 2>&1; then

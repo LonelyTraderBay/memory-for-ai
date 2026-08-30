@@ -278,8 +278,8 @@ static cbm_daemon_process_role_t classify(int argc, char **argv) {
 }
 
 TEST(daemon_bootstrap_classifies_default_and_ui_as_mcp_clients) {
-    char *plain[] = {"codebase-memory-mcp", NULL};
-    char *ui[] = {"codebase-memory-mcp", "--ui=true", "--port=9750", NULL};
+    char *plain[] = {"memory-for-ai", NULL};
+    char *ui[] = {"memory-for-ai", "--ui=true", "--port=9750", NULL};
     ASSERT_EQ(classify(1, plain), CBM_DAEMON_PROCESS_MCP_CLIENT);
     ASSERT_EQ(classify(3, ui), CBM_DAEMON_PROCESS_MCP_CLIENT);
     ASSERT_TRUE(cbm_daemon_process_role_requires_client(CBM_DAEMON_PROCESS_MCP_CLIENT));
@@ -287,11 +287,11 @@ TEST(daemon_bootstrap_classifies_default_and_ui_as_mcp_clients) {
 }
 
 TEST(daemon_bootstrap_classifies_stateless_commands_without_client) {
-    char *version[] = {"codebase-memory-mcp", "--version", NULL};
-    char *help[] = {"codebase-memory-mcp", "--profile", "--help", NULL};
-    char *install[] = {"codebase-memory-mcp", "install", "--dry-run", NULL};
-    char *uninstall[] = {"codebase-memory-mcp", "uninstall", NULL};
-    char *update[] = {"codebase-memory-mcp", "update", "-n", NULL};
+    char *version[] = {"memory-for-ai", "--version", NULL};
+    char *help[] = {"memory-for-ai", "--profile", "--help", NULL};
+    char *install[] = {"memory-for-ai", "install", "--dry-run", NULL};
+    char *uninstall[] = {"memory-for-ai", "uninstall", NULL};
+    char *update[] = {"memory-for-ai", "update", "-n", NULL};
     ASSERT_EQ(classify(2, version), CBM_DAEMON_PROCESS_STATELESS);
     ASSERT_EQ(classify(3, help), CBM_DAEMON_PROCESS_STATELESS);
     ASSERT_EQ(classify(3, install), CBM_DAEMON_PROCESS_STATELESS);
@@ -302,9 +302,9 @@ TEST(daemon_bootstrap_classifies_stateless_commands_without_client) {
 }
 
 TEST(daemon_bootstrap_classifies_config_as_coordinated_local_cli) {
-    char *list[] = {"codebase-memory-mcp", "config", "list", NULL};
-    char *set[] = {"codebase-memory-mcp", "config", "set", "auto_watch", "false", NULL};
-    char *help[] = {"codebase-memory-mcp", "config", "--help", NULL};
+    char *list[] = {"memory-for-ai", "config", "list", NULL};
+    char *set[] = {"memory-for-ai", "config", "set", "auto_watch", "false", NULL};
+    char *help[] = {"memory-for-ai", "config", "--help", NULL};
     ASSERT_EQ(classify(3, list), CBM_DAEMON_PROCESS_LOCAL_CLI);
     ASSERT_EQ(classify(5, set), CBM_DAEMON_PROCESS_LOCAL_CLI);
     ASSERT_EQ(classify(3, help), CBM_DAEMON_PROCESS_STATELESS);
@@ -313,8 +313,8 @@ TEST(daemon_bootstrap_classifies_config_as_coordinated_local_cli) {
 }
 
 TEST(daemon_bootstrap_cli_help_is_stateless_but_tool_calls_are_local) {
-    char *tool_help[] = {"codebase-memory-mcp", "cli", "search_graph", "--help", NULL};
-    char *tool_call[] = {"codebase-memory-mcp", "cli", "search_graph", "{}", NULL};
+    char *tool_help[] = {"memory-for-ai", "cli", "search_graph", "--help", NULL};
+    char *tool_call[] = {"memory-for-ai", "cli", "search_graph", "{}", NULL};
     ASSERT_EQ(classify(4, tool_help), CBM_DAEMON_PROCESS_STATELESS);
     ASSERT_EQ(classify(4, tool_call), CBM_DAEMON_PROCESS_LOCAL_CLI);
     ASSERT_FALSE(cbm_daemon_process_role_requires_client(CBM_DAEMON_PROCESS_LOCAL_CLI));
@@ -323,8 +323,8 @@ TEST(daemon_bootstrap_cli_help_is_stateless_but_tool_calls_are_local) {
 
 TEST(daemon_bootstrap_cli_arguments_cannot_reclassify_the_process) {
     char *install_value[] = {
-        "codebase-memory-mcp", "cli", "search_code", "--query", "install", NULL};
-    char *version_value[] = {"codebase-memory-mcp", "cli", "search_code", "--query",
+        "memory-for-ai", "cli", "search_code", "--query", "install", NULL};
+    char *version_value[] = {"memory-for-ai", "cli", "search_code", "--query",
                              "--version",           NULL};
     ASSERT_EQ(classify(5, install_value), CBM_DAEMON_PROCESS_LOCAL_CLI);
     ASSERT_EQ(classify(5, version_value), CBM_DAEMON_PROCESS_LOCAL_CLI);
@@ -333,14 +333,14 @@ TEST(daemon_bootstrap_cli_arguments_cannot_reclassify_the_process) {
 
 TEST(daemon_bootstrap_internal_roles_never_take_client_leases) {
     static char build[] = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    char *daemon[] = {"codebase-memory-mcp", CBM_DAEMON_INTERNAL_ARG, NULL};
-    char *worker[] = {"codebase-memory-mcp", "cli", "--index-worker", "--index-worker-build", build,
+    char *daemon[] = {"memory-for-ai", CBM_DAEMON_INTERNAL_ARG, NULL};
+    char *worker[] = {"memory-for-ai", "cli", "--index-worker", "--index-worker-build", build,
                       "index_repository",    "{}",  "--response-out", "/tmp/response",        NULL};
-    char *malformed_worker[] = {"codebase-memory-mcp", "cli", "--index-worker",
+    char *malformed_worker[] = {"memory-for-ai", "cli", "--index-worker",
                                 "index_repository",    "{}",  NULL};
-    char *reserved_user_value[] = {"codebase-memory-mcp", "cli", "search_code", "--query",
+    char *reserved_user_value[] = {"memory-for-ai", "cli", "search_code", "--query",
                                    "--index-worker",      NULL};
-    char *hook[] = {"codebase-memory-mcp", "hook-augment", NULL};
+    char *hook[] = {"memory-for-ai", "hook-augment", NULL};
     ASSERT_EQ(classify(2, daemon), CBM_DAEMON_PROCESS_DAEMON);
     ASSERT_EQ(classify(9, worker), CBM_DAEMON_PROCESS_WORKER);
     ASSERT_EQ(classify(5, malformed_worker), CBM_DAEMON_PROCESS_INVALID);
@@ -354,7 +354,7 @@ TEST(daemon_bootstrap_internal_roles_never_take_client_leases) {
 
 TEST(daemon_bootstrap_rejects_ambiguous_internal_daemon_argv) {
     char *missing[] = {NULL};
-    char *mixed[] = {"codebase-memory-mcp", CBM_DAEMON_INTERNAL_ARG, "cli", NULL};
+    char *mixed[] = {"memory-for-ai", CBM_DAEMON_INTERNAL_ARG, "cli", NULL};
     ASSERT_EQ(classify(0, missing), CBM_DAEMON_PROCESS_INVALID);
     ASSERT_EQ(classify(3, mixed), CBM_DAEMON_PROCESS_INVALID);
     ASSERT_FALSE(cbm_daemon_process_role_requires_client(CBM_DAEMON_PROCESS_INVALID));
@@ -376,7 +376,7 @@ TEST(daemon_bootstrap_uses_one_stable_per_account_endpoint) {
 /* #1574/#1621: the shipped build must be able to relocate the rendezvous when
  * the default ancestry (%LOCALAPPDATA%, /private/tmp) cannot pass the
  * private-directory walk — otherwise every command fails, `config list`
- * included, and the operator cannot reconfigure their way out. CBM_RUNTIME_DIR
+ * included, and the operator cannot reconfigure their way out. MFA_RUNTIME_DIR
  * moves WHERE the rendezvous lives; it never relaxes HOW it is checked, so a
  * value that cannot be a private runtime parent must be refused rather than
  * silently replaced by the default. An explicit parent — the compile-time test
@@ -397,7 +397,7 @@ TEST(daemon_bootstrap_runtime_dir_env_relocates_rendezvous) {
     bool prepared =
         written > 0 && written < (int)sizeof(unusable) &&
         cbm_canonical_path(override_parent, canonical_override, sizeof(canonical_override)) != 0 &&
-        cbm_setenv("CBM_RUNTIME_DIR", override_parent, 1) == 0;
+        cbm_setenv("MFA_RUNTIME_DIR", override_parent, 1) == 0;
 
     /* NULL parent == every product call site: daemon, MCP client, local CLI,
      * index worker, activation. */
@@ -419,13 +419,13 @@ TEST(daemon_bootstrap_runtime_dir_env_relocates_rendezvous) {
     }
 
     /* A named parent that cannot pass validation is refused, never ignored. */
-    bool unusable_set = prepared && cbm_setenv("CBM_RUNTIME_DIR", unusable, 1) == 0;
+    bool unusable_set = prepared && cbm_setenv("MFA_RUNTIME_DIR", unusable, 1) == 0;
     cbm_daemon_ipc_endpoint_t *refused =
         unusable_set ? cbm_daemon_bootstrap_endpoint_new(NULL) : NULL;
 
     /* Restore before asserting: a failed assertion returns immediately, and a
-     * leaked CBM_RUNTIME_DIR would follow every later suite in this process. */
-    (void)cbm_unsetenv("CBM_RUNTIME_DIR");
+     * leaked MFA_RUNTIME_DIR would follow every later suite in this process. */
+    (void)cbm_unsetenv("MFA_RUNTIME_DIR");
     cbm_daemon_ipc_endpoint_free(refused);
     cbm_daemon_ipc_endpoint_free(relocated);
     if (relocated_runtime[0] != '\0') {
@@ -463,15 +463,15 @@ TEST(daemon_bootstrap_launches_only_exact_detached_hidden_role) {
 }
 
 TEST(daemon_bootstrap_permanent_daemon_argv_is_byte_exact) {
-    char *permanent[] = {"codebase-memory-mcp", CBM_DAEMON_INTERNAL_ARG, CBM_DAEMON_PERMANENT_ARG,
+    char *permanent[] = {"memory-for-ai", CBM_DAEMON_INTERNAL_ARG, CBM_DAEMON_PERMANENT_ARG,
                          NULL};
-    char *reordered[] = {"codebase-memory-mcp", CBM_DAEMON_PERMANENT_ARG, CBM_DAEMON_INTERNAL_ARG,
+    char *reordered[] = {"memory-for-ai", CBM_DAEMON_PERMANENT_ARG, CBM_DAEMON_INTERNAL_ARG,
                          NULL};
-    char *repeated[] = {"codebase-memory-mcp", CBM_DAEMON_INTERNAL_ARG, CBM_DAEMON_INTERNAL_ARG,
+    char *repeated[] = {"memory-for-ai", CBM_DAEMON_INTERNAL_ARG, CBM_DAEMON_INTERNAL_ARG,
                         NULL};
-    char *extended[] = {"codebase-memory-mcp", CBM_DAEMON_INTERNAL_ARG, CBM_DAEMON_PERMANENT_ARG,
+    char *extended[] = {"memory-for-ai", CBM_DAEMON_INTERNAL_ARG, CBM_DAEMON_PERMANENT_ARG,
                         "extra", NULL};
-    char *wrong_flag[] = {"codebase-memory-mcp", CBM_DAEMON_INTERNAL_ARG, "--permanent", NULL};
+    char *wrong_flag[] = {"memory-for-ai", CBM_DAEMON_INTERNAL_ARG, "--permanent", NULL};
     ASSERT_EQ(classify(3, permanent), CBM_DAEMON_PROCESS_DAEMON);
     ASSERT_EQ(classify(3, reordered), CBM_DAEMON_PROCESS_INVALID);
     ASSERT_EQ(classify(3, repeated), CBM_DAEMON_PROCESS_INVALID);
@@ -481,12 +481,12 @@ TEST(daemon_bootstrap_permanent_daemon_argv_is_byte_exact) {
 }
 
 TEST(daemon_bootstrap_daemon_ctl_token_routes_after_cli) {
-    char *start[] = {"codebase-memory-mcp", "daemon", "start", NULL};
-    char *stop[] = {"codebase-memory-mcp", "daemon", "stop", NULL};
-    char *status[] = {"codebase-memory-mcp", "daemon", "status", NULL};
-    char *help[] = {"codebase-memory-mcp", "daemon", "--help", NULL};
+    char *start[] = {"memory-for-ai", "daemon", "start", NULL};
+    char *stop[] = {"memory-for-ai", "daemon", "stop", NULL};
+    char *status[] = {"memory-for-ai", "daemon", "status", NULL};
+    char *help[] = {"memory-for-ai", "daemon", "--help", NULL};
     /* `daemon` after `cli` is opaque tool input, never a control command. */
-    char *opaque[] = {"codebase-memory-mcp", "cli", "search_code", "daemon", "start", NULL};
+    char *opaque[] = {"memory-for-ai", "cli", "search_code", "daemon", "start", NULL};
     ASSERT_EQ(classify(3, start), CBM_DAEMON_PROCESS_DAEMON_CTL);
     ASSERT_EQ(classify(3, stop), CBM_DAEMON_PROCESS_DAEMON_CTL);
     ASSERT_EQ(classify(3, status), CBM_DAEMON_PROCESS_DAEMON_CTL);

@@ -144,7 +144,7 @@ static void handle_ui_config(cbm_http_conn_t *c, const cbm_http_req_t *req) {
      * targets must come from an auditable backend response, same pattern as
      * the /api/repo-info deep-links). */
     cbm_http_replyf(c, 200, g_cors_json, "{\"lang\":\"%s\",\"upstream_issues_url\":\"%s\"}",
-                    lang_buf, "https://github.com/DeusData/codebase-memory-mcp/issues/new");
+                    lang_buf, "https://github.com/LonelyTraderBay/memory-for-ai/issues/new");
 }
 
 /* ── Server state ─────────────────────────────────────────────── */
@@ -555,7 +555,7 @@ static void handle_logs(cbm_http_conn_t *c, const cbm_http_req_t *req) {
 #endif
 #include <signal.h>
 
-/* GET /api/processes — list codebase-memory-mcp processes via ps */
+/* GET /api/processes — list memory-for-ai processes via ps */
 static void handle_processes(cbm_http_conn_t *c) {
     char buf[8192];
     int pos = 0;
@@ -582,14 +582,14 @@ static void handle_processes(cbm_http_conn_t *c) {
                  "\"self_user_cpu_s\":%.1f,\"self_sys_cpu_s\":%.1f,\"processes\":[",
                  (int)_getpid(), (double)rss_bytes / (1024.0 * 1024.0), user_s, sys_s);
 
-    /* Enumerate all codebase-memory-mcp.exe processes via toolhelp snapshot */
+    /* Enumerate all memory-for-ai.exe processes via toolhelp snapshot */
     int proc_count = 0;
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32 pe;
         pe.dwSize = sizeof(pe);
         for (BOOL ok = Process32First(hSnap, &pe); ok; ok = Process32Next(hSnap, &pe)) {
-            if (_stricmp(pe.szExeFile, "codebase-memory-mcp.exe") == 0) {
+            if (_stricmp(pe.szExeFile, "memory-for-ai.exe") == 0) {
                 HANDLE hProc = OpenProcess(
                     PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
                     FALSE, pe.th32ProcessID);
@@ -632,7 +632,7 @@ static void handle_processes(cbm_http_conn_t *c) {
                     http_appendf(buf, sizeof(buf), &pos,
                                  "{\"pid\":%lu,\"cpu\":%.1f,\"rss_mb\":%.1f,"
                                  "\"elapsed\":\"%lu-%02lu:%02lu:%02lu\","
-                                 "\"command\":\"codebase-memory-mcp\","
+                                 "\"command\":\"memory-for-ai\","
                                  "\"is_self\":%s}",
                                  pe.th32ProcessID, cpu_user + cpu_sys,
                                  (double)proc_rss / (1024.0 * 1024.0),
@@ -2007,7 +2007,7 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
         return;
     }
 
-    /* GET /api/processes → list running codebase-memory-mcp processes */
+    /* GET /api/processes → list running memory-for-ai processes */
     if (is_get && cbm_http_path_match(req->path, "/api/processes")) {
         handle_processes(c);
         return;

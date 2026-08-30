@@ -108,9 +108,9 @@ static bool response_contains_json_fragment(const char *response, const char *fr
 
 static void restore_cache_dir(const char *saved_copy) {
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
 }
 
@@ -249,9 +249,9 @@ static bool mcp_search_cache_open(mcp_search_cache_t *cache, const char *prefix)
     if (!cbm_mkdtemp(cache->path)) {
         return false;
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     cache->saved_cache = saved_cache ? strdup(saved_cache) : NULL;
-    if ((saved_cache && !cache->saved_cache) || cbm_setenv("CBM_CACHE_DIR", cache->path, 1) != 0) {
+    if ((saved_cache && !cache->saved_cache) || cbm_setenv("MFA_CACHE_DIR", cache->path, 1) != 0) {
         free(cache->saved_cache);
         cache->saved_cache = NULL;
         (void)th_rmtree(cache->path);
@@ -777,7 +777,7 @@ TEST(jsonrpc_format_response_string_id_issue253) {
 TEST(jsonrpc_format_response) {
     cbm_jsonrpc_response_t resp = {
         .id = 1,
-        .result_json = "{\"name\":\"codebase-memory-mcp\"}",
+        .result_json = "{\"name\":\"memory-for-ai\"}",
     };
     char *json = cbm_jsonrpc_format_response(&resp);
     ASSERT_NOT_NULL(json);
@@ -810,7 +810,7 @@ TEST(mcp_initialize_response) {
     /* Default (no params): returns latest supported version */
     char *json = cbm_mcp_initialize_response(NULL);
     ASSERT_NOT_NULL(json);
-    ASSERT_NOT_NULL(strstr(json, "codebase-memory-mcp"));
+    ASSERT_NOT_NULL(strstr(json, "memory-for-ai"));
     ASSERT_NOT_NULL(strstr(json, "\"version\":\"9.8.7-test\""));
     ASSERT_NOT_NULL(strstr(json, "capabilities"));
     ASSERT_NOT_NULL(strstr(json, "tools"));
@@ -1300,7 +1300,7 @@ TEST(server_handle_initialize) {
                                    "\"params\":{\"capabilities\":{}}}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"id\":1"));
-    ASSERT_NOT_NULL(strstr(resp, "codebase-memory-mcp"));
+    ASSERT_NOT_NULL(strstr(resp, "memory-for-ai"));
     ASSERT_NOT_NULL(strstr(resp, "capabilities"));
     free(resp);
 
@@ -1331,9 +1331,9 @@ static int issue403_initialize_count_calls(const char *session_root, bool approv
     if (!cache) {
         return -1;
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char err[1024];
     bool approved = !approve_sensitive ||
@@ -1533,13 +1533,13 @@ TEST(server_handle_scout_profile_exposes_only_the_fast_tier) {
 
 TEST(analysis_profile_arguments_fail_closed_and_disable_http) {
     cbm_mcp_tool_profile_t profile = CBM_MCP_TOOL_PROFILE_ALL;
-    const char *no_profile[] = {"codebase-memory-mcp"};
-    const char *analysis_equals[] = {"codebase-memory-mcp", "--tool-profile=analysis"};
-    const char *analysis_pair[] = {"codebase-memory-mcp", "--tool-profile", "analysis"};
-    const char *scout_equals[] = {"codebase-memory-mcp", "--tool-profile=scout"};
-    const char *unknown_equals[] = {"codebase-memory-mcp", "--tool-profile=analaysis"};
-    const char *unknown_pair[] = {"codebase-memory-mcp", "--tool-profile", "all"};
-    const char *missing_value[] = {"codebase-memory-mcp", "--tool-profile"};
+    const char *no_profile[] = {"memory-for-ai"};
+    const char *analysis_equals[] = {"memory-for-ai", "--tool-profile=analysis"};
+    const char *analysis_pair[] = {"memory-for-ai", "--tool-profile", "analysis"};
+    const char *scout_equals[] = {"memory-for-ai", "--tool-profile=scout"};
+    const char *unknown_equals[] = {"memory-for-ai", "--tool-profile=analaysis"};
+    const char *unknown_pair[] = {"memory-for-ai", "--tool-profile", "all"};
+    const char *missing_value[] = {"memory-for-ai", "--tool-profile"};
 
     ASSERT_EQ(cbm_mcp_parse_tool_profile_args(1, no_profile, &profile), 0);
     ASSERT_EQ(profile, CBM_MCP_TOOL_PROFILE_ALL);
@@ -3780,9 +3780,9 @@ TEST(tool_delete_project_mutation_guard_blocks_then_releases) {
         PASS();
     }
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-delete-project";
     char db_path[CBM_SZ_1K];
@@ -4116,7 +4116,7 @@ TEST(tool_search_graph_accepts_project_name_alias_issue640) {
     PASS();
 }
 
-/* #1025: agents pass the repo FOLDER name ("codebase-memory-mcp"), but
+/* #1025: agents pass the repo FOLDER name ("memory-for-ai"), but
  * indexed project names derive from the full path
  * (E:\project\graph\x -> "E-project-graph-x"), so exact lookup fails with
  * "project not found" while list_projects clearly shows the project. A
@@ -4124,7 +4124,7 @@ TEST(tool_search_graph_accepts_project_name_alias_issue640) {
  * tail ("-<name>" suffix) must resolve to it; zero or several matches keep
  * the existing error. Runs against real cache-dir .db files (the resolution
  * scans filenames), so this test indexes real fixtures under an overridden
- * CBM_CACHE_DIR. */
+ * MFA_CACHE_DIR. */
 static void i1025_write_repo(const char *dir, const char *fn_name) {
     char path[CBM_SZ_512];
     snprintf(path, sizeof(path), "%s/mod.py", dir);
@@ -4148,9 +4148,9 @@ TEST(tool_project_arg_resolves_unique_tail_issue1025) {
         !cbm_mkdtemp(cache)) {
         FAIL("mkdtemp failed");
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? cbm_strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
     cbm_setenv("CBM_INDEX_SUPERVISOR", "0", 1);
 
     i1025_write_repo(repo_a, "unique_tail_target");
@@ -4203,10 +4203,10 @@ TEST(tool_project_arg_resolves_unique_tail_issue1025) {
 
     cbm_mcp_server_free(srv);
     if (saved_cache_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_cache_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_cache_copy, 1);
         free(saved_cache_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     th_rmtree(repo_a);
     th_rmtree(repo_b);
@@ -5262,7 +5262,7 @@ TEST(search_code_scan_setup_failures_respect_cause_precedence) {
     cbm_mcp_server_t *srv = setup_prefilter_server(tmp, sizeof(tmp), src_path, sizeof(src_path),
                                                    vendor_path, sizeof(vendor_path));
     ASSERT_NOT_NULL(srv);
-    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache_blocker, 1), 0);
+    ASSERT_EQ(cbm_setenv("MFA_CACHE_DIR", cache_blocker, 1), 0);
     cbm_mcp_server_set_search_scan_timeout_for_test(srv, 0, true);
 
     /* Keep an outer request scope active so cancellation is latched before the
@@ -5286,7 +5286,7 @@ TEST(search_code_scan_setup_failures_respect_cause_precedence) {
                         strstr(response, "contained command") == NULL;
     free(response);
 
-    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache.path, 1), 0);
+    ASSERT_EQ(cbm_setenv("MFA_CACHE_DIR", cache.path, 1), 0);
     ASSERT_EQ(cbm_unlink(cache_blocker), 0);
     cbm_mcp_server_free(srv);
     cleanup_prefilter_dir(tmp, src_path, vendor_path);
@@ -5714,7 +5714,7 @@ TEST(tool_manage_adr_no_project) {
  * MUST FAIL before fix: free(buf) is called before yy_doc_to_str serializes doc,
  * so result field is missing or contains garbage. MUST PASS after fix. */
 TEST(tool_manage_adr_get_with_existing_adr) {
-    /* Create a temp directory with .codebase-memory/adr.md */
+    /* Create a temp directory with .memory-for-ai/adr.md */
     char tmp_dir[256];
     snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/cbm-adr-test-XXXXXX");
     if (!cbm_mkdtemp(tmp_dir)) {
@@ -5722,7 +5722,7 @@ TEST(tool_manage_adr_get_with_existing_adr) {
     }
 
     char adr_dir[512];
-    snprintf(adr_dir, sizeof(adr_dir), "%s/.codebase-memory", tmp_dir);
+    snprintf(adr_dir, sizeof(adr_dir), "%s/.memory-for-ai", tmp_dir);
     cbm_mkdir(adr_dir);
 
     char adr_path[512];
@@ -6405,9 +6405,9 @@ TEST(tool_manage_adr_read_missing_store_skips_mutation_guard) {
         PASS();
     }
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-adr-missing";
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
@@ -6441,13 +6441,13 @@ TEST(tool_manage_adr_legacy_migration_tries_without_blocking) {
     ASSERT_NOT_NULL(cbm_mkdtemp(root));
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    ASSERT_EQ(cbm_setenv("MFA_CACHE_DIR", cache, 1), 0);
 
     char adr_dir[CBM_SZ_1K];
     char adr_path[CBM_SZ_1K];
-    snprintf(adr_dir, sizeof(adr_dir), "%s/.codebase-memory", root);
+    snprintf(adr_dir, sizeof(adr_dir), "%s/.memory-for-ai", root);
     snprintf(adr_path, sizeof(adr_path), "%s/adr.md", adr_dir);
     ASSERT_EQ(cbm_mkdir(adr_dir), 0);
     FILE *fp = cbm_fopen(adr_path, "w");
@@ -6640,10 +6640,10 @@ TEST(tool_index_repository_early_raw_cancel_survives_index_entry) {
     bool cache_created = cbm_mkdtemp(cache) != NULL;
     bool repo_created = cbm_mkdtemp(repo) != NULL;
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
     if (cache_created) {
-        cbm_setenv("CBM_CACHE_DIR", cache, 1);
+        cbm_setenv("MFA_CACHE_DIR", cache, 1);
     }
 
     char *project = repo_created ? cbm_project_name_from_path(repo) : NULL;
@@ -6925,9 +6925,9 @@ TEST(tool_cross_repo_rejects_wildcard_mixed_with_named_targets) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-cross-wildcard-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char *project = cbm_project_name_from_path(cache);
     ASSERT_NOT_NULL(project);
@@ -6977,9 +6977,9 @@ TEST(tool_cross_repo_checks_cancellation_after_acquiring_leases) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-cross-cancel-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char *project = cbm_project_name_from_path(cache);
     ASSERT_NOT_NULL(project);
@@ -7037,9 +7037,9 @@ TEST(tool_cross_repo_missing_inputs_fail_without_creating_ghost_databases) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-cross-missing-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char *source_project = cbm_project_name_from_path(cache);
     ASSERT_NOT_NULL(source_project);
@@ -7113,9 +7113,9 @@ TEST(tool_cross_repo_dedupes_targets_before_scanning_and_counting) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-cross-dedupe-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char *source_project = cbm_project_name_from_path(cache);
     ASSERT_NOT_NULL(source_project);
@@ -7175,9 +7175,9 @@ TEST(tool_cross_repo_honors_source_name_override) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-cross-name-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *source_project = "cross-custom-source";
     const char *target_project = "cross-custom-target";
@@ -7217,9 +7217,9 @@ TEST(tool_corrupt_store_cleanup_guard_is_balanced_and_not_nested) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-guard-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-corrupt-project";
     char db_path[CBM_SZ_1K];
@@ -7299,9 +7299,9 @@ TEST(tool_corrupt_store_cleanup_guard_denial_preserves_db_and_wal) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-denied-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-corrupt-denied";
     char db_path[CBM_SZ_1K];
@@ -7368,9 +7368,9 @@ TEST(tool_manage_adr_corrupt_store_busy_is_retryable) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-adr-corrupt-busy-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-adr-corrupt-busy";
     char db_path[CBM_SZ_1K];
@@ -7415,9 +7415,9 @@ TEST(tool_manage_adr_corrupt_store_missing_try_guard_reports_configuration) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-adr-corrupt-config-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-adr-corrupt-config";
     char db_path[CBM_SZ_1K];
@@ -7466,9 +7466,9 @@ TEST(tool_corrupt_store_cleanup_rechecks_generation_after_guard_wait) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-recheck-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-corrupt-recheck";
     const char *replacement_root = "/tmp/guard-corrupt-replacement";
@@ -7542,9 +7542,9 @@ TEST(tool_corrupt_store_cleanup_preserves_existing_backup_and_uses_unique_name) 
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-unique-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-corrupt-unique";
     char db_path[CBM_SZ_1K];
@@ -7608,9 +7608,9 @@ TEST(tool_corrupt_store_cleanup_publish_failure_preserves_db_and_wal) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-publish-fail-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-corrupt-publish-fail";
     char db_path[CBM_SZ_1K];
@@ -7684,9 +7684,9 @@ TEST(tool_corrupt_store_cleanup_publishes_complete_wal_snapshot_before_delete) {
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-after-publish-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     const char *project = "guard-corrupt-after-publish";
     char db_path[CBM_SZ_1K];
@@ -7774,9 +7774,9 @@ TEST(tool_index_repository_reports_store_backed_adr) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -7852,9 +7852,9 @@ TEST(tool_index_repository_resolves_root_path_from_project_name_issue1211) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -7905,9 +7905,9 @@ TEST(tool_index_repository_unknown_project_name_still_requires_repo_path) {
     if (!cbm_mkdtemp(cache)) {
         PASS();
     }
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     ASSERT_NOT_NULL(srv);
@@ -7938,9 +7938,9 @@ TEST(tool_index_repository_dot_uses_absolute_project_key_and_preserves_adr) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -8025,9 +8025,9 @@ TEST(tool_manage_adr_not_found_rich_error) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     ASSERT_NOT_NULL(srv);
@@ -8059,9 +8059,9 @@ TEST(tool_manage_adr_get_accepts_abs_path) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -8137,9 +8137,9 @@ TEST(tool_manage_adr_get_accepts_symlink_path) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -8201,9 +8201,9 @@ TEST(tool_detect_changes_not_found_rich_error) {
         PASS();
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     ASSERT_NOT_NULL(srv);
@@ -8314,9 +8314,9 @@ TEST(tool_detect_changes_contained_commands_clean_up_error_and_success) {
     if (ambient_git_saved) {
         mcp_test_restore_env(&ambient_git, 1U);
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    bool environment_ready = cache_created && cbm_setenv("CBM_CACHE_DIR", cache, 1) == 0;
+    bool environment_ready = cache_created && cbm_setenv("MFA_CACHE_DIR", cache, 1) == 0;
 
     const char *project = "detect-contained-project";
     cbm_mcp_server_t *srv = environment_ready && repo_ready ? cbm_mcp_server_new(NULL) : NULL;
@@ -9014,9 +9014,9 @@ static bool compare_graphs_fixture_open(compare_graphs_fixture_t *fixture) {
     if (!cbm_mkdtemp(fixture->cache)) {
         return false;
     }
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     fixture->saved_cache = saved ? strdup(saved) : NULL;
-    if ((saved && !fixture->saved_cache) || cbm_setenv("CBM_CACHE_DIR", fixture->cache, 1) != 0) {
+    if ((saved && !fixture->saved_cache) || cbm_setenv("MFA_CACHE_DIR", fixture->cache, 1) != 0) {
         free(fixture->saved_cache);
         fixture->saved_cache = NULL;
         (void)th_rmtree(fixture->cache);
@@ -10411,9 +10411,9 @@ TEST(tool_bad_project_name_no_overflow_issue235) {
         PASS(); /* skip if mkdtemp fails */
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     /* 40 * ~120-char names overflows the 4 KB available-projects buffer.
      * collect_db_project_names advertises each db's INTERNAL project name
@@ -10447,10 +10447,10 @@ TEST(tool_bad_project_name_no_overflow_issue235) {
     cbm_mcp_server_free(srv);
 
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
         free(saved_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     for (int i = 0; i < ISSUE235_N; i++) {
         char name[512];
@@ -10494,9 +10494,9 @@ TEST(tool_bad_project_error_valid_json_issue235) {
         PASS(); /* skip if mkdtemp fails */
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     /* 50 * ~120-char INTERNAL names >> 4 KB → the available_projects buffer
      * overflows and the last name is cut mid-token on the unfixed code. */
@@ -10549,10 +10549,10 @@ TEST(tool_bad_project_error_valid_json_issue235) {
     cbm_mcp_server_free(srv);
 
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
         free(saved_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     for (int i = 0; i < BADPROJ_N; i++) {
         char name[512];
@@ -10585,7 +10585,7 @@ TEST(tool_bad_project_error_valid_json_issue235) {
  * tagged with the INTERNAL name, so neither the filename nor the resolve
  * path lines up. The fix makes list + resolve both key on the INTERNAL name.
  *
- * Reproduce-first fixture in an isolated CBM_CACHE_DIR:
+ * Reproduce-first fixture in an isolated MFA_CACHE_DIR:
  *   - alpha704.db  : filename == internal name "alpha704"   (control / fast path)
  *   - gamma704.db  : internal name "beta704"                (DRIFT: built as
  *                    beta704.db then renamed → filename != internal name)
@@ -10638,9 +10638,9 @@ TEST(tool_resolve_store_by_internal_name_issue704) {
         PASS(); /* skip if mkdtemp fails — not a #704 signal */
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     /* (1) control: filename == internal name */
     ASSERT_TRUE(issue704_make_db(cache, "alpha704.db", "alpha704", "alphaFunc704"));
@@ -10748,10 +10748,10 @@ TEST(tool_resolve_store_by_internal_name_issue704) {
 
     /* ── cleanup ───────────────────────────────────────────────────── */
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
         free(saved_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     char a_path[700];
     snprintf(a_path, sizeof(a_path), "%s/alpha704.db", cache);
@@ -10792,9 +10792,9 @@ TEST(tool_list_projects_ignores_missed_shadow_issue1044) {
         PASS(); /* skip if mkdtemp fails — not a #1044 signal */
     }
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     ASSERT_TRUE(issue704_make_db(cache, "delta1044.db", "delta1044", "deltaFunc1044"));
 
@@ -10832,10 +10832,10 @@ TEST(tool_list_projects_ignores_missed_shadow_issue1044) {
 
     /* ── cleanup ───────────────────────────────────────────────────── */
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
         free(saved_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     cbm_unlink(db_path);
     char side1044[740];
@@ -10876,10 +10876,10 @@ TEST(query_store_reopens_after_database_replacement) {
     char cache[512];
     snprintf(cache, sizeof(cache), "%s/cbm-store-generation-XXXXXX", cbm_tmpdir());
     bool cache_ready = cbm_mkdtemp(cache) != NULL;
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
     if (cache_ready) {
-        cbm_setenv("CBM_CACHE_DIR", cache, 1);
+        cbm_setenv("MFA_CACHE_DIR", cache, 1);
     }
 
     bool generation_a_ready =
@@ -10996,9 +10996,9 @@ TEST(readonly_query_does_not_mutate_db) {
     if (!cbm_mkdtemp(tmp_cache)) {
         ASSERT_NOT_NULL(NULL); /* setup failure */
     }
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", tmp_cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", tmp_cache, 1);
 
     char db_path[700];
     snprintf(db_path, sizeof(db_path), "%s/%s.db", tmp_cache, ROQ_PROJECT);
@@ -11057,10 +11057,10 @@ TEST(readonly_query_does_not_mutate_db) {
     cbm_unlink(shm_path);
     cbm_rmdir(tmp_cache);
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
         free(saved_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
 
     ASSERT_TRUE(query_ok);        /* read path ran and returned the node */
@@ -11106,9 +11106,9 @@ TEST(readonly_query_succeeds_on_readonly_fs) {
     if (!cbm_mkdtemp(tmp_cache)) {
         ASSERT_NOT_NULL(NULL); /* setup failure */
     }
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", tmp_cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", tmp_cache, 1);
 
     char db_path[700];
     snprintf(db_path, sizeof(db_path), "%s/%s.db", tmp_cache, ROQ_PROJECT);
@@ -11159,10 +11159,10 @@ TEST(readonly_query_succeeds_on_readonly_fs) {
     cbm_unlink(shm_path);
     cbm_rmdir(tmp_cache);
     if (saved_copy) {
-        cbm_setenv("CBM_CACHE_DIR", saved_copy, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_copy, 1);
         free(saved_copy);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
 
     ASSERT_FALSE(query_failed); /* RED on buggy code: WAL pragma fails on RO dir */
@@ -11271,9 +11271,9 @@ TEST(index_repository_cli_name_override_issue823) {
         FAIL("cbm_mkdtemp cache failed");
     }
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -11419,9 +11419,9 @@ TEST(index_supervisor_gate_requires_marked_host_issue845) {
         PASS();
     }
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     /* The point of the guard: NO kill switch. The gate itself must keep an
      * unmarked host in-process. Save + restore the ambient value. */
@@ -11509,7 +11509,7 @@ enum {
 
 #ifndef _WIN32
 int mcp_test_idxfailclosed_supervisor_start_check(const char *repo_dir, const char *cache_dir) {
-    (void)cbm_setenv("CBM_CACHE_DIR", cache_dir, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache_dir, 1);
     cbm_index_supervisor_mark_host();
     (void)cbm_setenv("CBM_INDEX_SUPERVISOR", "0", 1);
 
@@ -11720,9 +11720,9 @@ TEST(index_bg_paths_route_through_supervisor_issue832) {
         PASS();
     }
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1); /* inherited by the worker child */
+    cbm_setenv("MFA_CACHE_DIR", cache, 1); /* inherited by the worker child */
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -12029,9 +12029,9 @@ TEST(sequential_service_edge_props_are_valid_json_issue898) {
         cbm_rmdir(tmp);
         FAIL("cache mkdtemp failed");
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? cbm_strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char src_path[CBM_SZ_512];
     snprintf(src_path, sizeof(src_path), "%s/queue.py", tmp);
@@ -12137,9 +12137,9 @@ TEST(index_second_inprocess_run_survives_issue773) {
     if (!cbm_mkdtemp(dir_a) || !cbm_mkdtemp(dir_b) || !cbm_mkdtemp(cache)) {
         FAIL("mkdtemp failed");
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? cbm_strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     /* Trigger shape: run 1 small enough for the SEQUENTIAL path (parses on
      * the calling thread, mimalloc epoch), run 2 large enough for the
@@ -12194,9 +12194,9 @@ TEST(index_recovery_parallel_quarantines_crasher) {
     if (!cbm_mkdtemp(cache)) {
         FAIL("mkdtemp cache failed");
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? cbm_strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char p1[CBM_SZ_512];
     char p2[CBM_SZ_512];
@@ -12274,9 +12274,9 @@ TEST(index_recovery_quarantines_exit_nonzero) {
     if (!cbm_mkdtemp(cache)) {
         FAIL("mkdtemp cache failed");
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? cbm_strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char p1[CBM_SZ_512];
     char p2[CBM_SZ_512];
@@ -12352,9 +12352,9 @@ TEST(index_recovery_systemic_exit_nonzero_gives_up) {
     if (!cbm_mkdtemp(cache)) {
         FAIL("mkdtemp cache failed");
     }
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? cbm_strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char p1[CBM_SZ_512];
     char p2[CBM_SZ_512];
@@ -12454,9 +12454,9 @@ static int auto_watch_connect_watch_count(const char *auto_watch_value) {
     }
     free(project);
 
-    const char *saved = getenv("CBM_CACHE_DIR");
+    const char *saved = getenv("MFA_CACHE_DIR");
     char *saved_copy = saved ? strdup(saved) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char old_cwd[1024];
     if (!cbm_getcwd(old_cwd, sizeof(old_cwd)) || cbm_chdir(repodir) != 0) {
@@ -12654,9 +12654,9 @@ TEST(mcp_auto_watch_false_skips_supervised_autoindex_issue853) {
         PASS();
     }
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1); /* inherited by the worker child */
+    cbm_setenv("MFA_CACHE_DIR", cache, 1); /* inherited by the worker child */
 
     char src_path[512];
     snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
@@ -12970,11 +12970,11 @@ TEST(index_repository_relative_path_uses_explicit_session_root) {
     snprintf(source, sizeof(source), "%s/main.py", repo);
     ASSERT_EQ(th_write_file(source, "def main():\n    return 1\n"), 0);
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
     const char *saved_supervisor = getenv("CBM_INDEX_SUPERVISOR");
     char *saved_supervisor_copy = saved_supervisor ? strdup(saved_supervisor) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
     cbm_setenv("CBM_INDEX_SUPERVISOR", "0", 1);
 
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
@@ -13096,7 +13096,7 @@ static int idxcanon_supervised_session_path_check(const char *session_root, cons
      * and creates this project DB. Its absence proves the original JSON did not
      * substitute a different path after the parent validated session_repo. */
     if (code == IDXCANON_OK) {
-        const char *cache = getenv("CBM_CACHE_DIR");
+        const char *cache = getenv("MFA_CACHE_DIR");
         char decoy_db[CBM_SZ_4K];
         snprintf(decoy_db, sizeof(decoy_db), "%s/%s.db", cache ? cache : "",
                  decoy_project ? decoy_project : "");
@@ -13152,9 +13152,9 @@ TEST(index_repository_supervisor_uses_canonical_session_path) {
     ASSERT_EQ(th_write_file(session_source, "def canonical_target_fn():\n    return 1\n"), 0);
     ASSERT_EQ(th_write_file(decoy_source, "def decoy_fn():\n    return 2\n"), 0);
 
-    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    const char *saved_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
-    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     int code = -1;
     bool signalled = false;
@@ -13386,11 +13386,11 @@ TEST(bm25_searches_legacy_four_column_fts_without_error_issue518) {
      * the legacy table THERE is what puts the server on a pre-body database —
      * the same way a real upgrade finds one. */
     char saved_cache[512] = {0};
-    const char *prev = getenv("CBM_CACHE_DIR");
+    const char *prev = getenv("MFA_CACHE_DIR");
     if (prev) {
         snprintf(saved_cache, sizeof(saved_cache), "%s", prev);
     }
-    cbm_setenv("CBM_CACHE_DIR", td, 1);
+    cbm_setenv("MFA_CACHE_DIR", td, 1);
 
     const char *proj = "legacyfts";
     char dbpath[600];
@@ -13436,9 +13436,9 @@ TEST(bm25_searches_legacy_four_column_fts_without_error_issue518) {
 
     cbm_mcp_server_free(srv);
     if (saved_cache[0]) {
-        cbm_setenv("CBM_CACHE_DIR", saved_cache, 1);
+        cbm_setenv("MFA_CACHE_DIR", saved_cache, 1);
     } else {
-        cbm_unsetenv("CBM_CACHE_DIR");
+        cbm_unsetenv("MFA_CACHE_DIR");
     }
     th_rmtree(td);
     PASS();

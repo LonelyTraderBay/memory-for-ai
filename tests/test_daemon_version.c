@@ -48,7 +48,7 @@ static cbm_daemon_build_identity_t version_test_identity(const char *version, co
 
 static bool version_test_temp_dir(char out[VERSION_TEST_PATH_CAP], const char *tag) {
     int written =
-        snprintf(out, VERSION_TEST_PATH_CAP, "%s/cbm-daemon-%s-XXXXXX", cbm_tmpdir(), tag);
+        snprintf(out, VERSION_TEST_PATH_CAP, "%s/memory-for-ai-daemon-%s-XXXXXX", cbm_tmpdir(), tag);
     return written > 0 && written < VERSION_TEST_PATH_CAP && cbm_mkdtemp(out) != NULL;
 }
 

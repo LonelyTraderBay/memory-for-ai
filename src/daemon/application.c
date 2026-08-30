@@ -11,6 +11,7 @@
 #include "foundation/log.h"
 #include "foundation/mem.h"
 #include "foundation/platform.h"
+#include "foundation/product.h"
 #include "foundation/secure_random.h"
 #include "foundation/sha256.h"
 #include "foundation/subprocess.h"
@@ -605,7 +606,8 @@ static void application_tmp_unlock(void) {
 
 static bool application_cache_dir(char out[APPLICATION_PATH_CAP]) {
     char configured[APPLICATION_PATH_CAP] = {0};
-    if (cbm_safe_getenv("CBM_CACHE_DIR", configured, sizeof(configured), NULL) && configured[0]) {
+    if (cbm_safe_getenv(CBM_PRODUCT_CACHE_ENV, configured, sizeof(configured), NULL) &&
+        configured[0]) {
         int written = snprintf(out, APPLICATION_PATH_CAP, "%s", configured);
         if (written <= 0 || written >= APPLICATION_PATH_CAP) {
             return false;
@@ -620,7 +622,8 @@ static bool application_cache_dir(char out[APPLICATION_PATH_CAP]) {
     if (!home[0]) {
         return false;
     }
-    int written = snprintf(out, APPLICATION_PATH_CAP, "%s/.cache/codebase-memory-mcp", home);
+    int written = snprintf(out, APPLICATION_PATH_CAP, "%s/.cache/%s", home,
+                           CBM_PRODUCT_CACHE_DIR_NAME);
     if (written <= 0 || written >= APPLICATION_PATH_CAP) {
         return false;
     }
@@ -1778,9 +1781,9 @@ static void application_update_publish_terminal_locked(cbm_daemon_application_t 
     if (!application->update_cancel_requested && application_update_version_valid(latest_version) &&
         cbm_compare_versions(latest_version, cbm_cli_get_version()) > 0) {
         (void)snprintf(application->update_notice, sizeof(application->update_notice),
-                       "Update available: %s -> %s -- run: codebase-memory-mcp update  |  "
-                       "Enjoying codebase-memory-mcp? Please leave a star: "
-                       "https://github.com/DeusData/codebase-memory-mcp",
+                       "Update available: %s -> %s -- run: memory-for-ai update  |  "
+                       "Enjoying memory-for-ai? Please leave a star: "
+                       "https://github.com/LonelyTraderBay/memory-for-ai",
                        cbm_cli_get_version(), latest_version);
         cbm_log_info("update.available", "current", cbm_cli_get_version(), "latest",
                      latest_version);

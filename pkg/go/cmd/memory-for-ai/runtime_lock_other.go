@@ -1,11 +1,10 @@
-//go:build darwin || linux
+//go:build !darwin && !linux && !windows
 
 package main
 
 import (
 	"fmt"
 	"os"
-	"syscall"
 )
 
 func platformOpenRuntimeSetLockOwner(path string) (*os.File, error) {
@@ -13,7 +12,7 @@ func platformOpenRuntimeSetLockOwner(path string) (*os.File, error) {
 }
 
 func platformCreatePrivateMutationRuntimeDirectory() (string, error) {
-	directory, err := os.MkdirTemp("", "codebase-memory-mcp-mutation-*")
+	directory, err := os.MkdirTemp("", "memory-for-ai-mutation-*")
 	if err != nil {
 		return "", err
 	}
@@ -28,17 +27,12 @@ func platformCreatePrivateMutationRuntimeDirectory() (string, error) {
 	return directory, nil
 }
 
+// Unsupported wrapper platforms never reclaim a syntactically valid owner by
+// PID. Ownerless stale locks remain recoverable through the generic age rule.
 func platformRuntimeSetLockProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	// Only ESRCH proves the owner is gone. Permission denial and every other
-	// result are conservatively treated as evidence that it may still be live.
-	return err != syscall.ESRCH
+	return pid > 0
 }
 
-func platformRuntimeSetFileLinkCountOne(_ string, info os.FileInfo) bool {
-	status, ok := info.Sys().(*syscall.Stat_t)
-	return ok && status.Nlink == 1
+func platformRuntimeSetFileLinkCountOne(_ string, _ os.FileInfo) bool {
+	return true
 }

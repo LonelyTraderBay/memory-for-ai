@@ -8,6 +8,7 @@
 #include "foundation/compat.h"
 #include "foundation/constants.h"
 #include "foundation/platform_internal.h"
+#include "foundation/product.h"
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -376,7 +377,7 @@ const char *cbm_safe_getenv(const char *name, char *buf, size_t buf_sz, const ch
 #ifdef _WIN32
     /* #996 Layer 2: _environ holds ANSI-code-page bytes, NOT UTF-8. A
      * non-ASCII value (USERPROFILE of C:\Users\Kovács János, or a Greek/CJK
-     * CBM_CACHE_DIR) arrives here either mojibake'd or with unrepresentable
+     * MFA_CACHE_DIR) arrives here either mojibake'd or with unrepresentable
      * characters replaced by '?', which is INVALID in Windows paths — every
      * downstream wide-safe file API then fails no matter how correct it is.
      * Read the value wide and convert to genuine UTF-8, matching the
@@ -517,9 +518,10 @@ const char *cbm_app_local_dir(void) {
 const char *cbm_resolve_cache_dir(void) {
     static CBM_TLS char buf[CBM_SZ_4K];
     static const char missing[] = "\x1f"
-                                  "CBM_CACHE_DIR_MISSING"
+                                  "MFA_CACHE_DIR_MISSING"
                                   "\x1f";
-    const char *configured = cbm_safe_getenv("CBM_CACHE_DIR", buf, sizeof(buf), missing);
+    const char *configured =
+        cbm_safe_getenv(CBM_PRODUCT_CACHE_ENV, buf, sizeof(buf), missing);
     if (!configured) {
         /* Present but not representable in the product path bound. */
         return NULL;
@@ -532,7 +534,7 @@ const char *cbm_resolve_cache_dir(void) {
     if (!home) {
         return NULL;
     }
-    int written = snprintf(buf, sizeof(buf), "%s/.cache/codebase-memory-mcp", home);
+    int written = snprintf(buf, sizeof(buf), "%s/.cache/%s", home, CBM_PRODUCT_CACHE_DIR_NAME);
     if (written <= 0 || (size_t)written >= sizeof(buf)) {
         buf[0] = '\0';
         return NULL;

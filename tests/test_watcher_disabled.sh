@@ -16,7 +16,7 @@
 # this test fails if the gate is removed.
 #
 # NO ASSERTION IS DECIDED BY A TIMEOUT. The watcher lives in the daemon
-# (src/daemon/host.c), which logs to $CBM_CACHE_DIR/logs/cbm-daemon.log in a
+# (src/daemon/host.c), which logs to $MFA_CACHE_DIR/logs/memory-for-ai-daemon.log in a
 # fixed order: watcher.disabled (host_state_prepare) -> daemon.start -> the
 # watcher thread's own watcher.start -> ... -> watcher thread joined ->
 # daemon.stop. Each run therefore retires its daemon and waits for that CLOSED
@@ -31,7 +31,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BINARY="${CBM_TEST_BINARY:-${ROOT}/build/c/codebase-memory-mcp}"
+BINARY="${CBM_TEST_BINARY:-${ROOT}/build/c/memory-for-ai}"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) echo "skipping watcher_disabled test on Windows"; exit 0 ;;
@@ -41,14 +41,14 @@ command -v git >/dev/null 2>&1 || { echo "git required for fixture" >&2; exit 2;
 
 work="$(mktemp -d)"
 
-# Every run gets its own CBM_CACHE_DIR, and the daemon endpoint is derived from
+# Every run gets its own MFA_CACHE_DIR, and the daemon endpoint is derived from
 # it, so these daemons are private to the test and can never touch a developer's
 # real one. Retire them on any exit path regardless.
 cleanup() {
   local cache
   for cache in "${work}"/cache-*; do
     [[ -d "${cache}" ]] || continue
-    CBM_CACHE_DIR="${cache}" "${BINARY}" daemon stop >/dev/null 2>&1 || true
+    MFA_CACHE_DIR="${cache}" "${BINARY}" daemon stop >/dev/null 2>&1 || true
   done
   rm -rf "${work}"
 }
@@ -73,7 +73,7 @@ CURRENT_RUN="(setup)"
 fail() {
   echo "FAIL [${CURRENT_RUN}]: $*" >&2
   local log
-  for log in "${work}"/cache-*/logs/cbm-daemon.log; do
+  for log in "${work}"/cache-*/logs/memory-for-ai-daemon.log; do
     [[ -f "${log}" ]] || continue
     echo "----- ${log} (watcher/daemon lines) -----" >&2
     grep -E 'msg=(watcher|daemon)\.' "${log}" >&2 || true
@@ -147,9 +147,9 @@ run_session() {
   local cache="$1" outf="$2"; shift 2
   local fifo="${work}/stdin.fifo"
   rm -f "${fifo}"; mkfifo "${fifo}"
-  DAEMON_LOG="${cache}/logs/cbm-daemon.log"
+  DAEMON_LOG="${cache}/logs/memory-for-ai-daemon.log"
 
-  ( cd "${repo}" && CBM_CACHE_DIR="${cache}" "${BINARY}" <"${fifo}" \
+  ( cd "${repo}" && MFA_CACHE_DIR="${cache}" "${BINARY}" <"${fifo}" \
       >"${outf}" 2>"${cache}.client.err" ) &
   local server_pid=$!
 
@@ -175,7 +175,7 @@ run_session() {
 
   # Retire the daemon and wait for the lifecycle to close, so the assertions
   # below read a complete log rather than a snapshot of one still being written.
-  CBM_CACHE_DIR="${cache}" "${BINARY}" daemon stop >/dev/null 2>&1 || true
+  MFA_CACHE_DIR="${cache}" "${BINARY}" daemon stop >/dev/null 2>&1 || true
   wait_for "${DAEMON_LOG}" 'msg=daemon\.start( |$)' "the daemon to record its start"
   wait_for "${DAEMON_LOG}" 'msg=daemon\.stop( |$)' "the daemon lifecycle to close"
 }
@@ -187,8 +187,8 @@ run_session() {
 # =============================================================================
 CURRENT_RUN="run 1: disabled + manual index_repository"
 c_offm="${work}/cache-offm"
-CBM_CACHE_DIR="${c_offm}" "${BINARY}" config set watcher_enabled false >/dev/null
-CBM_CACHE_DIR="${c_offm}" "${BINARY}" config set auto_index false >/dev/null
+MFA_CACHE_DIR="${c_offm}" "${BINARY}" config set watcher_enabled false >/dev/null
+MFA_CACHE_DIR="${c_offm}" "${BINARY}" config set auto_index false >/dev/null
 run_session "${c_offm}" "${work}/offm.out" \
   "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"index_repository\",\"arguments\":{\"repo_path\":\"${repo}\",\"mode\":\"fast\"}}}"
 
@@ -218,8 +218,8 @@ echo "ok: disabled — watcher.disabled emitted, no watcher.start/watch, manual 
 # =============================================================================
 CURRENT_RUN="run 2: disabled + auto_index"
 c_offa="${work}/cache-offa"
-CBM_CACHE_DIR="${c_offa}" "${BINARY}" config set watcher_enabled false >/dev/null
-CBM_CACHE_DIR="${c_offa}" "${BINARY}" config set auto_index true >/dev/null
+MFA_CACHE_DIR="${c_offa}" "${BINARY}" config set watcher_enabled false >/dev/null
+MFA_CACHE_DIR="${c_offa}" "${BINARY}" config set auto_index true >/dev/null
 # Hold the session open until auto-indexing has produced the project DB, so
 # registration's precondition is satisfied and the absence below is the gate.
 PRE_CLOSE_DB=1
@@ -245,8 +245,8 @@ echo "ok: disabled+auto_index — auto-index still ran, no watcher.start, no reg
 # =============================================================================
 CURRENT_RUN="run 3: enabled positive control"
 c_on="${work}/cache-on"
-CBM_CACHE_DIR="${c_on}" "${BINARY}" config set watcher_enabled true >/dev/null
-CBM_CACHE_DIR="${c_on}" "${BINARY}" config set auto_index true >/dev/null
+MFA_CACHE_DIR="${c_on}" "${BINARY}" config set watcher_enabled true >/dev/null
+MFA_CACHE_DIR="${c_on}" "${BINARY}" config set auto_index true >/dev/null
 # The control must observe registration actually happening in this exact session
 # shape — that is what makes its absence in runs 1-2 evidence rather than noise.
 PRE_CLOSE_WAIT='msg=watcher\.watch( |$)'

@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
-    <id>codebase-memory-mcp</id>
+    <id>memory-for-ai</id>
     <version>0.10.8</version>
-    <title>codebase-memory-mcp</title>
-    <authors>DeusData</authors>
-    <projectUrl>https://github.com/DeusData/codebase-memory-mcp</projectUrl>
-    <licenseUrl>https://github.com/DeusData/codebase-memory-mcp/blob/main/LICENSE</licenseUrl>
+    <title>memory-for-ai</title>
+    <authors>LonelyTraderBay</authors>
+    <projectUrl>https://github.com/LonelyTraderBay/memory-for-ai</projectUrl>
+    <licenseUrl>https://github.com/LonelyTraderBay/memory-for-ai/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <projectSourceUrl>https://github.com/DeusData/codebase-memory-mcp</projectSourceUrl>
-    <bugTrackerUrl>https://github.com/DeusData/codebase-memory-mcp/issues</bugTrackerUrl>
+    <projectSourceUrl>https://github.com/LonelyTraderBay/memory-for-ai</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/LonelyTraderBay/memory-for-ai/issues</bugTrackerUrl>
     <tags>mcp ai claude code-intelligence codebase developer-tools tree-sitter llm</tags>
     <summary>Fast code intelligence engine for AI coding agents</summary>
     <description>
-codebase-memory-mcp is a native MCP server distributed with authenticated
+memory-for-ai is a native MCP server distributed with authenticated
 release-owned runtime assets. Chocolatey retains the complete extracted runtime
 set and exposes its executable through a PATH shim.
 
@@ -24,11 +24,11 @@ vendored tree-sitter grammars. No hosted service or API key. Plug and play acros
 
 After installation, run:
 
-    codebase-memory-mcp install
+    memory-for-ai install
 
 to configure your coding agents automatically.
     </description>
-    <releaseNotes>https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.10.8</releaseNotes>
+    <releaseNotes>https://github.com/LonelyTraderBay/memory-for-ai/releases/tag/v0.10.8</releaseNotes>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />

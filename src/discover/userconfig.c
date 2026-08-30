@@ -2,9 +2,9 @@
  * userconfig.c — User-defined extension→language mappings.
  *
  * Reads extra_extensions from:
- *   Global:  $XDG_CONFIG_HOME/codebase-memory-mcp/config.json
- *            (falls back to ~/.config/codebase-memory-mcp/config.json)
- *   Project: {repo_root}/.codebase-memory.json
+ *   Global:  $XDG_CONFIG_HOME/memory-for-ai/config.json
+ *            (falls back to ~/.config/memory-for-ai/config.json)
+ *   Project: {repo_root}/.memory-for-ai.json
  *
  * Project config wins over global. Unknown language values warn and are
  * skipped (fail-open). Missing files are silently ignored.
@@ -13,6 +13,7 @@
 #include "cbm.h" /* CBMLanguage, CBM_LANG_* */
 #include "foundation/constants.h"
 #include "foundation/platform.h" /* cbm_safe_getenv */
+#include "foundation/product.h"
 #include "foundation/compat_fs.h"
 #include "foundation/sha256.h"
 
@@ -331,7 +332,8 @@ cbm_userconfig_t *cbm_userconfig_load(const char *repo_path) {
     const char *cfg_base = cbm_app_config_dir();
     const char *cfg_fallback = cfg_base ? cfg_base : "/tmp";
     char global_path[PATH_BUF_SZ];
-    snprintf(global_path, sizeof(global_path), "%s/codebase-memory-mcp/config.json", cfg_fallback);
+    snprintf(global_path, sizeof(global_path), "%s/%s/config.json", cfg_fallback,
+             CBM_PRODUCT_CACHE_DIR_NAME);
 
     if (load_config_file(global_path, &entries, &count, cfg->global_source_sha256) != 0) {
         for (int i = 0; i < count; i++) {
@@ -348,7 +350,7 @@ cbm_userconfig_t *cbm_userconfig_load(const char *repo_path) {
     userconfig_source_digest("not-applicable", NULL, 0, cfg->project_source_sha256);
     if (repo_path && repo_path[0]) {
         char project_path[PATH_BUF_SZ];
-        snprintf(project_path, sizeof(project_path), "%s/.codebase-memory.json", repo_path);
+        snprintf(project_path, sizeof(project_path), "%s/.memory-for-ai.json", repo_path);
 
         if (load_config_file(project_path, &entries, &count, cfg->project_source_sha256) != 0) {
             /* Free already-allocated entries */

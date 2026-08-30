@@ -33,7 +33,7 @@ USER_="${CBM_VM_USER:-test}"
 HOST_KEY="${CBM_VM_HOST_KEY_SHA256:?set CBM_VM_HOST_KEY_SHA256 in ~/.claude/cbm-vm/config}"
 LOCAL_BRANCH="$(git -C "$ROOT" branch --show-current)"
 BRANCH="${CBM_VM_BRANCH:-${LOCAL_BRANCH:-main}}"
-REPO_URL="${CBM_VM_REPO:-https://github.com/DeusData/codebase-memory-mcp.git}"
+REPO_URL="${CBM_VM_REPO:-https://github.com/LonelyTraderBay/memory-for-ai.git}"
 MSYS2_SFX_URL="https://github.com/msys2/msys2-installer/releases/download/2026-06-11/msys2-base-x86_64-20260611.sfx.exe"
 MSYS2_SFX_SHA256="c105946e64e08f099ac0e4647461ce762b95333ad211777666476a9a41451d65"
 
@@ -114,6 +114,6 @@ step "5/6 build: native ARM64 binary + test-runner (no ASan on arm64)"
 vm "clangarm64" "cd /c/cbm && make -j${JOBS} -f Makefile.cbm CC=clang CXX=clang++ SANITIZE= cbm build/c/test-runner > /tmp/provision-build.log 2>&1 && echo BUILD_OK || (echo BUILD_FAIL; tail -15 /tmp/provision-build.log; exit 1)"
 
 step "6/6 smoke: binary + test-runner start"
-vm "clangarm64" "cd /c/cbm && ./build/c/codebase-memory-mcp.exe --version && ./build/c/test-runner --list-suites | head -3"
+vm "clangarm64" "cd /c/cbm && ./build/c/memory-for-ai.exe --version && ./build/c/test-runner --list-suites | head -3"
 
 printf '\n\033[1mPROVISION COMPLETE\033[0m — daily driving: test-infrastructure/vm/win.sh\n'

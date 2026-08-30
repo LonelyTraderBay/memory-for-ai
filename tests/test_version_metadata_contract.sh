@@ -104,11 +104,11 @@ SURFACES=(
     "pkg/npm/package.json|release"
     "pkg/pypi/pyproject.toml|release"
     "pkg/pypi/src/codebase_memory_mcp/_cli.py|release"
-    "pkg/go/cmd/codebase-memory-mcp/main.go|release"
-    "pkg/chocolatey/codebase-memory-mcp.nuspec|release"
+    "pkg/go/cmd/memory-for-ai/main.go|release"
+    "pkg/chocolatey/memory-for-ai.nuspec|release"
     "pkg/chocolatey/tools/chocolateyInstall.ps1|release"
-    "pkg/homebrew/Formula/codebase-memory-mcp.rb|pin:0.10.3"
-    "pkg/scoop/codebase-memory-mcp.json|pin:0.8.1"
+    "pkg/homebrew/Formula/memory-for-ai.rb|pin:0.10.3"
+    "pkg/scoop/memory-for-ai.json|pin:0.8.1"
     "pkg/aur/PKGBUILD|pin:0.8.1"
     "pkg/aur/.SRCINFO|pin:0.8.1"
 )
@@ -118,8 +118,8 @@ SURFACES=(
 # (gh release download v<X.Y.Z> --pattern checksums.txt), replace the version
 # AND every sha256 it pins, then move the entry to "release" above.
 PIN_REASONS=(
-    "pkg/homebrew/Formula/codebase-memory-mcp.rb|pins 4 per-asset sha256 (darwin/linux x arm/intel); last re-pinned for v0.10.3"
-    "pkg/scoop/codebase-memory-mcp.json|pins the windows-amd64.zip sha256; last re-pinned for v0.8.1"
+    "pkg/homebrew/Formula/memory-for-ai.rb|pins 4 per-asset sha256 (darwin/linux x arm/intel); last re-pinned for v0.10.3"
+    "pkg/scoop/memory-for-ai.json|pins the windows-amd64.zip sha256; last re-pinned for v0.8.1"
     "pkg/aur/PKGBUILD|pins sha256sums_x86_64 + sha256sums_aarch64; last re-pinned for v0.8.1"
     "pkg/aur/.SRCINFO|generated from PKGBUILD, so it must move with it, not before it"
 )

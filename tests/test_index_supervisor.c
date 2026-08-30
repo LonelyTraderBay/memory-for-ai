@@ -367,7 +367,7 @@ TEST(index_supervisor_async_jobs_are_isolated_cancellable_and_terminal_cached) {
     (void)snprintf(quarantine_a, sizeof(quarantine_a), "%s/quarantine-a", cache);
     (void)snprintf(quarantine_b, sizeof(quarantine_b), "%s/quarantine-b", cache);
 
-    const char *old_cache = getenv("CBM_CACHE_DIR");
+    const char *old_cache = getenv("MFA_CACHE_DIR");
     const char *old_single = getenv("CBM_INDEX_SINGLE_THREAD");
     const char *old_marker = getenv("CBM_INDEX_MARKER_FILE");
     const char *old_quarantine = getenv("CBM_INDEX_QUARANTINE_FILE");
@@ -375,7 +375,7 @@ TEST(index_supervisor_async_jobs_are_isolated_cancellable_and_terminal_cached) {
     char *saved_single = old_single ? cbm_strdup(old_single) : NULL;
     char *saved_marker = old_marker ? cbm_strdup(old_marker) : NULL;
     char *saved_quarantine = old_quarantine ? cbm_strdup(old_quarantine) : NULL;
-    (void)cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache, 1);
     (void)cbm_setenv("CBM_INDEX_SINGLE_THREAD", "parent-single", 1);
     (void)cbm_setenv("CBM_INDEX_MARKER_FILE", "parent-marker", 1);
     (void)cbm_setenv("CBM_INDEX_QUARANTINE_FILE", "parent-quarantine", 1);
@@ -496,7 +496,7 @@ TEST(index_supervisor_async_jobs_are_isolated_cancellable_and_terminal_cached) {
     (void)cbm_unlink(log_b);
     (void)cbm_unlink(marker_a);
     (void)cbm_unlink(marker_b);
-    index_supervisor_test_restore_env("CBM_CACHE_DIR", saved_cache);
+    index_supervisor_test_restore_env("MFA_CACHE_DIR", saved_cache);
     index_supervisor_test_restore_env("CBM_INDEX_SINGLE_THREAD", saved_single);
     index_supervisor_test_restore_env("CBM_INDEX_MARKER_FILE", saved_marker);
     index_supervisor_test_restore_env("CBM_INDEX_QUARANTINE_FILE", saved_quarantine);
@@ -533,9 +533,9 @@ TEST(index_supervisor_sync_wrapper_forwards_cancel_and_drains_tree) {
     char cache[INDEX_SUPERVISOR_TEST_PATH_CAP];
     (void)snprintf(cache, sizeof(cache), "%s/cbm-index-sync-cancel-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
-    const char *old_cache = getenv("CBM_CACHE_DIR");
+    const char *old_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache = old_cache ? cbm_strdup(old_cache) : NULL;
-    (void)cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     atomic_int cancel_requested;
     atomic_init(&cancel_requested, 1);
@@ -546,7 +546,7 @@ TEST(index_supervisor_sync_wrapper_forwards_cancel_and_drains_tree) {
     bool contained = run_status == 0 && result.cancellation_requested && result.tree_quiesced &&
                      !result.supervision_failed && result.response == NULL;
     cbm_index_worker_result_free(&result);
-    index_supervisor_test_restore_env("CBM_CACHE_DIR", saved_cache);
+    index_supervisor_test_restore_env("MFA_CACHE_DIR", saved_cache);
     (void)th_rmtree(cache);
 
     ASSERT_TRUE(contained);
@@ -592,10 +592,10 @@ TEST(index_supervisor_terminal_log_lifecycle_matches_outcome_and_profiling) {
     char cache[INDEX_SUPERVISOR_TEST_PATH_CAP];
     (void)snprintf(cache, sizeof(cache), "%s/cbm-index-logs-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
-    const char *old_cache = getenv("CBM_CACHE_DIR");
+    const char *old_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache = old_cache ? cbm_strdup(old_cache) : NULL;
     bool saved_profile = cbm_profile_active;
-    (void)cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     cbm_proc_outcome_t clean_outcome = CBM_PROC_SPAWN_FAILED;
     cbm_proc_outcome_t profile_outcome = CBM_PROC_SPAWN_FAILED;
@@ -622,7 +622,7 @@ TEST(index_supervisor_terminal_log_lifecycle_matches_outcome_and_profiling) {
 #endif
 
     cbm_profile_active = saved_profile;
-    index_supervisor_test_restore_env("CBM_CACHE_DIR", saved_cache);
+    index_supervisor_test_restore_env("MFA_CACHE_DIR", saved_cache);
     (void)th_rmtree(cache);
 
     ASSERT_TRUE(clean_terminal);
@@ -647,9 +647,9 @@ TEST(index_supervisor_drains_terminal_backlog_into_request_progress_callback) {
     char cache[INDEX_SUPERVISOR_TEST_PATH_CAP];
     (void)snprintf(cache, sizeof(cache), "%s/cbm-index-relay-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
-    const char *old_cache = getenv("CBM_CACHE_DIR");
+    const char *old_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache = old_cache ? cbm_strdup(old_cache) : NULL;
-    (void)cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     FILE *progress = tmpfile();
     ASSERT_NOT_NULL(progress);
@@ -697,7 +697,7 @@ TEST(index_supervisor_drains_terminal_backlog_into_request_progress_callback) {
     if (!worker_logged || !terminal) {
         index_supervisor_test_dump("backlog worker log", log_path);
     }
-    index_supervisor_test_restore_env("CBM_CACHE_DIR", saved_cache);
+    index_supervisor_test_restore_env("MFA_CACHE_DIR", saved_cache);
     (void)th_rmtree(cache);
 
     ASSERT_EQ(start_rc, 0);
@@ -722,9 +722,9 @@ TEST(index_supervisor_oversized_response_is_contained_and_log_is_retained) {
     char cache[INDEX_SUPERVISOR_TEST_PATH_CAP];
     (void)snprintf(cache, sizeof(cache), "%s/cbm-index-oversize-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
-    const char *old_cache = getenv("CBM_CACHE_DIR");
+    const char *old_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache = old_cache ? cbm_strdup(old_cache) : NULL;
-    (void)cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     cbm_index_worker_handle_t *handle = NULL;
     int start_rc = cbm_index_worker_start("{\"__cbm_test_worker\":\"oversize\"}", 0, false, NULL,
@@ -751,7 +751,7 @@ TEST(index_supervisor_oversized_response_is_contained_and_log_is_retained) {
         index_supervisor_test_cleanup_handle(handle);
     }
     (void)cbm_unlink(log_path);
-    index_supervisor_test_restore_env("CBM_CACHE_DIR", saved_cache);
+    index_supervisor_test_restore_env("MFA_CACHE_DIR", saved_cache);
     (void)th_rmtree(cache);
 
     ASSERT_EQ(start_rc, 0);
@@ -781,9 +781,9 @@ TEST(index_supervisor_killed_worker_log_is_never_empty_and_names_the_run) {
     char cache[INDEX_SUPERVISOR_TEST_PATH_CAP];
     (void)snprintf(cache, sizeof(cache), "%s/cbm-index-logheader-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
-    const char *old_cache = getenv("CBM_CACHE_DIR");
+    const char *old_cache = getenv("MFA_CACHE_DIR");
     char *saved_cache = old_cache ? cbm_strdup(old_cache) : NULL;
-    (void)cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    (void)cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     /* A repo path with a space: the header must survive JSON-escaping intact,
      * because Windows reporters index paths like C:/Users/Some Name/repo. */
@@ -833,7 +833,7 @@ TEST(index_supervisor_killed_worker_log_is_never_empty_and_names_the_run) {
         index_supervisor_test_dump("buffered-kill worker log", log_path);
     }
     (void)cbm_unlink(log_path);
-    index_supervisor_test_restore_env("CBM_CACHE_DIR", saved_cache);
+    index_supervisor_test_restore_env("MFA_CACHE_DIR", saved_cache);
     (void)th_rmtree(cache);
 
     ASSERT_EQ(start_rc, 0);

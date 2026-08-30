@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BINARY="${CBM_TEST_BINARY:-${ROOT}/build/c/codebase-memory-mcp}"
+BINARY="${CBM_TEST_BINARY:-${ROOT}/build/c/memory-for-ai}"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -117,6 +117,6 @@ while (( SECONDS < deadline )); do
   sleep 0.2
 done
 
-echo "codebase-memory-mcp child ${child_pid} survived parent death" >&2
+echo "memory-for-ai child ${child_pid} survived parent death" >&2
 [[ -s "${tmpdir}/child.err" ]] && cat "${tmpdir}/child.err" >&2
 exit 1

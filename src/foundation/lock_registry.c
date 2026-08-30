@@ -308,8 +308,8 @@ bool cbm_lock_registry_resource_names(const char *resource_key,
     }
     char digest[CBM_SHA256_HEX_LEN + 1];
     cbm_sha256_hex(resource_key, length, digest);
-    int turn_written = snprintf(turn_out, CBM_LOCK_REGISTRY_NAME_CAP, "cbm-%s.turn", digest);
-    int rw_written = snprintf(rw_out, CBM_LOCK_REGISTRY_NAME_CAP, "cbm-%s.rw", digest);
+    int turn_written = snprintf(turn_out, CBM_LOCK_REGISTRY_NAME_CAP, "mfa-%s.turn", digest);
+    int rw_written = snprintf(rw_out, CBM_LOCK_REGISTRY_NAME_CAP, "mfa-%s.rw", digest);
     return turn_written > 0 && turn_written < (int)CBM_LOCK_REGISTRY_NAME_CAP && rw_written > 0 &&
            rw_written < (int)CBM_LOCK_REGISTRY_NAME_CAP;
 }

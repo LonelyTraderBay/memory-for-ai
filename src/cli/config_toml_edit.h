@@ -30,7 +30,7 @@ int cbm_toml_upsert_managed_block(const char *file_path, const char *begin_marke
 int cbm_toml_remove_managed_block(const char *file_path, const char *begin_marker,
                                   const char *end_marker);
 
-/* Remove one pre-marker codebase-memory-mcp table only when it has the known
+/* Remove one pre-marker memory-for-ai table only when it has the known
  * historical schema: one owned command basename, optional empty args, and no
  * unknown assignments or descendant tables. Returns 1 for a syntactically
  * valid same-name foreign table and leaves it byte-identical, 0 for removed or

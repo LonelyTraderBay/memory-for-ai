@@ -717,7 +717,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
 /* Exact semantic inputs for no-op/forced-full routing. The manifest contains
  * every discovered source plus repository controls actually consumed by
  * discovery, package mapping, path aliases, and extension overrides. */
-#define CBM_SEMANTIC_INPUT_PREFIX ".codebase-memory/.semantic-input/"
+#define CBM_SEMANTIC_INPUT_PREFIX ".memory-for-ai/.semantic-input/"
 #define CBM_SEMANTIC_INPUT_GIT_CONTEXT CBM_SEMANTIC_INPUT_PREFIX "git-context-v1"
 #define CBM_SEMANTIC_INPUT_GLOBAL_CONFIG CBM_SEMANTIC_INPUT_PREFIX "global-extension-config-v1"
 #define CBM_SEMANTIC_INPUT_PROJECT_CONFIG CBM_SEMANTIC_INPUT_PREFIX "project-extension-config-v1"

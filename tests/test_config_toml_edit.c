@@ -24,26 +24,26 @@
 #define CTE_PATH_CAP 1024
 #define CTE_FILE_CAP 16384
 
-static const char *CTE_BEGIN = "# BEGIN codebase-memory-mcp";
-static const char *CTE_END = "# END codebase-memory-mcp";
+static const char *CTE_BEGIN = "# BEGIN memory-for-ai";
+static const char *CTE_END = "# END memory-for-ai";
 static const char *CTE_TABLE = "mcp_servers";
 static const char *CTE_KEY = "name";
-static const char *CTE_IDENTITY = "codebase-memory-mcp";
-static const char *CTE_BODY = "name = \"codebase-memory-mcp\"\n"
-                              "command = \"codebase-memory-mcp\"\n";
-static const char *CTE_CODEX_BEGIN = "# >>> codebase-memory-mcp SessionStart >>>";
-static const char *CTE_CODEX_END = "# <<< codebase-memory-mcp SessionStart <<<";
-static const char *CTE_CODEX_COMMAND = "codebase-memory-mcp hook-augment";
+static const char *CTE_IDENTITY = "memory-for-ai";
+static const char *CTE_BODY = "name = \"memory-for-ai\"\n"
+                              "command = \"memory-for-ai\"\n";
+static const char *CTE_CODEX_BEGIN = "# >>> memory-for-ai SessionStart >>>";
+static const char *CTE_CODEX_END = "# <<< memory-for-ai SessionStart <<<";
+static const char *CTE_CODEX_COMMAND = "memory-for-ai hook-augment";
 static const char *CTE_CODEX_BLOCK =
     "[[hooks.SessionStart]]\n"
     "matcher = \"startup|resume|clear|compact\"\n\n"
     "[[hooks.SessionStart.hooks]]\n"
-    "type = \"command\"\ncommand = \"/opt/codebase-memory-mcp hook-augment\"\n"
-    "command_windows = \"& C:\\\\bin\\\\codebase-memory-mcp.exe hook-augment\"\ntimeout = 5\n\n"
+    "type = \"command\"\ncommand = \"/opt/memory-for-ai hook-augment\"\n"
+    "command_windows = \"& C:\\\\bin\\\\memory-for-ai.exe hook-augment\"\ntimeout = 5\n\n"
     "[[hooks.SubagentStart]]\nmatcher = \"*\"\n\n"
     "[[hooks.SubagentStart.hooks]]\n"
-    "type = \"command\"\ncommand = \"/opt/codebase-memory-mcp hook-augment\"\n"
-    "command_windows = \"& C:\\\\bin\\\\codebase-memory-mcp.exe hook-augment\"\ntimeout = 5\n";
+    "type = \"command\"\ncommand = \"/opt/memory-for-ai hook-augment\"\n"
+    "command_windows = \"& C:\\\\bin\\\\memory-for-ai.exe hook-augment\"\ntimeout = 5\n";
 
 static int cte_codex_edit(const char *path, cbm_toml_codex_hook_action_t action, int check_only) {
     return cbm_toml_reconcile_codex_hooks(path, CTE_CODEX_BEGIN, CTE_CODEX_END, CTE_CODEX_COMMAND,
@@ -356,12 +356,12 @@ TEST(config_toml_managed_markers_ignore_multiline_strings) {
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
     const char *original = "basic = \"\"\"\n"
-                           "# BEGIN codebase-memory-mcp\n"
-                           "# END codebase-memory-mcp\n"
+                           "# BEGIN memory-for-ai\n"
+                           "# END memory-for-ai\n"
                            "\"\"\"\n"
                            "literal = '''\n"
-                           "# BEGIN codebase-memory-mcp\n"
-                           "# END codebase-memory-mcp\n"
+                           "# BEGIN memory-for-ai\n"
+                           "# END memory-for-ai\n"
                            "'''\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, original), 0);
@@ -384,12 +384,12 @@ TEST(config_toml_managed_rejects_marker_in_block_and_unclosed_multiline) {
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "keep = true\n"), 0);
     ASSERT_EQ(cbm_toml_upsert_managed_block(path, CTE_BEGIN, CTE_END,
-                                            "value = true\n# END codebase-memory-mcp\n"),
+                                            "value = true\n# END memory-for-ai\n"),
               -1);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, "keep = true\n");
 
-    const char *unclosed = "description = \"\"\"\n# BEGIN codebase-memory-mcp\n";
+    const char *unclosed = "description = \"\"\"\n# BEGIN memory-for-ai\n";
     ASSERT_EQ(th_write_file(path, unclosed), 0);
     ASSERT_EQ(cbm_toml_upsert_managed_block(path, CTE_BEGIN, CTE_END, "owned = true\n"), -1);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
@@ -401,14 +401,14 @@ TEST(config_toml_managed_rejects_marker_in_block_and_unclosed_multiline) {
 TEST(config_toml_codex_semantic_conflicts_fail_closed) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
-    const char *codex_block = "[mcp_servers.codebase-memory-mcp]\ncommand = \"new\"\n";
+    const char *codex_block = "[mcp_servers.memory-for-ai]\ncommand = \"new\"\n";
     static const char *conflicts[] = {
-        "[mcp_servers.\"codebase-memory-mcp\"]\ncommand = \"old\"\n",
-        "[\"mcp_servers\".'codebase-memory-mcp']\ncommand = \"old\"\n",
-        "mcp_servers.\"codebase-memory-mcp\".command = \"old\"\n",
-        "[mcp_servers]\n\"codebase-memory-mcp\".command = \"old\"\n",
-        ("[mcp_servers.codebase-memory-mcp]\ncommand = \"one\"\n"
-         "[mcp_servers.\"codebase-memory-mcp\"]\ncommand = \"two\"\n"),
+        "[mcp_servers.\"memory-for-ai\"]\ncommand = \"old\"\n",
+        "[\"mcp_servers\".'memory-for-ai']\ncommand = \"old\"\n",
+        "mcp_servers.\"memory-for-ai\".command = \"old\"\n",
+        "[mcp_servers]\n\"memory-for-ai\".command = \"old\"\n",
+        ("[mcp_servers.memory-for-ai]\ncommand = \"one\"\n"
+         "[mcp_servers.\"memory-for-ai\"]\ncommand = \"two\"\n"),
     };
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     for (size_t i = 0; i < sizeof(conflicts) / sizeof(conflicts[0]); ++i) {
@@ -426,12 +426,12 @@ TEST(config_toml_vibe_body_validation_fail_closed) {
     static const char *invalid_bodies[] = {
         "command = \"missing identity\"\n",
         "name = \"wrong\"\ncommand = \"x\"\n",
-        "name = \"codebase-memory-mcp\"\nname = \"codebase-memory-mcp\"\n",
-        "name = \"codebase-memory-mcp\"\n[evil]\npwned = true\n",
-        "name = \"codebase-memory-mcp\"\n[[evil]]\npwned = true\n",
-        "name = \"codebase-memory-mcp\"\ncommand.value = \"x\"\n",
-        "name = \"codebase-memory-mcp\"\ndescription = \"\"\"ambiguous\"\"\"\n",
-        "name = \"codebase-memory-mcp\"\nthis is not an assignment\n",
+        "name = \"memory-for-ai\"\nname = \"memory-for-ai\"\n",
+        "name = \"memory-for-ai\"\n[evil]\npwned = true\n",
+        "name = \"memory-for-ai\"\n[[evil]]\npwned = true\n",
+        "name = \"memory-for-ai\"\ncommand.value = \"x\"\n",
+        "name = \"memory-for-ai\"\ndescription = \"\"\"ambiguous\"\"\"\n",
+        "name = \"memory-for-ai\"\nthis is not an assignment\n",
     };
     for (size_t i = 0; i < sizeof(invalid_bodies) / sizeof(invalid_bodies[0]); ++i) {
         ASSERT(cte_assert_unchanged_after_vibe_upsert(path, original, invalid_bodies[i]));
@@ -446,14 +446,14 @@ TEST(config_toml_target_table_rejects_significant_nonassignments_byte_identicall
     char actual[CTE_FILE_CAP];
     static const char *malformed[] = {
         "[[mcp_servers]]\n"
-        "name = \"codebase-memory-mcp\"\n"
+        "name = \"memory-for-ai\"\n"
         "this is not an assignment\n"
         "command = \"winner\"\n",
         "[[mcp_servers]]\n"
-        "name = \"codebase-memory-mcp\"\n"
+        "name = \"memory-for-ai\"\n"
         "command \"missing equals\"\n",
         "[[mcp_servers]]\n"
-        "name = \"codebase-memory-mcp\"\n"
+        "name = \"memory-for-ai\"\n"
         "@invalid\n",
     };
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
@@ -470,14 +470,14 @@ TEST(config_toml_target_table_rejects_significant_nonassignments_byte_identicall
         ASSERT_STR_EQ(actual, malformed[i]);
     }
 
-    const char *malformed_regular = "[mcp_servers.codebase-memory-mcp]\n"
+    const char *malformed_regular = "[mcp_servers.memory-for-ai]\n"
                                     "command = \"winner\"\n"
                                     "this is not an assignment\n"
                                     "[unrelated]\n"
                                     "keep = true\n";
     ASSERT_EQ(th_write_file(path, malformed_regular), 0);
     ASSERT_EQ(
-        cbm_toml_remove_legacy_table(path, "mcp_servers.codebase-memory-mcp", CTE_BEGIN, CTE_END),
+        cbm_toml_remove_legacy_table(path, "mcp_servers.memory-for-ai", CTE_BEGIN, CTE_END),
         -1);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, malformed_regular);
@@ -490,14 +490,14 @@ TEST(config_toml_legacy_remove_reports_foreign_table_without_mutation) {
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
     const char *foreign = "theme = \"dark\"\n"
-                          "[mcp_servers.codebase-memory-mcp]\n"
+                          "[mcp_servers.memory-for-ai]\n"
                           "command = \"/opt/user-tool\"\n"
                           "args = []\n"
                           "user_field = true\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, foreign), 0);
     ASSERT_EQ(
-        cbm_toml_remove_legacy_table(path, "mcp_servers.codebase-memory-mcp", CTE_BEGIN, CTE_END),
+        cbm_toml_remove_legacy_table(path, "mcp_servers.memory-for-ai", CTE_BEGIN, CTE_END),
         1);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, foreign);
@@ -530,7 +530,7 @@ TEST(config_toml_vibe_remove_includes_descendant_tables) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\"\n"
+                                  "name = \"memory-for-ai\"\n"
                                   "command = \"owned\"\n"
                                   "[mcp_servers.environment]\n"
                                   "TOKEN = \"owned\"\n"
@@ -553,12 +553,12 @@ TEST(config_toml_vibe_reinstall_preserves_user_fields_and_descendants) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
-    const char *desired = "name = \"codebase-memory-mcp\"\n"
+    const char *desired = "name = \"memory-for-ai\"\n"
                           "transport = \"stdio\"\n"
                           "command = \"new\"\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\" # identity comment\n"
+                                  "name = \"memory-for-ai\" # identity comment\n"
                                   "command = \"old\"\n"
                                   "timeout = 45 # user field\n"
                                   "args = [\"--user\"]\n"
@@ -589,7 +589,7 @@ TEST(config_toml_preserves_bom_crlf_and_handles_no_final_newline) {
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT(memcmp(actual, "\xEF\xBB\xBF", 3U) == 0);
     ASSERT_NOT_NULL(strstr(actual, "keep = true\r\n"));
-    ASSERT_NOT_NULL(strstr(actual, "# BEGIN codebase-memory-mcp\r\nowned = true\r\n"));
+    ASSERT_NOT_NULL(strstr(actual, "# BEGIN memory-for-ai\r\nowned = true\r\n"));
     ASSERT_EQ(cbm_toml_upsert_managed_block(path, CTE_BEGIN, CTE_END, "owned = true\n"), 0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_EQ(cte_occurrences(actual, CTE_BEGIN), 1);
@@ -597,9 +597,9 @@ TEST(config_toml_preserves_bom_crlf_and_handles_no_final_newline) {
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, "\xEF\xBB\xBFkeep = true\r\n");
 
-    ASSERT_EQ(th_write_file(path, "\xEF\xBB\xBF# BEGIN codebase-memory-mcp\r\n"
+    ASSERT_EQ(th_write_file(path, "\xEF\xBB\xBF# BEGIN memory-for-ai\r\n"
                                   "old = true\r\n"
-                                  "# END codebase-memory-mcp\r\n"),
+                                  "# END memory-for-ai\r\n"),
               0);
     ASSERT_EQ(cbm_toml_upsert_managed_block(path, CTE_BEGIN, CTE_END, "new = true\n"), 0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
@@ -611,14 +611,14 @@ TEST(config_toml_preserves_bom_crlf_and_handles_no_final_newline) {
     ASSERT_STR_EQ(actual, "\xEF\xBB\xBF");
 
     ASSERT_EQ(th_write_file(path, "\xEF\xBB\xBF[[\"mcp_servers\"]]\r\n"
-                                  "name = \"codebase-memory-mcp\"\r\n"
+                                  "name = \"memory-for-ai\"\r\n"
                                   "command = \"old\""),
               0);
     ASSERT_EQ(cbm_toml_upsert_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY, CTE_BODY),
               0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT(memcmp(actual, "\xEF\xBB\xBF", 3U) == 0);
-    ASSERT_NOT_NULL(strstr(actual, "command = \"codebase-memory-mcp\"\r\n"));
+    ASSERT_NOT_NULL(strstr(actual, "command = \"memory-for-ai\"\r\n"));
 
     ASSERT_EQ(th_write_file(path, "keep = true"), 0);
     ASSERT_EQ(cbm_toml_upsert_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY, CTE_BODY),
@@ -680,9 +680,9 @@ TEST(config_toml_managed_fresh_missing_file) {
 
     ASSERT_EQ(cbm_toml_upsert_managed_block(path, CTE_BEGIN, CTE_END, "enabled = true\n"), 0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
-    ASSERT_STR_EQ(actual, "# BEGIN codebase-memory-mcp\n"
+    ASSERT_STR_EQ(actual, "# BEGIN memory-for-ai\n"
                           "enabled = true\n"
-                          "# END codebase-memory-mcp\n");
+                          "# END memory-for-ai\n");
     th_cleanup(dir);
     PASS();
 }
@@ -693,18 +693,18 @@ TEST(config_toml_managed_replace_preserves_unrelated) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "title = \"keep\"\n"
-                                  "# BEGIN codebase-memory-mcp\n"
+                                  "# BEGIN memory-for-ai\n"
                                   "old = true\n"
-                                  "# END codebase-memory-mcp\n"
+                                  "# END memory-for-ai\n"
                                   "tail = \"keep\"\n"),
               0);
 
     ASSERT_EQ(cbm_toml_upsert_managed_block(path, CTE_BEGIN, CTE_END, "new = \"value\""), 0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, "title = \"keep\"\n"
-                          "# BEGIN codebase-memory-mcp\n"
+                          "# BEGIN memory-for-ai\n"
                           "new = \"value\"\n"
-                          "# END codebase-memory-mcp\n"
+                          "# END memory-for-ai\n"
                           "tail = \"keep\"\n");
     th_cleanup(dir);
     PASS();
@@ -716,9 +716,9 @@ TEST(config_toml_managed_remove) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "before = true\n"
-                                  "# BEGIN codebase-memory-mcp\n"
+                                  "# BEGIN memory-for-ai\n"
                                   "owned = true\n"
-                                  "# END codebase-memory-mcp\n"
+                                  "# END memory-for-ai\n"
                                   "after = true\n"),
               0);
 
@@ -753,7 +753,7 @@ TEST(config_toml_managed_unbalanced_duplicate_fail_closed) {
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
     const char *unbalanced = "keep = true\n"
-                             "# BEGIN codebase-memory-mcp\n"
+                             "# BEGIN memory-for-ai\n"
                              "owned = true\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, unbalanced), 0);
@@ -761,12 +761,12 @@ TEST(config_toml_managed_unbalanced_duplicate_fail_closed) {
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, unbalanced);
 
-    const char *duplicate = "# BEGIN codebase-memory-mcp\n"
+    const char *duplicate = "# BEGIN memory-for-ai\n"
                             "one = true\n"
-                            "# END codebase-memory-mcp\n"
-                            "# BEGIN codebase-memory-mcp\n"
+                            "# END memory-for-ai\n"
+                            "# BEGIN memory-for-ai\n"
                             "two = true\n"
-                            "# END codebase-memory-mcp\n";
+                            "# END memory-for-ai\n";
     ASSERT_EQ(th_write_file(path, duplicate), 0);
     ASSERT_EQ(cbm_toml_remove_managed_block(path, CTE_BEGIN, CTE_END), -1);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
@@ -798,8 +798,8 @@ TEST(config_toml_vibe_insert_among_other_tables) {
                           "name = \"other-server\"\n"
                           "command = \"other\"\n\n"
                           "[[mcp_servers]]\n"
-                          "name = \"codebase-memory-mcp\"\n"
-                          "command = \"codebase-memory-mcp\"\n");
+                          "name = \"memory-for-ai\"\n"
+                          "command = \"memory-for-ai\"\n");
     th_cleanup(dir);
     PASS();
 }
@@ -808,7 +808,7 @@ TEST(config_toml_vibe_replace_target_preserves_comments_tables) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
-    const char *replacement = "name = \"codebase-memory-mcp\"\n"
+    const char *replacement = "name = \"memory-for-ai\"\n"
                               "command = \"/new/path\"\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "# keep top\n"
@@ -817,7 +817,7 @@ TEST(config_toml_vibe_replace_target_preserves_comments_tables) {
                                   "command = \"other\"\n\n"
                                   "# keep target preface\n"
                                   "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\" # owned\n"
+                                  "name = \"memory-for-ai\" # owned\n"
                                   "command = \"old\"\n"
                                   "args = [\"--old\"]\n\n"
                                   "# keep after target\n"
@@ -844,14 +844,14 @@ TEST(config_toml_vibe_owned_table_installs_idempotently_and_removes_exact_state)
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
-    const char *canonical = "name = \"codebase-memory-mcp\"\n"
+    const char *canonical = "name = \"memory-for-ai\"\n"
                             "transport = \"stdio\"\n"
-                            "command = \"/opt/codebase-memory-mcp\"\n"
+                            "command = \"/opt/memory-for-ai\"\n"
                             "args = []\n";
     const char *installed = "[[mcp_servers]]\n"
-                            "name = \"codebase-memory-mcp\"\n"
+                            "name = \"memory-for-ai\"\n"
                             "transport = \"stdio\"\n"
-                            "command = \"/opt/codebase-memory-mcp\"\n"
+                            "command = \"/opt/memory-for-ai\"\n"
                             "args = []\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
 
@@ -880,21 +880,21 @@ TEST(config_toml_vibe_owned_table_preserves_foreign_same_name_state) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
-    const char *canonical = "name = \"codebase-memory-mcp\"\n"
+    const char *canonical = "name = \"memory-for-ai\"\n"
                             "transport = \"stdio\"\n"
-                            "command = \"/opt/codebase-memory-mcp\"\n"
+                            "command = \"/opt/memory-for-ai\"\n"
                             "args = []\n";
     const char *foreign_cases[] = {
         "# user-owned Vibe server\n"
         "[[mcp_servers]]\n"
-        "name = \"codebase-memory-mcp\"\n"
+        "name = \"memory-for-ai\"\n"
         "transport = \"stdio\"\n"
         "command = \"/opt/user-owned-mcp\"\n"
         "args = [\"--custom\"]\n",
         "[[mcp_servers]]\n"
-        "name = \"codebase-memory-mcp\"\n"
+        "name = \"memory-for-ai\"\n"
         "transport = \"stdio\"\n"
-        "command = \"/opt/codebase-memory-mcp\"\n"
+        "command = \"/opt/memory-for-ai\"\n"
         "args = []\n"
         "startup_timeout_sec = 45\n",
     };
@@ -924,7 +924,7 @@ TEST(config_toml_vibe_remove_first_target) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\"\n"
+                                  "name = \"memory-for-ai\"\n"
                                   "command = \"owned\"\n\n"
                                   "[[mcp_servers]]\n"
                                   "name = \"other\"\n"
@@ -947,7 +947,7 @@ TEST(config_toml_vibe_remove_middle_target) {
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
                                   "name = \"first\"\n\n"
                                   "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\"\n"
+                                  "name = \"memory-for-ai\"\n"
                                   "command = \"owned\"\n\n"
                                   "[[mcp_servers]]\n"
                                   "name = \"last\"\n"),
@@ -970,7 +970,7 @@ TEST(config_toml_vibe_remove_last_target) {
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
                                   "name = \"other\"\n\n"
                                   "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\"\n"),
+                                  "name = \"memory-for-ai\"\n"),
               0);
     ASSERT_EQ(cbm_toml_remove_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY), 0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
@@ -987,7 +987,7 @@ TEST(config_toml_vibe_remove_only_target) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-mcp\"\n"
+                                  "name = \"memory-for-ai\"\n"
                                   "command = \"owned\"\n"),
               0);
     ASSERT_EQ(cbm_toml_remove_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY), 0);
@@ -1003,7 +1003,7 @@ TEST(config_toml_vibe_literal_and_basic_identity) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
-                                  "name = 'codebase-memory-mcp' # literal\n"
+                                  "name = 'memory-for-ai' # literal\n"
                                   "command = 'owned'\n"),
               0);
     ASSERT_EQ(cbm_toml_remove_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY), 0);
@@ -1011,15 +1011,15 @@ TEST(config_toml_vibe_literal_and_basic_identity) {
     ASSERT_STR_EQ(actual, "");
 
     ASSERT_EQ(th_write_file(path, "[[mcp_servers]]\n"
-                                  "name = \"codebase-memory-\\u006dcp\" # basic\n"
+                                  "name = \"memory-for-ai-\\u006dcp\" # basic\n"
                                   "command = \"old\"\n"),
               0);
     ASSERT_EQ(cbm_toml_upsert_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY, CTE_BODY),
               0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, "[[mcp_servers]]\n"
-                          "name = \"codebase-memory-mcp\"\n"
-                          "command = \"codebase-memory-mcp\"\n");
+                          "name = \"memory-for-ai\"\n"
+                          "command = \"memory-for-ai\"\n");
     th_cleanup(dir);
     PASS();
 }
@@ -1030,10 +1030,10 @@ TEST(config_toml_vibe_duplicate_target_fail_closed) {
     char actual[CTE_FILE_CAP];
     const char *duplicate = "# preserve exactly\n"
                             "[[mcp_servers]]\n"
-                            "name = \"codebase-memory-mcp\"\n"
+                            "name = \"memory-for-ai\"\n"
                             "command = \"first\"\n\n"
                             "[[mcp_servers]]\n"
-                            "name = 'codebase-memory-mcp'\n"
+                            "name = 'memory-for-ai'\n"
                             "command = 'second'\n";
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, duplicate), 0);
@@ -1059,7 +1059,7 @@ TEST(config_toml_vibe_ambiguous_target_fail_closed) {
 
     const char *multiline = "[[mcp_servers]]\n"
                             "description = \"\"\"\n"
-                            "name = \"codebase-memory-mcp\"\n"
+                            "name = \"memory-for-ai\"\n"
                             "\"\"\"\n"
                             "name = \"other\"\n";
     ASSERT_EQ(th_write_file(path, multiline), 0);
@@ -1068,7 +1068,7 @@ TEST(config_toml_vibe_ambiguous_target_fail_closed) {
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_NOT_NULL(strstr(actual, "description = \"\"\""));
     ASSERT_NOT_NULL(strstr(actual, "name = \"other\""));
-    ASSERT_NOT_NULL(strstr(actual, "name = \"codebase-memory-mcp\""));
+    ASSERT_NOT_NULL(strstr(actual, "name = \"memory-for-ai\""));
     th_cleanup(dir);
     PASS();
 }
@@ -1089,10 +1089,10 @@ TEST(config_toml_codex_reconciles_minimal_owned_forms) {
     static const char *fixtures[] = {
         "[hooks]\nSessionStart = [{ matcher = \"startup|resume|clear|compact\", hooks = "
         "[{ type = \"command\", command = 'echo \"Code discovery: prefer "
-        "codebase-memory-mcp\"' }] }]\n",
+        "memory-for-ai\"' }] }]\n",
         "\"hooks\" . 'SessionStart' = [ {matcher='startup|resume|clear|compact', "
-        "hooks=[{type='command', command='/opt/codebase-memory-mcp hook-augment', "
-        "command_windows='& C:\\\\bin\\\\codebase-memory-mcp.exe hook-augment',timeout=5}]} ]\n",
+        "hooks=[{type='command', command='/opt/memory-for-ai hook-augment', "
+        "command_windows='& C:\\\\bin\\\\memory-for-ai.exe hook-augment',timeout=5}]} ]\n",
     };
     for (size_t i = 0U; i < sizeof(fixtures) / sizeof(fixtures[0]); ++i) {
         ASSERT_EQ(th_write_file(path, fixtures[i]), 0);
@@ -1136,25 +1136,25 @@ TEST(config_toml_codex_reconciles_minimal_owned_forms) {
  * v0.10.2 release, with the release's POSIX and PowerShell command builders. */
 TEST(config_toml_codex_accepts_v0102_managed_windows_crlf) {
     static const char *command =
-        "'C:\\Users\\Example\\AppData\\Local\\Programs\\codebase-memory-mcp\\"
-        "codebase-memory-mcp.exe' hook-augment";
+        "'C:\\Users\\Example\\AppData\\Local\\Programs\\memory-for-ai\\"
+        "memory-for-ai.exe' hook-augment";
     static const char *command_windows =
-        "& 'C:\\Users\\Example\\AppData\\Local\\Programs\\codebase-memory-mcp\\"
-        "codebase-memory-mcp.exe' hook-augment";
+        "& 'C:\\Users\\Example\\AppData\\Local\\Programs\\memory-for-ai\\"
+        "memory-for-ai.exe' hook-augment";
     static const char *original =
         "\xEF\xBB\xBF[mcp_servers.other]\r\n"
         "command = \"other\"\r\n"
         "keep = true\r\n"
-        "# >>> codebase-memory-mcp SessionStart >>>\r\n"
+        "# >>> memory-for-ai SessionStart >>>\r\n"
         "[[hooks.SessionStart]]\r\n"
         "matcher = \"startup|resume|clear|compact\"\r\n"
         "\r\n"
         "[[hooks.SessionStart.hooks]]\r\n"
         "type = \"command\"\r\n"
         "command = \"'C:\\\\Users\\\\Example\\\\AppData\\\\Local\\\\Programs\\\\"
-        "codebase-memory-mcp\\\\codebase-memory-mcp.exe' hook-augment\"\r\n"
+        "memory-for-ai\\\\memory-for-ai.exe' hook-augment\"\r\n"
         "command_windows = \"& 'C:\\\\Users\\\\Example\\\\AppData\\\\Local\\\\Programs\\\\"
-        "codebase-memory-mcp\\\\codebase-memory-mcp.exe' hook-augment\"\r\n"
+        "memory-for-ai\\\\memory-for-ai.exe' hook-augment\"\r\n"
         "timeout = 5\r\n"
         "\r\n"
         "[[hooks.SubagentStart]]\r\n"
@@ -1163,11 +1163,11 @@ TEST(config_toml_codex_accepts_v0102_managed_windows_crlf) {
         "[[hooks.SubagentStart.hooks]]\r\n"
         "type = \"command\"\r\n"
         "command = \"'C:\\\\Users\\\\Example\\\\AppData\\\\Local\\\\Programs\\\\"
-        "codebase-memory-mcp\\\\codebase-memory-mcp.exe' hook-augment\"\r\n"
+        "memory-for-ai\\\\memory-for-ai.exe' hook-augment\"\r\n"
         "command_windows = \"& 'C:\\\\Users\\\\Example\\\\AppData\\\\Local\\\\Programs\\\\"
-        "codebase-memory-mcp\\\\codebase-memory-mcp.exe' hook-augment\"\r\n"
+        "memory-for-ai\\\\memory-for-ai.exe' hook-augment\"\r\n"
         "timeout = 5\r\n"
-        "# <<< codebase-memory-mcp SessionStart <<<\r\n";
+        "# <<< memory-for-ai SessionStart <<<\r\n";
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
     char before[CTE_FILE_CAP];
@@ -1218,7 +1218,7 @@ TEST(config_toml_codex_accepts_v0102_managed_windows_crlf) {
 
     static const char *owned_line =
         "command = \"'C:\\\\Users\\\\Example\\\\AppData\\\\Local\\\\Programs\\\\"
-        "codebase-memory-mcp\\\\codebase-memory-mcp.exe' hook-augment\"\r\n";
+        "memory-for-ai\\\\memory-for-ai.exe' hook-augment\"\r\n";
     ASSERT_EQ(cte_replace_once(original, owned_line, "command = \"foreign\"\r\n", invalid[0],
                                sizeof(invalid[0])),
               0);
@@ -1252,15 +1252,15 @@ TEST(config_toml_codex_rejects_ambiguous_inline_byte_identically) {
     char actual[CTE_FILE_CAP];
     static const char *invalid[] = {
         ("[hooks]\nSessionStart = [{matcher='startup|resume|clear|compact',hooks=[{type="
-         "'command',command='codebase-memory-mcp hook-augment',command_windows="
-         "'codebase-memory-mcp hook-augment',timeout=5},{type='command',command='foreign'}]}]\n"),
+         "'command',command='memory-for-ai hook-augment',command_windows="
+         "'memory-for-ai hook-augment',timeout=5},{type='command',command='foreign'}]}]\n"),
         ("[hooks]\nSessionStart = [{matcher='startup|resume|clear|compact',hooks=[{type="
-         "'command',command='codebase-memory-mcp hook-augment',command_windows="
-         "'codebase-memory-mcp hook-augment',timeout=5,owner='user'}]}]\n"),
+         "'command',command='memory-for-ai hook-augment',command_windows="
+         "'memory-for-ai hook-augment',timeout=5,owner='user'}]}]\n"),
         "[hooks]\nSessionStart=[]\nSessionStart=[]\n",
         "[hooks]\nSessionStart = [\n { matcher = 'startup|resume|clear|compact' }\n]\n",
         ("[hooks]\nSessionStart = [{matcher='startup|resume|clear|compact',hooks=[{type="
-         "'command',command='echo \"Code discovery: prefer codebase-memory-mcp\"'}]}] # keep\n"),
+         "'command',command='echo \"Code discovery: prefer memory-for-ai\"'}]}] # keep\n"),
         "[hooks]\nSessionStart = [{ matcher = 'startup|resume|clear|compact'\n",
     };
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
@@ -1288,7 +1288,7 @@ TEST(config_toml_codex_reports_stable_failure_reasons) {
         {
             .content =
                 "[hooks]\nSessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = ["
-                "{ type = 'command', command = 'codebase-memory-mcp hook-augment' }, "
+                "{ type = 'command', command = 'memory-for-ai hook-augment' }, "
                 "{ type = 'command', command = 'foreign' }] }]\n",
             .expected = CBM_TOML_CODEX_HOOK_FAILURE_AMBIGUOUS_OWNERSHIP,
             .name = "ambiguous_hook_ownership",
@@ -1297,10 +1297,10 @@ TEST(config_toml_codex_reports_stable_failure_reasons) {
             .content =
                 "[hooks]\n"
                 "SessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = [{ type = "
-                "'command', command = 'echo \"Code discovery: prefer codebase-memory-mcp\"' }] "
+                "'command', command = 'echo \"Code discovery: prefer memory-for-ai\"' }] "
                 "}]\n"
                 "SessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = [{ type = "
-                "'command', command = 'echo \"Code discovery: prefer codebase-memory-mcp\"' }] "
+                "'command', command = 'echo \"Code discovery: prefer memory-for-ai\"' }] "
                 "}]\n",
             .expected = CBM_TOML_CODEX_HOOK_FAILURE_CONFLICTING_HOOKS,
             .name = "conflicting_hook_representations",
@@ -1343,7 +1343,7 @@ TEST(config_toml_codex_preserves_bom_crlf_and_foreign_aot) {
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_EQ((unsigned char)actual[0], 0xEFU);
     ASSERT_NOT_NULL(strstr(actual, "command = \"foreign\""));
-    ASSERT_NOT_NULL(strstr(actual, "\r\n# >>> codebase-memory-mcp SessionStart >>>\r\n"));
+    ASSERT_NOT_NULL(strstr(actual, "\r\n# >>> memory-for-ai SessionStart >>>\r\n"));
     for (const char *cursor = actual; *cursor; ++cursor) {
         if (*cursor == '\n') {
             ASSERT(cursor > actual && cursor[-1] == '\r');
@@ -1371,11 +1371,11 @@ TEST(config_toml_remove_self_heals_orphan_closing_marker_issue1558) {
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
     ASSERT_EQ(th_write_file(path, "user_key = true\n"
-                                  "# <<< codebase-memory-mcp SessionStart <<<\n"
+                                  "# <<< memory-for-ai SessionStart <<<\n"
                                   "other_key = 1\n"),
               0);
-    ASSERT_EQ(cbm_toml_remove_managed_block(path, "# >>> codebase-memory-mcp SessionStart >>>",
-                                            "# <<< codebase-memory-mcp SessionStart <<<"),
+    ASSERT_EQ(cbm_toml_remove_managed_block(path, "# >>> memory-for-ai SessionStart >>>",
+                                            "# <<< memory-for-ai SessionStart <<<"),
               0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     /* The stray marker is gone; the user's own content is untouched. */
@@ -1390,11 +1390,11 @@ TEST(config_toml_remove_self_heals_orphan_opening_marker_issue1558) {
     char path[CTE_PATH_CAP];
     char actual[CTE_FILE_CAP];
     ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
-    ASSERT_EQ(th_write_file(path, "# >>> codebase-memory-mcp SessionStart >>>\n"
+    ASSERT_EQ(th_write_file(path, "# >>> memory-for-ai SessionStart >>>\n"
                                   "keep = true\n"),
               0);
-    ASSERT_EQ(cbm_toml_remove_managed_block(path, "# >>> codebase-memory-mcp SessionStart >>>",
-                                            "# <<< codebase-memory-mcp SessionStart <<<"),
+    ASSERT_EQ(cbm_toml_remove_managed_block(path, "# >>> memory-for-ai SessionStart >>>",
+                                            "# <<< memory-for-ai SessionStart <<<"),
               0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
     ASSERT_STR_EQ(actual, "keep = true\n");
