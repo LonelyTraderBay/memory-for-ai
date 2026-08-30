@@ -38,6 +38,7 @@ High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-si
 - **Built-in graph visualization** — 3D interactive UI at `localhost:9749`, served from the binary itself.
 - **Infrastructure-as-code indexing** — Dockerfiles, Kubernetes manifests, and Kustomize overlays indexed as graph nodes with cross-references. `Resource` nodes for K8s kinds, `Module` nodes for Kustomize overlays with `IMPORTS` edges to referenced resources.
 - **16 MCP tools** — search, trace, architecture, impact analysis, targeted index-coverage checks, Cypher queries, dead code detection, cross-service HTTP linking, ADR management, and more.
+- **Coverage confidence** — `index_status` and `check_index_coverage` report known gaps, a proven file-hash ratio when possible, and machine-readable confidence reasons. See [Coverage and confidence reporting](docs/COVERAGE_CONFIDENCE.md).
 
 ## Quick Start
 

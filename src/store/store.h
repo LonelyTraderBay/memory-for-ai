@@ -609,6 +609,9 @@ int cbm_store_upsert_file_hash(cbm_store_t *s, const char *project, const char *
 int cbm_store_get_file_hashes(cbm_store_t *s, const char *project, cbm_file_hash_t **out,
                               int *count);
 
+/* Count authoritative indexed-file hash records without materializing them. */
+int cbm_store_count_file_hashes(cbm_store_t *s, const char *project);
+
 /* Fetch one exact file-hash record. The returned strings are heap-owned and
  * must be released with cbm_store_clear_file_hash(). */
 int cbm_store_get_file_hash(cbm_store_t *s, const char *project, const char *rel_path,

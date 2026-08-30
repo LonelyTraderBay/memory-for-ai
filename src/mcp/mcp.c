@@ -664,7 +664,8 @@ static const tool_def_t TOOLS[] = {
      "bounded path scopes. Use this after graph discovery for every cited or operated-on file; "
      "use scopes before negative/exhaustive claims because fully skipped files cannot appear in "
      "normal graph results. Returns coverage status separately from filesystem metadata freshness, "
-     "plus structured parse-error ranges and direct-source fallback actions. The signal is "
+     "plus structured parse-error ranges, quantitative coverage_summary metrics, confidence "
+     "reasons, and direct-source fallback actions. The signal is "
      "best-effort: indexed_no_recorded_gap is not a completeness guarantee. At least one of "
      "'paths' or 'scopes' is required; the call is rejected at runtime if both are omitted.",
      "{\"type\":\"object\",\"properties\":{"
@@ -4641,6 +4642,142 @@ static void add_coverage_report(yyjson_mut_doc *doc, yyjson_mut_val *root, cbm_s
     }
 }
 
+/* Add quantitative coverage and confidence signals beside the detailed
+ * per-file report. The ratio intentionally measures authoritative file-hash
+ * coverage, not parser correctness: parse_partial files remain in the hash
+ * population and are reported separately. A ratio is omitted whenever the
+ * denominator is unknowable (directory exclusions, truncated metadata, or a
+ * missing generation match). */
+static void add_coverage_quality_summary(yyjson_mut_doc *doc, yyjson_mut_val *root,
+                                         cbm_store_t *store, const char *project) {
+    cbm_coverage_row_t *rows = NULL;
+    int row_count = 0;
+    bool rows_ok = cbm_store_coverage_get(store, project, &rows, &row_count) == CBM_STORE_OK;
+    int indexed_hashes = cbm_store_count_file_hashes(store, project);
+    bool hashes_ok = indexed_hashes >= 0;
+
+    int parse_partial = 0;
+    int skipped = 0;
+    int excluded_files = 0;
+    int excluded_dirs = 0;
+    if (rows_ok) {
+        for (int i = 0; i < row_count; i++) {
+            const char *kind = rows[i].kind ? rows[i].kind : "";
+            if (strcmp(kind, "parse_partial") == 0) {
+                parse_partial++;
+            } else if (strcmp(kind, "not_indexed_dir") == 0) {
+                excluded_dirs++;
+            } else if (strcmp(kind, "not_indexed_file") == 0) {
+                excluded_files++;
+            } else {
+                skipped++;
+            }
+        }
+    }
+
+    cbm_project_t project_info = {0};
+    bool have_project = cbm_store_get_project(store, project, &project_info) == CBM_STORE_OK;
+    cbm_coverage_meta_t meta = {0};
+    bool have_meta = cbm_store_coverage_meta_get(store, project, &meta) == CBM_STORE_OK;
+    bool generation_matches = have_project && have_meta && project_info.indexed_at &&
+                              meta.generation &&
+                              strcmp(project_info.indexed_at, meta.generation) == 0;
+    bool recording_complete =
+        have_meta && meta.recording_status && strcmp(meta.recording_status, "complete") == 0;
+    bool hash_records_complete = have_meta && meta.hash_records_complete;
+    bool denominator_known =
+        rows_ok && hashes_ok && have_meta && generation_matches && recording_complete &&
+        hash_records_complete && excluded_dirs == 0;
+    int known_files = 0;
+    if (denominator_known) {
+        int64_t total = (int64_t)indexed_hashes + (int64_t)skipped +
+                        (int64_t)meta.ignored_files_total;
+        if (total > 0 && total <= INT_MAX) {
+            known_files = (int)total;
+        } else if (total == 0) {
+            denominator_known = false;
+        } else {
+            denominator_known = false;
+        }
+    }
+
+    double ratio = 0.0;
+    if (denominator_known && known_files > 0) {
+        ratio = (double)indexed_hashes / (double)known_files;
+    }
+
+    double confidence = 0.0;
+    yyjson_mut_val *reasons = yyjson_mut_arr(doc);
+    if (have_meta) {
+        confidence += 0.25;
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "coverage_metadata_missing");
+    }
+    if (generation_matches) {
+        confidence += 0.25;
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "generation_mismatch_or_missing");
+    }
+    if (hash_records_complete) {
+        confidence += 0.20;
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "file_hash_records_incomplete");
+    }
+    if (recording_complete) {
+        confidence += 0.15;
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "coverage_recording_incomplete");
+    }
+    if (rows_ok && excluded_dirs == 0) {
+        confidence += 0.10;
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "excluded_directory_size_unknown");
+    }
+    if (rows_ok && parse_partial == 0 && skipped == 0) {
+        confidence += 0.05;
+    } else if (rows_ok) {
+        yyjson_mut_arr_add_str(doc, reasons, "known_file_gaps_present");
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "coverage_rows_unavailable");
+    }
+    if (denominator_known) {
+        yyjson_mut_arr_add_str(doc, reasons, "ratio_denominator_is_known");
+    } else {
+        yyjson_mut_arr_add_str(doc, reasons, "ratio_denominator_is_not_known");
+    }
+
+    const char *level = confidence >= 0.90 ? "high" : confidence >= 0.60 ? "medium" : "low";
+    yyjson_mut_val *summary = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, summary, "indexed_file_hashes", hashes_ok ? indexed_hashes : 0);
+    yyjson_mut_obj_add_int(doc, summary, "parse_partial_files", parse_partial);
+    yyjson_mut_obj_add_int(doc, summary, "skipped_files", skipped);
+    yyjson_mut_obj_add_int(doc, summary, "excluded_files",
+                           have_meta ? meta.ignored_files_total : excluded_files);
+    yyjson_mut_obj_add_int(doc, summary, "excluded_directories", excluded_dirs);
+    yyjson_mut_obj_add_int(doc, summary, "known_file_total", denominator_known ? known_files : 0);
+    if (denominator_known) {
+        yyjson_mut_obj_add_real(doc, summary, "coverage_ratio", ratio);
+    } else {
+        yyjson_mut_obj_add_null(doc, summary, "coverage_ratio");
+    }
+    yyjson_mut_obj_add_str(
+        doc, summary, "coverage_ratio_basis",
+        "indexed_file_hashes / known file population; parse_partial files remain in the "
+        "numerator and are reported separately");
+    yyjson_mut_obj_add_real(doc, summary, "confidence_score", confidence);
+    yyjson_mut_obj_add_str(doc, summary, "confidence_level", level);
+    yyjson_mut_obj_add_val(doc, summary, "confidence_reasons", reasons);
+    yyjson_mut_obj_add_val(doc, root, "coverage_summary", summary);
+
+    cbm_store_free_coverage(rows, row_count);
+    if (have_meta) {
+        cbm_store_coverage_meta_clear(&meta);
+    }
+    if (have_project) {
+        cbm_project_free_fields(&project_info);
+    }
+}
+
 enum {
     COVERAGE_PATH_MAX = 128,
     COVERAGE_SCOPE_MAX = 32,
@@ -4938,6 +5075,7 @@ static char *handle_check_index_coverage(cbm_mcp_server_t *srv, const char *args
                            have_meta ? meta.coverage_version : 0);
     yyjson_mut_obj_add_bool(doc, meta_obj, "generation_matches", generation_matches);
     yyjson_mut_obj_add_val(doc, root, "metadata", meta_obj);
+    add_coverage_quality_summary(doc, root, store, project);
 
     yyjson_mut_val *path_results = yyjson_mut_arr(doc);
     size_t idx;
@@ -5106,6 +5244,7 @@ static char *handle_index_status(cbm_mcp_server_t *srv, const char *args) {
             safe_str_free(&proj_info.root_path);
         }
         add_coverage_report(doc, root, store, project);
+        add_coverage_quality_summary(doc, root, store, project);
         if (nodes == 0) {
             yyjson_mut_obj_add_str(
                 doc, root, "hint",

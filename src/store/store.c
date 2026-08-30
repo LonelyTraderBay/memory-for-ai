@@ -3305,6 +3305,27 @@ int cbm_store_get_file_hashes(cbm_store_t *s, const char *project, cbm_file_hash
     return CBM_STORE_OK;
 }
 
+int cbm_store_count_file_hashes(cbm_store_t *s, const char *project) {
+    if (!s || !s->db || !project) {
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT COUNT(*) FROM file_hashes WHERE project = ?1;",
+                           CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "count_file_hashes prepare");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_bind_text(stmt, SKIP_ONE, project, CBM_NOT_FOUND, SQLITE_STATIC);
+    int count = CBM_STORE_ERR;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        count = sqlite3_column_int(stmt, 0);
+    } else {
+        store_set_error_sqlite(s, "count_file_hashes");
+    }
+    sqlite3_finalize(stmt);
+    return count;
+}
+
 void cbm_store_clear_file_hash(cbm_file_hash_t *hash) {
     if (!hash) {
         return;

@@ -2785,6 +2785,9 @@ TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges) {
     ASSERT_NOT_NULL(strstr(inner, "src/skip.c"));
     ASSERT_NOT_NULL(strstr(inner, "file exceeds cap"));
     ASSERT_NOT_NULL(strstr(inner, "best_effort"));
+    ASSERT_NOT_NULL(strstr(inner, "\"coverage_summary\""));
+    ASSERT_NOT_NULL(strstr(inner, "\"coverage_ratio\""));
+    ASSERT_NOT_NULL(strstr(inner, "\"confidence_score\""));
 
     free(inner);
     free(coverage);
