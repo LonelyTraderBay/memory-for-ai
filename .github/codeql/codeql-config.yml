@@ -1,0 +1,16 @@
+name: memory-for-ai CodeQL
+
+# Keep CodeQL focused on first-party C/C++ code. The repository builds many
+# third-party grammars and libraries from vendored sources, but scanning those
+# copies adds a large amount of noise and makes the SAST gate unnecessarily
+# slow. Dependency security is covered separately by Scorecard/dependency
+# checks; this database is for actionable project code.
+paths:
+  - src
+  - internal/cbm
+
+paths-ignore:
+  - '**/vendored/**'
+  - 'vendored/**'
+  - 'build/**'
+  - 'tests/**'

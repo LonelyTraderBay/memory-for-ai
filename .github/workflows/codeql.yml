@@ -33,6 +33,7 @@ jobs:
         with:
           languages: c-cpp
           build-mode: manual
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Build for CodeQL analysis
         run: scripts/build.sh
