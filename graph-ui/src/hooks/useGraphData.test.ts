@@ -46,6 +46,25 @@ describe("fetchLayout", () => {
     );
   });
 
+  it("requests a bounded detail neighborhood around the qualified name", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ nodes: [], edges: [], total_nodes: 9 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchLayout("large-project", 5000, undefined, "code", {
+      centerNode: "pkg.service.handle",
+      radius: 3,
+    });
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string]>;
+    const [url] = calls[0];
+    expect(url).toBe(
+      "/api/layout?project=large-project&max_nodes=5000&level=detail&center_node=pkg.service.handle&radius=3",
+    );
+  });
+
   it("reports streaming progress while the body downloads", async () => {
     const payload = new TextEncoder().encode(
       JSON.stringify({ nodes: [], edges: [], total_nodes: 7 }),

@@ -1477,6 +1477,9 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
     char max_str[32] = {0};
     char graph_str[32] = {0};
+    char level_str[32] = {0};
+    char center_node[CBM_SZ_1K] = {0};
+    char radius_str[32] = {0};
 
     if (!cbm_http_query_param(req->query, "project", project, (int)sizeof(project)) ||
         project[0] == '\0') {
@@ -1491,6 +1494,29 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
             max_nodes = v;
     }
 
+    bool detail_graph = false;
+    int radius = 0;
+    if (cbm_http_query_param(req->query, "level", level_str, (int)sizeof(level_str))) {
+        detail_graph = strcmp(level_str, "detail") == 0;
+    }
+    if (detail_graph) {
+        if (!cbm_http_query_param(req->query, "center_node", center_node,
+                                  (int)sizeof(center_node)) ||
+            center_node[0] == '\0') {
+            cbm_http_replyf(c, 400, g_cors_json,
+                            "{\"error\":\"center_node is required for detail layout\"}");
+            return;
+        }
+        radius = 2; /* compact neighborhood default */
+        if (cbm_http_query_param(req->query, "radius", radius_str, (int)sizeof(radius_str))) {
+            radius = atoi(radius_str);
+        }
+        if (radius < 0)
+            radius = 0;
+        if (radius > 8)
+            radius = 8;
+    }
+
     /* graph=missed (#963): lay out the derived miss graph (shadow project
      * "<name>::missed" inside the SAME db file) instead of the code graph —
      * only files the indexer could not fully cover, as their file structure.
@@ -1498,6 +1524,11 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     bool missed_graph = false;
     if (cbm_http_query_param(req->query, "graph", graph_str, (int)sizeof(graph_str))) {
         missed_graph = strcmp(graph_str, "missed") == 0;
+    }
+    if (detail_graph && missed_graph) {
+        cbm_http_replyf(c, 400, g_cors_json,
+                        "{\"error\":\"detail layout cannot target the missed graph\"}");
+        return;
     }
     char scoped_project[320];
     if (missed_graph) {
@@ -1520,18 +1551,28 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
         return;
     }
 
-    cbm_layout_result_t *layout =
-        cbm_layout_compute(store, scoped_project, CBM_LAYOUT_OVERVIEW, NULL, 0, max_nodes);
+    cbm_layout_result_t *layout = cbm_layout_compute(
+        store, scoped_project, detail_graph ? CBM_LAYOUT_DETAIL : CBM_LAYOUT_OVERVIEW,
+        detail_graph ? center_node : NULL, detail_graph ? radius : 0, max_nodes);
 
     /* Find linked projects from CROSS_* edges. Keep `store` open through the
      * linked-projects loop below so we can resolve target Route QNs against
-     * the linked stores when populating cross_edges. */
+     * the linked stores when populating cross_edges. Neighborhood layouts are
+     * deliberately local and do not attach satellite galaxies. */
     char *linked[LAYOUT_MAX_LINKED];
-    int linked_count = find_cross_repo_targets(store, project, linked, LAYOUT_MAX_LINKED);
+    int linked_count = detail_graph ? 0 : find_cross_repo_targets(store, project, linked,
+                                                                    LAYOUT_MAX_LINKED);
 
     if (!layout) {
         cbm_store_close(store);
         cbm_http_replyf(c, 500, g_cors_json, "{\"error\":\"layout computation failed\"}");
+        return;
+    }
+
+    if (detail_graph && layout->node_count == 0 && layout->total_nodes > 0) {
+        cbm_layout_free(layout);
+        cbm_store_close(store);
+        cbm_http_replyf(c, 404, g_cors_json, "{\"error\":\"center node not found\"}");
         return;
     }
 
@@ -1549,7 +1590,7 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
 
     /* Fast path: no satellites to attach. The missed skeleton only decorates
      * the CODE graph — a graph=missed request already IS the miss graph. */
-    if (linked_count == 0 && missed_graph) {
+    if (linked_count == 0 && (missed_graph || detail_graph)) {
         cbm_store_close(store);
         cbm_http_replyf(c, 200, g_cors_json, "%s", primary_json);
         free(primary_json);
@@ -1569,7 +1610,7 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     yyjson_doc_free(pdoc);
     yyjson_mut_val *mroot = yyjson_mut_doc_get_root(mdoc);
 
-    if (!missed_graph) {
+    if (!missed_graph && !detail_graph) {
         (void)attach_missed_graph(mdoc, mroot, store, project, primary_radius);
     }
 

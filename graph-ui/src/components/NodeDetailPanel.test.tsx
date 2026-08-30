@@ -93,4 +93,23 @@ describe("NodeDetailPanel code preview + deep-link", () => {
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     expect(link.getAttribute("target")).toBe("_blank");
   });
+
+  it("exposes the selected qualified name to the neighborhood action", () => {
+    const onFocusNeighborhood = vi.fn();
+    render(
+      <NodeDetailPanel
+        node={NODE}
+        allNodes={[NODE]}
+        allEdges={[]}
+        project="demo"
+        repoInfo={REPO}
+        onClose={() => {}}
+        onNavigate={() => {}}
+        onFocusNeighborhood={onFocusNeighborhood}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Focus neighborhood" }));
+    expect(onFocusNeighborhood).toHaveBeenCalledWith(NODE);
+  });
 });

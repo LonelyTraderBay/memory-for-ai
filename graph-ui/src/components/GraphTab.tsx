@@ -65,10 +65,14 @@ export function formatGraphLimitNotice(data: GraphData | null): string | null {
 }
 
 export function GraphTab({ project }: GraphTabProps) {
-  const { data, loading, error, progress, fetchOverview } = useGraphData();
+  const { data, loading, error, progress, fetchOverview, fetchDetail } = useGraphData();
   const [highlightedIds, setHighlightedIds] = useState<Set<number> | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [neighborhoodFocus, setNeighborhoodFocus] = useState<{
+    nodeId: number;
+    qualifiedName: string;
+  } | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
   const [showLabels, setShowLabels] = useState(true);
@@ -186,6 +190,7 @@ export function GraphTab({ project }: GraphTabProps) {
       setBudget({ project, value });
       setBudgetDraft(String(value));
     }
+    setNeighborhoodFocus(null);
   }, [project]);
 
   /* …and fetch only once budget and project agree (one fetch per change). */
@@ -196,6 +201,29 @@ export function GraphTab({ project }: GraphTabProps) {
       setSelectedPath(null);
     }
   }, [project, budget, fetchOverview]);
+
+  /* Detail layouts keep the same stable node IDs as the overview. Once the
+   * bounded neighborhood arrives, select the center and frame its direct
+   * connections so the user lands on the requested context rather than a
+   * random detail-layout origin. */
+  useEffect(() => {
+    if (!neighborhoodFocus || !data) return;
+    const center = data.nodes.find(
+      (n) =>
+        n.id === neighborhoodFocus.nodeId ||
+        n.qualified_name === neighborhoodFocus.qualifiedName,
+    );
+    if (!center) return;
+    const connectedIds = new Set([center.id]);
+    for (const edge of data.edges) {
+      if (edge.source === center.id) connectedIds.add(edge.target);
+      if (edge.target === center.id) connectedIds.add(edge.source);
+    }
+    setSelectedNode(center);
+    setHighlightedIds(connectedIds);
+    setSelectedPath(center.file_path ?? null);
+    setCameraTarget(computeCameraTarget(data.nodes, connectedIds));
+  }, [data, neighborhoodFocus]);
 
   /* Missed skeleton: offset into place and paint white — a ghost of the
    * files the graph could not fully cover, sitting beside the galaxy. */
@@ -294,6 +322,29 @@ export function GraphTab({ project }: GraphTabProps) {
     },
     [handleNodeClick],
   );
+
+  const handleFocusNeighborhood = useCallback(
+    (node: GraphNode) => {
+      if (!project || !node.qualified_name) return;
+      setNeighborhoodFocus({ nodeId: node.id, qualifiedName: node.qualified_name });
+      setSelectedNode(node);
+      setSelectedPath(node.file_path ?? null);
+      setHighlightedIds(null);
+      setCameraTarget(null);
+      fetchDetail(project, node.qualified_name, 2);
+    },
+    [project, fetchDetail],
+  );
+
+  const returnToOverview = useCallback(() => {
+    if (!project) return;
+    setNeighborhoodFocus(null);
+    setHighlightedIds(null);
+    setSelectedPath(null);
+    setSelectedNode(null);
+    setCameraTarget(null);
+    fetchOverview(project, budget.value);
+  }, [project, budget.value, fetchOverview]);
 
   const handleSelectPath = useCallback(
     (path: string, nodeIds: Set<number>, node?: GraphNode) => {
@@ -490,6 +541,11 @@ export function GraphTab({ project }: GraphTabProps) {
             </div>
 
             <div className="absolute top-4 right-4 flex gap-2 items-center">
+              {neighborhoodFocus && (
+                <Button size="sm" onClick={returnToOverview}>
+                  Overview
+                </Button>
+              )}
               {highlightedIds && (
                 <Button
                   size="sm"
@@ -534,11 +590,11 @@ export function GraphTab({ project }: GraphTabProps) {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setHighlightedIds(null);
-                  setSelectedPath(null);
-                  setSelectedNode(null);
-                  setCameraTarget(null);
-                  fetchOverview(project, budget.value);
+                  if (neighborhoodFocus) {
+                    fetchDetail(project, neighborhoodFocus.qualifiedName, 2);
+                  } else {
+                    fetchOverview(project, budget.value);
+                  }
                 }}
               >
                 Refresh
@@ -585,6 +641,7 @@ export function GraphTab({ project }: GraphTabProps) {
                 allEdges={filteredData.edges}
                 project={project}
                 repoInfo={repoInfo}
+                onFocusNeighborhood={handleFocusNeighborhood}
                 onClose={() => {
                   setSelectedNode(null);
                   setHighlightedIds(null);

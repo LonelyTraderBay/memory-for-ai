@@ -16,7 +16,7 @@ interface UseGraphDataResult {
     maxNodes?: number,
     graph?: "code" | "missed",
   ) => void;
-  fetchDetail: (project: string, centerNode: string) => void;
+  fetchDetail: (project: string, centerNode: string, radius?: number) => void;
 }
 
 /* Node budget: how many nodes the layout endpoint is asked for. The default
@@ -40,14 +40,25 @@ export function clampNodeBudget(value: number): number {
  *  only files the indexer could not fully cover, as their file structure. */
 export type GraphVariant = "code" | "missed";
 
+export interface NeighborhoodFocus {
+  centerNode: string;
+  radius?: number;
+}
+
 export async function fetchLayout(
   project: string,
   maxNodes = GRAPH_RENDER_NODE_LIMIT,
   onProgress?: (progress: LoadProgress) => void,
   graph: GraphVariant = "code",
+  focus?: NeighborhoodFocus,
 ): Promise<GraphData> {
   const params = new URLSearchParams({ project, max_nodes: String(maxNodes) });
   if (graph === "missed") params.set("graph", "missed");
+  if (focus) {
+    params.set("level", "detail");
+    params.set("center_node", focus.centerNode);
+    params.set("radius", String(focus.radius ?? 2));
+  }
   const res = await fetch(`/api/layout?${params}`);
 
   if (!res.ok) {
@@ -110,13 +121,15 @@ export function useGraphData(): UseGraphDataResult {
   );
 
   const fetchDetail = useCallback(
-    async (project: string, _centerNode: string) => {
+    async (project: string, centerNode: string, radius = 2) => {
       setLoading(true);
       setError(null);
       setProgress(NO_PROGRESS);
       try {
-        /* TODO: detail level with center_node filtering */
-        const result = await fetchLayout(project, undefined, setProgress);
+        const result = await fetchLayout(project, undefined, setProgress, "code", {
+          centerNode,
+          radius,
+        });
         setData(result);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to fetch layout");

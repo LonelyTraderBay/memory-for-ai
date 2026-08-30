@@ -502,6 +502,80 @@ static int find_node_index(const node_id_entry_t *map, int count, int64_t id) {
     return CBM_NOT_FOUND;
 }
 
+/* Build the node window for a detail/neighborhood request. The normal layout
+ * path uses relevance search, which is correct for an overview but silently
+ * ignores the requested center. Detail mode instead starts at the exact
+ * qualified name and expands a bounded, bidirectional BFS over every indexed
+ * relationship type. The existing layout/edge code then handles positioning,
+ * filtering and degree classification identically for both modes. */
+static int build_detail_search(cbm_store_t *store, const char *project, const char *center_node,
+                               int radius, int max_nodes, cbm_search_output_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->total = cbm_store_count_nodes(store, project);
+
+    cbm_node_t center = {0};
+    if (!center_node || !center_node[0] ||
+        cbm_store_find_node_by_qn(store, project, center_node, &center) != CBM_STORE_OK) {
+        return CBM_STORE_OK;
+    }
+
+    cbm_schema_info_t schema;
+    memset(&schema, 0, sizeof(schema));
+    const char **edge_types = NULL;
+    int edge_type_count = 0;
+    if (cbm_store_get_schema_counts(store, project, &schema) == CBM_STORE_OK &&
+        schema.edge_type_count > 0) {
+        edge_type_count = schema.edge_type_count;
+        edge_types = malloc((size_t)edge_type_count * sizeof(*edge_types));
+        if (!edge_types) {
+            cbm_store_schema_free(&schema);
+            cbm_node_free_fields(&center);
+            return CBM_STORE_ERR;
+        }
+        for (int i = 0; i < edge_type_count; i++) {
+            edge_types[i] = schema.edge_types[i].type;
+        }
+    }
+
+    cbm_traverse_result_t traversal;
+    memset(&traversal, 0, sizeof(traversal));
+    int depth = radius < 0 ? 0 : radius;
+    if (depth > 8) {
+        depth = 8;
+    }
+    int neighbor_limit = max_nodes > 0 ? max_nodes - 1 : 0;
+    int rc = cbm_store_bfs(store, center.id, "both", edge_types, edge_type_count, depth,
+                           neighbor_limit, &traversal);
+    free(edge_types);
+    cbm_store_schema_free(&schema);
+    cbm_node_free_fields(&center);
+    if (rc != CBM_STORE_OK) {
+        cbm_store_traverse_free(&traversal);
+        return rc;
+    }
+
+    int node_count = traversal.visited_count + 1;
+    out->results = calloc((size_t)node_count, sizeof(*out->results));
+    if (!out->results) {
+        cbm_store_traverse_free(&traversal);
+        return CBM_STORE_ERR;
+    }
+    out->count = node_count;
+    out->results[0].node = traversal.root;
+    memset(&traversal.root, 0, sizeof(traversal.root));
+    for (int i = 0; i < traversal.visited_count; i++) {
+        out->results[i + 1].node = traversal.visited[i].node;
+        memset(&traversal.visited[i].node, 0, sizeof(traversal.visited[i].node));
+    }
+    cbm_store_traverse_free(&traversal);
+
+    for (int i = 0; i < node_count; i++) {
+        cbm_store_node_degree(store, out->results[i].node.id, &out->results[i].in_degree,
+                              &out->results[i].out_degree);
+    }
+    return CBM_STORE_OK;
+}
+
 /* ── Public API ───────────────────────────────────────────────── */
 
 cbm_layout_result_t *cbm_layout_compute(cbm_store_t *store, const char *project,
@@ -510,9 +584,6 @@ cbm_layout_result_t *cbm_layout_compute(cbm_store_t *store, const char *project,
     if (!store || !project)
         return NULL;
     max_nodes = clamp_max_nodes(max_nodes);
-    (void)center_node;
-    (void)radius;
-    (void)level;
 
     /* 1. Query nodes */
     cbm_search_params_t params;
@@ -524,8 +595,16 @@ cbm_layout_result_t *cbm_layout_compute(cbm_store_t *store, const char *project,
 
     cbm_search_output_t search_out;
     memset(&search_out, 0, sizeof(search_out));
-    if (cbm_store_search(store, &params, &search_out) != CBM_STORE_OK)
+    int search_rc;
+    if (level == CBM_LAYOUT_DETAIL && center_node && center_node[0]) {
+        search_rc = build_detail_search(store, project, center_node, radius, max_nodes, &search_out);
+    } else {
+        search_rc = cbm_store_search(store, &params, &search_out);
+    }
+    if (search_rc != CBM_STORE_OK) {
+        cbm_store_search_free(&search_out);
         return calloc(CBM_ALLOC_ONE, sizeof(cbm_layout_result_t));
+    }
 
     int n = search_out.count, total_count = search_out.total;
     if (n == 0) {

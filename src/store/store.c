@@ -5704,9 +5704,13 @@ int cbm_store_bfs_multi(cbm_store_t *s, const int64_t *seed_ids, int seed_count,
     const char *join_cond;
     const char *next_id;
     bool is_inbound = (direction != NULL) && (strcmp(direction, "inbound") == 0);
+    bool is_bidirectional = (direction != NULL) && (strcmp(direction, "both") == 0);
     if (is_inbound) {
         join_cond = "e.target_id = bfs.node_id";
         next_id = "e.source_id";
+    } else if (is_bidirectional) {
+        join_cond = "(e.source_id = bfs.node_id OR e.target_id = bfs.node_id)";
+        next_id = "CASE WHEN e.source_id = bfs.node_id THEN e.target_id ELSE e.source_id END";
     } else {
         join_cond = "e.source_id = bfs.node_id";
         next_id = "e.target_id";

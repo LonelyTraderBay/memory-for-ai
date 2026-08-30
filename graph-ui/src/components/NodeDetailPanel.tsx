@@ -18,6 +18,7 @@ interface NodeDetailPanelProps {
   repoInfo: RepoInfo | null;
   onClose: () => void;
   onNavigate: (node: GraphNode) => void;
+  onFocusNeighborhood?: (node: GraphNode) => void;
 }
 
 interface SnippetResult {
@@ -53,6 +54,7 @@ export function NodeDetailPanel({
   repoInfo,
   onClose,
   onNavigate,
+  onFocusNeighborhood,
 }: NodeDetailPanelProps) {
   const [code, setCode] = useState<string | null>(null);
   const [codeLoading, setCodeLoading] = useState(false);
@@ -152,6 +154,14 @@ export function NodeDetailPanel({
               className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[11px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-50"
             >
               {codeLoading ? "Loading…" : code ? "Hide code" : "Show code"}
+            </button>
+          )}
+          {onFocusNeighborhood && node.qualified_name && (
+            <button
+              onClick={() => onFocusNeighborhood(node)}
+              className="px-2.5 py-1 rounded-md bg-cyan-400/10 text-cyan-200/80 text-[11px] font-medium hover:bg-cyan-400/20 transition-colors"
+            >
+              Focus neighborhood
             </button>
           )}
           {ghUrl && (
