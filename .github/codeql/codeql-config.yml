@@ -12,5 +12,9 @@ paths:
 paths-ignore:
   - '**/vendored/**'
   - 'vendored/**'
+  # Generated Tree-sitter parser translation units are checked in under
+  # internal/cbm directly; they are third-party grammar output, not project
+  # logic, and dominate the C/C++ database size.
+  - 'internal/cbm/grammar_*.c'
   - 'build/**'
   - 'tests/**'
