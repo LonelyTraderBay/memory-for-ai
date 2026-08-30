@@ -2,16 +2,18 @@
 
 ## Status and recommendation
 
-This document is an architecture contract, not an implementation. It recommends a
-durable, versioned runtime-observation sidecar whose publications can be read alongside
-a pinned static index generation. Runtime observations MUST NOT patch static `CALLS`
-edges, fabricate static nodes, or appear as persistent edges in the default graph.
+This document is an architecture contract for a durable, versioned runtime-observation
+sidecar whose publications can be read alongside a pinned static index generation. The
+current branch implements the first bounded compact-pair ingestion slice of that model:
+validated observations are persisted in sidecar tables with retry idempotency and
+payload conflict detection. Runtime observations MUST NOT patch static `CALLS` edges,
+fabricate static nodes, or appear as persistent edges in the default graph.
 
 The model intentionally separates facts observed at runtime from facts derived from
 source. A caller may explicitly request a `RUNTIME_CALL` overlay; existing static
 search, architecture, and default trace behavior remain unchanged.
 
-This document-only change does not alter the runtime wire version, runtime schema
+The compact-pair ingestion slice does not alter the runtime wire version, runtime schema
 version, runtime semantic version, runtime artifact version, static semantic index
 version, or artifact schema version. In particular, the static semantic index version
 remains 3.
@@ -47,10 +49,19 @@ This design does not:
 ## Current surface
 
 The current `ingest_traces` surface requires `project` and `traces[]`. Each trace item
-permits `caller`, `callee`, and `count`, but those item fields are not currently
-individually required. Its handler counts the supplied records and returns
-`status="accepted"`, `traces_received`, and an unimplemented note; this is not an
-accepted durable mutation, and the handler does not open or mutate a store.
+requires non-empty `caller` and `callee` strings and accepts `count` (default `1`),
+`duration_ns` (default `0`), and `error` (default `false`). The request may also carry
+`source_batch_id`; `producer_id` and `producer_epoch` must be supplied together when
+used. The handler validates a maximum of 10,000 items, computes `payload_sha256`, and
+persists a compact aggregate in the runtime sidecar. A repeated `(project, batch_id)`
+with the same payload is an idempotent success; a different payload is a no-mutation
+conflict. An empty trace array without a project remains an accepted, non-persisting
+daemon health probe for compatibility.
+
+The current compact endpoint hashes the raw JSON request bytes. It is intentionally
+smaller than the full canonical contribution map described below; canonical span
+identity, endpoint resolution, runtime generations, and the opt-in overlay remain
+follow-up packages. No raw request payload is stored.
 
 The existing trace helper surface can extract `service.name`, HTTP method, HTTP path,
 HTTP status, span kind, duration, URL path, and p99. Verified span-kind values are:
@@ -475,10 +486,13 @@ and compatibility testable rather than implicit.
 
 ## Bounded implementation packages
 
-Implementation remains deferred. The following packages are intentionally ordered and
-bounded; each requires its own reproduce-first tests and review.
+The remaining implementation is intentionally ordered and bounded; each package
+requires its own reproduce-first tests and review. The current compact ingestion slice
+covers validation, a raw payload hash, durable aggregate rows, idempotent retry, and
+conflict rejection. It does not claim the full contribution/publication model below.
 
-1. **Versioned wire validation and canonicalization.** Define authenticated producer
+1. **Versioned wire validation and canonicalization.** Replace the compact route's raw
+   request hash with authenticated producer
    identity and epoch, contribution ID, exact span-identity deduplication, conflicting
    duplicate rejection, canonical contribution maps and payload hashes, allowlisted
    HTTP/span mapping, limits, and dry-run validation. No store mutation.

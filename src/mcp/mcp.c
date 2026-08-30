@@ -41,6 +41,9 @@ enum {
     MCP_COMPARE_DEFAULT_SCAN_LIMIT = 2000000,
     MCP_COMPARE_MAX_SCAN_LIMIT = 10000000,
     MCP_COMPARE_SET_BYTE_BUDGET = 512 * 1024,
+    MCP_RUNTIME_TRACE_BATCH_MAX = 10000,
+    MCP_RUNTIME_TRACE_STRING_MAX = 1024,
+    MCP_RUNTIME_TRACE_BATCH_ID_MAX = 256,
 };
 #define MCP_MS_TO_US 1000LL
 #define MCP_S_TO_US 1000000LL
@@ -724,8 +727,12 @@ static const tool_def_t TOOLS[] = {
     {"ingest_traces", "Ingest traces", "Ingest runtime traces to enhance the knowledge graph",
      "{\"type\":\"object\",\"properties\":{\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
      "\"object\",\"properties\":{\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
-     "\"count\":{\"type\":\"integer\"}},\"additionalProperties\":false}},\"project\":{\"type\":"
-     "\"string\"}},\"required\":[\"traces\",\"project\"]}"},
+     "\"count\":{\"type\":\"integer\",\"minimum\":1},\"duration_ns\":{\"type\":\"integer\","
+     "\"minimum\":0},\"error\":{\"type\":\"boolean\"}},\"required\":[\"caller\",\"callee\"],"
+     "\"additionalProperties\":false}},\"maxItems\":10000},\"project\":{\"type\":\"string\"},"
+     "\"source_batch_id\":{\"type\":\"string\"},\"producer_id\":{\"type\":\"string\"},"
+     "\"producer_epoch\":{\"type\":\"string\"}},\"additionalProperties\":false,"
+     "\"required\":[\"traces\",\"project\"]}"},
 };
 
 static const int TOOL_COUNT = sizeof(TOOLS) / sizeof(TOOLS[0]);
@@ -756,7 +763,7 @@ static const tool_annotation_def_t TOOL_ANNOTATIONS[] = {
     {"check_index_coverage", false, true, true, false},
     {"detect_changes", false, true, true, false},
     {"manage_adr", false, true, false, false},
-    {"ingest_traces", false, false, false, false},
+    {"ingest_traces", false, false, true, false},
 };
 
 static const tool_annotation_def_t *mcp_tool_annotations(const char *name) {
@@ -12279,34 +12286,278 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
 
 /* ── ingest_traces ────────────────────────────────────────────── */
 
-static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
-    (void)srv;
-    /* Parse traces array from JSON args */
-    yyjson_doc *adoc = yyjson_read(args, strlen(args), 0);
-    int trace_count = 0;
-
-    if (adoc) {
-        yyjson_val *aroot = yyjson_doc_get_root(adoc);
-        yyjson_val *traces = yyjson_obj_get(aroot, "traces");
-        if (traces && yyjson_is_arr(traces)) {
-            trace_count = (int)yyjson_arr_size(traces);
-        }
-        yyjson_doc_free(adoc);
+static bool runtime_trace_read_int64(yyjson_val *value, int64_t *out) {
+    if (!value || !out || !yyjson_is_int(value)) {
+        return false;
     }
+    if (yyjson_is_sint(value)) {
+        *out = yyjson_get_sint(value);
+        return true;
+    }
+    uint64_t unsigned_value = yyjson_get_uint(value);
+    if (unsigned_value > (uint64_t)INT64_MAX) {
+        return false;
+    }
+    *out = (int64_t)unsigned_value;
+    return true;
+}
+
+static bool runtime_trace_valid_string(yyjson_val *value, size_t max_len) {
+    return value && yyjson_is_str(value) && yyjson_get_len(value) > 0 &&
+           yyjson_get_len(value) <= max_len && yyjson_get_str(value) != NULL;
+}
+
+static char *runtime_trace_make_batch_id(const char *producer_id, const char *producer_epoch,
+                                         const char *source_batch_id, const char *payload_hash) {
+    const char *base = source_batch_id && source_batch_id[0] ? source_batch_id : payload_hash;
+    if (!base || !base[0]) {
+        return NULL;
+    }
+    if (!producer_id && !producer_epoch) {
+        return heap_strdup(base);
+    }
+    if (!producer_id || !producer_epoch || !producer_id[0] || !producer_epoch[0]) {
+        return NULL;
+    }
+
+    size_t producer_len = strlen(producer_id);
+    size_t epoch_len = strlen(producer_epoch);
+    size_t base_len = strlen(base);
+    if (producer_len > MCP_RUNTIME_TRACE_STRING_MAX ||
+        epoch_len > MCP_RUNTIME_TRACE_STRING_MAX ||
+        base_len > MCP_RUNTIME_TRACE_BATCH_ID_MAX ||
+        producer_len + epoch_len + base_len + 3 > MCP_RUNTIME_TRACE_BATCH_ID_MAX) {
+        return NULL;
+    }
+
+    char *batch_id = malloc(producer_len + epoch_len + base_len + 4);
+    if (!batch_id) {
+        return NULL;
+    }
+    snprintf(batch_id, producer_len + epoch_len + base_len + 4, "%s|%s|%s", producer_id,
+             producer_epoch, base);
+    return batch_id;
+}
+
+static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
+    if (!srv || !args) {
+        return cbm_mcp_text_result("ingest_traces requires a JSON object", true);
+    }
+
+    yyjson_doc *adoc = yyjson_read(args, strlen(args), 0);
+    yyjson_val *aroot = adoc ? yyjson_doc_get_root(adoc) : NULL;
+    yyjson_val *traces = aroot && yyjson_is_obj(aroot) ? yyjson_obj_get(aroot, "traces") : NULL;
+    if (!adoc || !aroot || !yyjson_is_obj(aroot) || !traces || !yyjson_is_arr(traces)) {
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("ingest_traces requires a 'traces' array", true);
+    }
+
+    size_t trace_size = yyjson_arr_size(traces);
+    if (trace_size > MCP_RUNTIME_TRACE_BATCH_MAX) {
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("ingest_traces batch exceeds the 10000 trace limit", true);
+    }
+    int trace_count = (int)trace_size;
+
+    /* An empty probe is intentionally kept backward-compatible for daemon
+     * health checks that predate the project-aware mutation. It has no data
+     * to persist and therefore cannot create an ambiguous project record. */
+    char *project = get_project_arg(args);
+    if (!project && trace_count == 0) {
+        yyjson_mut_doc *empty_doc = yyjson_mut_doc_new(NULL);
+        yyjson_mut_val *empty_root = yyjson_mut_obj(empty_doc);
+        yyjson_mut_doc_set_root(empty_doc, empty_root);
+        yyjson_mut_obj_add_str(empty_doc, empty_root, "status", "accepted");
+        yyjson_mut_obj_add_int(empty_doc, empty_root, "traces_received", 0);
+        yyjson_mut_obj_add_bool(empty_doc, empty_root, "persisted", false);
+        yyjson_mut_obj_add_str(empty_doc, empty_root, "reason", "empty batch probe");
+        char *empty_json = yy_doc_to_str(empty_doc);
+        yyjson_mut_doc_free(empty_doc);
+        yyjson_doc_free(adoc);
+        char *empty_result = cbm_mcp_text_result(empty_json, false);
+        free(empty_json);
+        return empty_result;
+    }
+    if (!project || !project[0] || !cbm_validate_project_name(project)) {
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("project is required and must be a valid project name", true);
+    }
+
+    char payload_hash[CBM_SHA256_HEX_LEN + 1];
+    cbm_sha256_hex(args, strlen(args), payload_hash);
+
+    yyjson_val *source_batch = yyjson_obj_get(aroot, "source_batch_id");
+    yyjson_val *producer = yyjson_obj_get(aroot, "producer_id");
+    yyjson_val *epoch = yyjson_obj_get(aroot, "producer_epoch");
+    if ((source_batch && !runtime_trace_valid_string(source_batch, MCP_RUNTIME_TRACE_BATCH_ID_MAX)) ||
+        (producer && !runtime_trace_valid_string(producer, MCP_RUNTIME_TRACE_STRING_MAX)) ||
+        (epoch && !runtime_trace_valid_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX))) {
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("source_batch_id, producer_id and producer_epoch must be non-empty strings within the size limit", true);
+    }
+
+    const char *producer_id = producer ? yyjson_get_str(producer) : NULL;
+    const char *producer_epoch = epoch ? yyjson_get_str(epoch) : NULL;
+    const char *source_batch_id = source_batch ? yyjson_get_str(source_batch) : NULL;
+    char *batch_id = runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id,
+                                                 payload_hash);
+    if (!batch_id) {
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("invalid or oversized runtime trace batch identity", true);
+    }
+
+    cbm_runtime_trace_edge_t *edge_rows =
+        calloc(trace_count > 0 ? (size_t)trace_count : 1U, sizeof(*edge_rows));
+    if (!edge_rows) {
+        free(batch_id);
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("out of memory while preparing runtime traces", true);
+    }
+
+    bool valid = true;
+    const char *validation_error = NULL;
+    for (int i = 0; i < trace_count; i++) {
+        yyjson_val *item = yyjson_arr_get(traces, (size_t)i);
+        yyjson_val *caller = item && yyjson_is_obj(item) ? yyjson_obj_get(item, "caller") : NULL;
+        yyjson_val *callee = item && yyjson_is_obj(item) ? yyjson_obj_get(item, "callee") : NULL;
+        if (!runtime_trace_valid_string(caller, MCP_RUNTIME_TRACE_STRING_MAX) ||
+            !runtime_trace_valid_string(callee, MCP_RUNTIME_TRACE_STRING_MAX)) {
+            valid = false;
+            validation_error = "each runtime trace requires non-empty caller and callee strings";
+            break;
+        }
+
+        int64_t call_count = 1;
+        yyjson_val *count_value = yyjson_obj_get(item, "count");
+        if (count_value && (!runtime_trace_read_int64(count_value, &call_count) || call_count < 1 ||
+                            call_count > 1000000000)) {
+            valid = false;
+            validation_error = "trace count must be an integer between 1 and 1000000000";
+            break;
+        }
+
+        int64_t duration_ns = 0;
+        yyjson_val *duration_value = yyjson_obj_get(item, "duration_ns");
+        if (duration_value &&
+            (!runtime_trace_read_int64(duration_value, &duration_ns) || duration_ns < 0 ||
+             (call_count > 0 && duration_ns > INT64_MAX / call_count))) {
+            valid = false;
+            validation_error = "duration_ns must be a non-negative integer without overflow";
+            break;
+        }
+
+        bool is_error = false;
+        yyjson_val *error_value = yyjson_obj_get(item, "error");
+        if (error_value && !yyjson_is_bool(error_value)) {
+            valid = false;
+            validation_error = "trace error must be a boolean";
+            break;
+        }
+        if (error_value) {
+            is_error = yyjson_get_bool(error_value);
+        }
+
+        edge_rows[i].caller = yyjson_get_str(caller);
+        edge_rows[i].callee = yyjson_get_str(callee);
+        edge_rows[i].call_count = call_count;
+        edge_rows[i].error_count = is_error ? call_count : 0;
+        edge_rows[i].duration_ns_total = duration_ns * call_count;
+        edge_rows[i].duration_ns_max = duration_ns;
+        edge_rows[i].observations = 1;
+    }
+
+    if (!valid) {
+        free(edge_rows);
+        free(batch_id);
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result(validation_error ? validation_error : "invalid runtime trace",
+                                   true);
+    }
+
+    if (!mcp_project_mutation_begin(srv, project)) {
+        free(edge_rows);
+        free(batch_id);
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("project operation cancelled or blocked by an active index",
+                                   true);
+    }
+
+    cbm_store_t *resolved = resolve_store_internal(srv, project, true, false, NULL);
+    if (!resolved) {
+        char *error = build_no_store_error(project);
+        char *result = cbm_mcp_text_result(error, true);
+        free(error);
+        mcp_project_mutation_end(srv, project);
+        free(edge_rows);
+        free(batch_id);
+        free(project);
+        yyjson_doc_free(adoc);
+        return result;
+    }
+
+    cbm_store_t *owned_rw = NULL;
+    cbm_store_t *store = open_adr_store_for_write(srv, resolved, &owned_rw);
+    if (!store) {
+        mcp_project_mutation_end(srv, project);
+        free(edge_rows);
+        free(batch_id);
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("failed to open writable runtime trace store", true);
+    }
+
+    bool is_idempotent = false;
+    int64_t observations = 0;
+    int store_rc = cbm_store_ingest_runtime_traces(store, project, batch_id, payload_hash,
+                                                   edge_rows, trace_count, &is_idempotent,
+                                                   &observations);
+    char store_error[CBM_SZ_512] = {0};
+    if (store_rc != CBM_STORE_OK) {
+        snprintf(store_error, sizeof(store_error), "%s", cbm_store_error(store));
+    }
+    if (owned_rw) {
+        cbm_store_close(owned_rw);
+    }
+    mcp_project_mutation_end(srv, project);
 
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
     yyjson_mut_val *root = yyjson_mut_obj(doc);
     yyjson_mut_doc_set_root(doc, root);
-
-    yyjson_mut_obj_add_str(doc, root, "status", "accepted");
+    bool is_error = store_rc != CBM_STORE_OK;
+    if (store_rc == CBM_STORE_CONFLICT) {
+        yyjson_mut_obj_add_str(doc, root, "status", "conflict");
+    } else if (is_error) {
+        yyjson_mut_obj_add_str(doc, root, "status", "error");
+    } else {
+        yyjson_mut_obj_add_str(doc, root, "status", "accepted");
+    }
     yyjson_mut_obj_add_int(doc, root, "traces_received", trace_count);
-    yyjson_mut_obj_add_str(doc, root, "note",
-                           "Runtime edge creation from traces not yet implemented");
+    yyjson_mut_obj_add_int(doc, root, "runtime_edges_received", trace_count);
+    yyjson_mut_obj_add_int(doc, root, "observations_persisted", observations);
+    yyjson_mut_obj_add_bool(doc, root, "idempotent", is_idempotent);
+    yyjson_mut_obj_add_bool(doc, root, "persisted", !is_error);
+    yyjson_mut_obj_add_str(doc, root, "project", project);
+    yyjson_mut_obj_add_str(doc, root, "batch_id", batch_id);
+    yyjson_mut_obj_add_str(doc, root, "payload_sha256", payload_hash);
+    if (is_error) {
+        yyjson_mut_obj_add_str(doc, root, "error",
+                               store_error[0] ? store_error : "runtime trace ingestion failed");
+    }
 
     char *json = yy_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
+    free(edge_rows);
+    free(batch_id);
+    free(project);
+    yyjson_doc_free(adoc);
 
-    char *result = cbm_mcp_text_result(json, false);
+    char *result = cbm_mcp_text_result(json, is_error);
     free(json);
     return result;
 }

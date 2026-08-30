@@ -27,6 +27,7 @@ typedef struct cbm_store cbm_store_t;
 #define CBM_STORE_CANCELLED (-3)
 #define CBM_STORE_SCAN_LIMIT (-4)
 #define CBM_STORE_CALLBACK_ERR (-5)
+#define CBM_STORE_CONFLICT (-6)
 
 /* ── Data structures ────────────────────────────────────────────── */
 
@@ -56,6 +57,21 @@ typedef struct {
     const char *indexed_at; /* ISO 8601 */
     const char *root_path;
 } cbm_project_t;
+
+/* One normalized runtime observation. Runtime data is intentionally kept in
+ * its own sidecar tables instead of being promoted to static graph edges:
+ * callers can aggregate high-volume observations without changing the
+ * statically indexed graph. `observations` is the number of source records
+ * represented by this row (normally 1 for a compact pair event). */
+typedef struct {
+    const char *caller;
+    const char *callee;
+    int64_t call_count;
+    int64_t error_count;
+    int64_t duration_ns_total;
+    int64_t duration_ns_max;
+    int64_t observations;
+} cbm_runtime_trace_edge_t;
 
 typedef struct {
     const char *project;
@@ -459,6 +475,15 @@ int cbm_store_upsert_project(cbm_store_t *s, const char *name, const char *root_
 int cbm_store_get_project(cbm_store_t *s, const char *name, cbm_project_t *out);
 int cbm_store_list_projects(cbm_store_t *s, cbm_project_t **out, int *count);
 int cbm_store_delete_project(cbm_store_t *s, const char *name);
+
+/* Persist one runtime trace batch atomically. A batch is idempotent when the
+ * same (project, batch_id, payload_hash) is submitted again. Reusing a batch
+ * id with a different payload returns CBM_STORE_CONFLICT and writes nothing.
+ * `idempotent` and `observations_out` are optional output pointers. */
+int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
+                                    const char *batch_id, const char *payload_hash,
+                                    const cbm_runtime_trace_edge_t *edges, int count,
+                                    bool *idempotent, int64_t *observations_out);
 
 /* ── Node CRUD ──────────────────────────────────────────────────── */
 

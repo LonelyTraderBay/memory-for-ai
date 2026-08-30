@@ -325,7 +325,35 @@ static int init_schema(cbm_store_t *s) {
         "  ignored_files_total INTEGER NOT NULL DEFAULT 0,"
         "  coverage_version INTEGER NOT NULL DEFAULT 1,"
         "  hash_records_complete INTEGER NOT NULL DEFAULT 0"
-        ");";
+        ");"
+        /* Runtime observations are a normalized sidecar. They deliberately
+         * do not share the static `edges` table: a trace producer may report
+         * a symbol pair before static resolution is available, and repeated
+         * observations must aggregate without mutating the static graph. */
+        "CREATE TABLE IF NOT EXISTS runtime_trace_batches ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  batch_id TEXT NOT NULL,"
+        "  payload_hash TEXT NOT NULL,"
+        "  trace_count INTEGER NOT NULL,"
+        "  accepted_at TEXT NOT NULL,"
+        "  PRIMARY KEY (project, batch_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS runtime_trace_edges ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  caller TEXT NOT NULL,"
+        "  callee TEXT NOT NULL,"
+        "  call_count INTEGER NOT NULL DEFAULT 0,"
+        "  error_count INTEGER NOT NULL DEFAULT 0,"
+        "  duration_ns_total INTEGER NOT NULL DEFAULT 0,"
+        "  duration_ns_max INTEGER NOT NULL DEFAULT 0,"
+        "  observations INTEGER NOT NULL DEFAULT 0,"
+        "  first_seen TEXT NOT NULL,"
+        "  last_seen TEXT NOT NULL,"
+        "  PRIMARY KEY (project, caller, callee)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_edges_project_count "
+        "ON runtime_trace_edges(project, call_count DESC)"
+        ";";
 
     int rc = exec_sql(s, ddl);
     if (rc != CBM_STORE_OK) {
@@ -2214,6 +2242,168 @@ int cbm_store_upsert_project(cbm_store_t *s, const char *name, const char *root_
                        "WHERE k='mutation_gen';",
                        NULL, NULL, NULL);
     return CBM_STORE_OK;
+}
+
+int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
+                                    const char *batch_id, const char *payload_hash,
+                                    const cbm_runtime_trace_edge_t *edges, int count,
+                                    bool *idempotent, int64_t *observations_out) {
+    if (idempotent) {
+        *idempotent = false;
+    }
+    if (observations_out) {
+        *observations_out = 0;
+    }
+    if (!s || !s->db || !project || !project[0] || !batch_id || !batch_id[0] ||
+        !payload_hash || !payload_hash[0] || count < 0 || (count > 0 && !edges)) {
+        if (s) {
+            store_set_error(s, "invalid runtime trace batch");
+        }
+        return CBM_STORE_ERR;
+    }
+
+    /* The MCP boundary applies the normal batch limit. Keep a defensive limit
+     * here too because this public store API can be called without MCP. */
+    if (count > 100000) {
+        store_set_error(s, "runtime trace batch is too large");
+        return CBM_STORE_SCAN_LIMIT;
+    }
+
+    int64_t observations = 0;
+    for (int i = 0; i < count; i++) {
+        const cbm_runtime_trace_edge_t *edge = &edges[i];
+        if (!edge->caller || !edge->caller[0] || !edge->callee || !edge->callee[0] ||
+            edge->call_count < 0 || edge->error_count < 0 || edge->duration_ns_total < 0 ||
+            edge->duration_ns_max < 0 || edge->observations < 0) {
+            store_set_error(s, "invalid runtime trace edge");
+            return CBM_STORE_ERR;
+        }
+        if (INT64_MAX - observations < edge->observations) {
+            store_set_error(s, "runtime trace observation total overflow");
+            return CBM_STORE_ERR;
+        }
+        observations += edge->observations;
+    }
+
+    if (cbm_store_begin(s) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+
+    sqlite3_stmt *batch_lookup = NULL;
+    sqlite3_stmt *batch_insert = NULL;
+    sqlite3_stmt *edge_upsert = NULL;
+    int result = CBM_STORE_ERR;
+
+    if (sqlite3_prepare_v2(s->db,
+                           "SELECT payload_hash FROM runtime_trace_batches "
+                           "WHERE project = ?1 AND batch_id = ?2;",
+                           CBM_NOT_FOUND, &batch_lookup, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime trace batch lookup prepare");
+        goto rollback;
+    }
+    if (bind_text(batch_lookup, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(batch_lookup, ST_COL_2, batch_id) != SQLITE_OK) {
+        store_set_error(s, "runtime trace batch lookup bind failed");
+        goto rollback;
+    }
+
+    int lookup_rc = sqlite3_step(batch_lookup);
+    if (lookup_rc == SQLITE_ROW) {
+        const char *existing_hash = (const char *)sqlite3_column_text(batch_lookup, 0);
+        if (existing_hash && strcmp(existing_hash, payload_hash) == 0) {
+            if (idempotent) {
+                *idempotent = true;
+            }
+            result = CBM_STORE_OK;
+            goto rollback;
+        }
+        store_set_error(s, "runtime trace batch conflicts with existing payload");
+        result = CBM_STORE_CONFLICT;
+        goto rollback;
+    }
+    if (lookup_rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime trace batch lookup");
+        goto rollback;
+    }
+
+    if (sqlite3_prepare_v2(s->db,
+                           "INSERT INTO runtime_trace_batches "
+                           "(project, batch_id, payload_hash, trace_count, accepted_at) "
+                           "VALUES (?1, ?2, ?3, ?4, ?5);",
+                           CBM_NOT_FOUND, &batch_insert, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime trace batch insert prepare");
+        goto rollback;
+    }
+
+    char ts[CBM_SZ_64];
+    iso_now(ts, sizeof(ts));
+    if (bind_text(batch_insert, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(batch_insert, ST_COL_2, batch_id) != SQLITE_OK ||
+        bind_text(batch_insert, ST_COL_3, payload_hash) != SQLITE_OK ||
+        sqlite3_bind_int(batch_insert, ST_COL_4, count) != SQLITE_OK ||
+        bind_text(batch_insert, ST_COL_5, ts) != SQLITE_OK ||
+        sqlite3_step(batch_insert) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime trace batch insert");
+        goto rollback;
+    }
+
+    if (count > 0) {
+        if (sqlite3_prepare_v2(
+                s->db,
+                "INSERT INTO runtime_trace_edges "
+                "(project, caller, callee, call_count, error_count, duration_ns_total, "
+                "duration_ns_max, observations, first_seen, last_seen) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) "
+                "ON CONFLICT(project, caller, callee) DO UPDATE SET "
+                "call_count = call_count + excluded.call_count, "
+                "error_count = error_count + excluded.error_count, "
+                "duration_ns_total = duration_ns_total + excluded.duration_ns_total, "
+                "duration_ns_max = MAX(duration_ns_max, excluded.duration_ns_max), "
+                "observations = observations + excluded.observations, "
+                "last_seen = excluded.last_seen;",
+                CBM_NOT_FOUND, &edge_upsert, NULL) != SQLITE_OK) {
+            store_set_error_sqlite(s, "runtime trace edge upsert prepare");
+            goto rollback;
+        }
+
+        for (int i = 0; i < count; i++) {
+            const cbm_runtime_trace_edge_t *edge = &edges[i];
+            sqlite3_reset(edge_upsert);
+            sqlite3_clear_bindings(edge_upsert);
+            if (bind_text(edge_upsert, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_2, edge->caller) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_3, edge->callee) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_4, edge->call_count) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_5, edge->error_count) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_6, edge->duration_ns_total) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_7, edge->duration_ns_max) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_8, edge->observations) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_9, ts) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_10, ts) != SQLITE_OK ||
+                sqlite3_step(edge_upsert) != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime trace edge upsert");
+                goto rollback;
+            }
+        }
+    }
+
+    if (cbm_store_commit(s) != CBM_STORE_OK) {
+        (void)cbm_store_rollback(s);
+        goto cleanup;
+    }
+    if (observations_out) {
+        *observations_out = observations;
+    }
+    result = CBM_STORE_OK;
+    goto cleanup;
+
+rollback:
+    (void)cbm_store_rollback(s);
+cleanup:
+    sqlite3_finalize(batch_lookup);
+    sqlite3_finalize(batch_insert);
+    sqlite3_finalize(edge_upsert);
+    return result;
 }
 
 /* Opaque store generation for pagination cursors: "u<db_uid>g<mutation_gen>",

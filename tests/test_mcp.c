@@ -949,7 +949,7 @@ TEST(mcp_tools_have_behavior_annotations) {
         {"check_index_coverage", false, true, true, false},
         {"detect_changes", false, true, true, false},
         {"manage_adr", false, true, false, false},
-        {"ingest_traces", false, false, false, false},
+        {"ingest_traces", false, false, true, false},
     };
 
     char *json = cbm_mcp_tools_list();
@@ -8578,14 +8578,52 @@ TEST(detect_changes_zero_overlap_falls_back_issue1363) {
 
 TEST(tool_ingest_traces_basic) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    const char *project = "runtime-ingest";
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/runtime-ingest"), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
 
-    char *resp = cbm_mcp_server_handle(
-        srv, "{\"jsonrpc\":\"2.0\",\"id\":37,\"method\":\"tools/call\","
-             "\"params\":{\"name\":\"ingest_traces\","
-             "\"arguments\":{\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}}}");
+    const char *request =
+        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":2,"
+        "\"duration_ns\":5,\"error\":true}]}";
+    char *resp = cbm_mcp_handle_tool(srv, "ingest_traces", request);
     ASSERT_NOT_NULL(resp);
-    ASSERT_NOT_NULL(strstr(resp, "accepted"));
-    ASSERT_NOT_NULL(strstr(resp, "traces_received"));
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"persisted\":true"));
+    free(resp);
+
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(store),
+                                 "SELECT call_count, error_count, duration_ns_total, "
+                                 "duration_ns_max, observations FROM runtime_trace_edges "
+                                 "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
+                                 -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 0), 2);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 1), 2);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 2), 10);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 3), 5);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 4), 1);
+    sqlite3_finalize(stmt);
+
+    /* Exact retry is accepted without adding a second aggregate. */
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", request);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"idempotent\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"observations_persisted\":0"));
+    free(resp);
+
+    /* Reusing the source batch identity with a changed payload is a conflict. */
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":3}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"conflict\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
     free(resp);
 
     cbm_mcp_server_free(srv);
