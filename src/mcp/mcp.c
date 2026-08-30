@@ -629,6 +629,17 @@ static const tool_def_t TOOLS[] = {
      "offset parameter — raise limit or narrow with file_pattern / path_filter to see more."
      "\",\"default\":10,\"minimum\":1}},\"required\":[\"pattern\",\"project\"]}"},
 
+    {"get_code_actions", "Get code actions",
+     "Return deterministic, read-only code-action suggestions for a file range. Actions are "
+     "derived from indexed coverage, complexity, test relationships, and dependency security "
+     "evidence; memory-for-ai never edits source or runs a tool implicitly. Each action includes "
+     "a follow-up MCP command that an editor or agent may choose to invoke.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
+     "\"path\":{\"type\":\"string\",\"description\":\"Repository-relative source path\"},"
+     "\"start_line\":{\"type\":\"integer\",\"minimum\":1,\"default\":1},"
+     "\"end_line\":{\"type\":\"integer\",\"minimum\":1,\"default\":1}},"
+     "\"required\":[\"project\",\"path\"],\"additionalProperties\":false}"},
+
     {"list_projects", "List projects", "List indexed projects with deterministic pagination",
      "{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\","
      "\"minimum\":0,\"default\":0},"
@@ -758,6 +769,7 @@ static const tool_annotation_def_t TOOL_ANNOTATIONS[] = {
     {"compare_graphs", true, false, true, false},
     {"get_architecture", false, true, true, false},
     {"search_code", false, true, true, false},
+    {"get_code_actions", true, false, true, false},
     {"list_projects", true, false, true, false},
     {"delete_project", false, true, true, false},
     {"index_status", false, true, true, false},
@@ -819,7 +831,8 @@ static bool mcp_tool_allowed(cbm_mcp_tool_profile_t profile, const char *name) {
     static const char *const analysis_tools[] = {
         "search_graph",     "query_graph",    "trace_path",           "get_code_snippet",
         "get_graph_schema", "compare_graphs", "get_architecture",     "search_code",
-        "list_projects",    "index_status",   "check_index_coverage", "detect_changes",
+        "get_code_actions", "list_projects",   "index_status",          "check_index_coverage",
+        "detect_changes",
     };
     static const char *const scout_tools[] = {
         "search_graph",  "trace_path",   "get_code_snippet",     "get_architecture",
@@ -9328,6 +9341,182 @@ static void add_snippet_coverage_note(yyjson_mut_doc *doc, yyjson_mut_val *root_
     cbm_store_free_coverage(rows, count);
 }
 
+static int code_action_property_int(const char *properties, const char *key) {
+    if (!properties || !key) {
+        return 0;
+    }
+    char marker[CBM_SZ_128];
+    snprintf(marker, sizeof(marker), "\"%s\":", key);
+    const char *value = strstr(properties, marker);
+    if (!value) {
+        return 0;
+    }
+    value += strlen(marker);
+    return (int)strtol(value, NULL, CBM_DECIMAL_BASE);
+}
+
+static void add_code_action(yyjson_mut_doc *doc, yyjson_mut_val *actions, const char *kind,
+                            const char *title, const char *reason, const char *tool,
+                            const char *project, const char *arg_name, const char *arg_value) {
+    yyjson_mut_val *action = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_str(doc, action, "kind", kind);
+    yyjson_mut_obj_add_str(doc, action, "title", title);
+    yyjson_mut_obj_add_str(doc, action, "reason", reason);
+    yyjson_mut_obj_add_bool(doc, action, "preferred", true);
+    yyjson_mut_val *command = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_str(doc, command, "tool", tool);
+    yyjson_mut_val *arguments = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_str(doc, arguments, "project", project);
+    if (arg_name && arg_value) {
+        if (strcmp(arg_name, "paths") == 0) {
+            yyjson_mut_val *paths = yyjson_mut_arr(doc);
+            yyjson_mut_arr_add_str(doc, paths, arg_value);
+            yyjson_mut_obj_add_val(doc, arguments, "paths", paths);
+        } else {
+            yyjson_mut_obj_add_str(doc, arguments, arg_name, arg_value);
+        }
+    }
+    yyjson_mut_obj_add_val(doc, command, "arguments", arguments);
+    yyjson_mut_obj_add_val(doc, action, "command", command);
+    yyjson_mut_arr_add_val(actions, action);
+}
+
+static char *handle_get_code_actions(cbm_mcp_server_t *srv, const char *args) {
+    char *project = get_project_arg(args);
+    char *path = cbm_mcp_get_string_arg(args, "path");
+    if (!project) {
+        free(path);
+        return cbm_mcp_text_result("project is required", true);
+    }
+    if (!path || !path[0]) {
+        free(project);
+        free(path);
+        return cbm_mcp_text_result("path is required and must be repository-relative", true);
+    }
+    int start_line = cbm_mcp_get_int_arg(args, "start_line", SKIP_ONE);
+    int end_line = cbm_mcp_get_int_arg(args, "end_line", start_line);
+    if (start_line < SKIP_ONE) {
+        start_line = SKIP_ONE;
+    }
+    if (end_line < start_line) {
+        end_line = start_line;
+    }
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *error = build_no_store_error(project);
+        char *result = cbm_mcp_text_result(error, true);
+        free(error);
+        free(path);
+        free(project);
+        return result;
+    }
+
+    cbm_node_t *nodes = NULL;
+    int node_count = 0;
+    (void)cbm_store_find_nodes_by_file_overlap(store, project, path, start_line, end_line, &nodes,
+                                               &node_count);
+    cbm_coverage_row_t *coverage = NULL;
+    int coverage_count = 0;
+    (void)cbm_store_coverage_get_path(store, project, path, &coverage, &coverage_count);
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "project", project);
+    yyjson_mut_obj_add_str(doc, root, "path", path);
+    yyjson_mut_obj_add_int(doc, root, "start_line", start_line);
+    yyjson_mut_obj_add_int(doc, root, "end_line", end_line);
+    yyjson_mut_obj_add_int(doc, root, "node_count", node_count);
+
+    yyjson_mut_val *actions = yyjson_mut_arr(doc);
+    bool coverage_action_added = false;
+    bool audit_action_added = false;
+    for (int i = 0; i < coverage_count; i++) {
+        const char *kind = coverage[i].kind ? coverage[i].kind : "unknown";
+        if (!coverage_action_added && (strcmp(kind, "parse_partial") == 0 ||
+                                       strcmp(kind, "read") == 0 || strcmp(kind, "extract") == 0 ||
+                                       strcmp(kind, "oversized") == 0 ||
+                                       strcmp(kind, "not_indexed_dir") == 0 ||
+                                       strcmp(kind, "not_indexed_file") == 0)) {
+            add_code_action(doc, actions, "quickfix.memory-for-ai.coverage",
+                            "Inspect indexed coverage before editing",
+                            "The selected file or range has a recorded indexing gap; source is the authority.",
+                            "check_index_coverage", project, "paths", path);
+            coverage_action_added = true;
+        }
+    }
+
+    for (int i = 0; i < node_count; i++) {
+        cbm_node_t *node = &nodes[i];
+        bool callable = node->label &&
+                        (strcmp(node->label, "Function") == 0 || strcmp(node->label, "Method") == 0);
+        int complexity = code_action_property_int(node->properties_json, "complexity");
+        if (callable && complexity >= 10) {
+            add_code_action(doc, actions, "refactor.rewrite",
+                            "Review high-complexity symbol",
+                            "Cyclomatic complexity is high enough to justify a focused refactor review.",
+                            "get_code_snippet", project, "qualified_name",
+                            node->qualified_name ? node->qualified_name : node->name);
+        }
+        if (callable) {
+            cbm_edge_t *test_edges = NULL;
+            int test_count = 0;
+            (void)cbm_store_find_edges_by_target_type(store, node->id, "TESTS", &test_edges,
+                                                      &test_count);
+            cbm_store_free_edges(test_edges, test_count);
+            if (test_count == 0) {
+                add_code_action(doc, actions, "source.addTest", "Add or locate a test for this symbol",
+                                "No TESTS edge currently reaches this callable in the index.",
+                                "trace_path", project, "function_name",
+                                node->qualified_name ? node->qualified_name : node->name);
+            }
+        }
+        if (node->label && strcmp(node->label, "Package") == 0 && node->properties_json &&
+            strstr(node->properties_json, "\"external\":true")) {
+            audit_action_added = true;
+            add_code_action(doc, actions, "source.auditDependency",
+                            "Review dependency security evidence",
+                            "This is an external package; inspect local SecurityAudit/SecurityReport evidence.",
+                            "query_graph", project, "query",
+                            "MATCH (s:SecurityAudit) RETURN s.name, s.properties_json LIMIT 100");
+        }
+        if (!audit_action_added && node->label && strcmp(node->label, "SecurityAudit") == 0) {
+            audit_action_added = true;
+            add_code_action(doc, actions, "source.auditDependency",
+                            "Review dependency security evidence",
+                            "The selected manifest has a deterministic audit record; inspect its local evidence before changing dependencies.",
+                            "query_graph", project, "query",
+                            "MATCH (s:SecurityAudit)-[:AUDITS]->(p:Package) RETURN s.name, p.name, s.properties_json LIMIT 100");
+        }
+    }
+    if (node_count == 0 && !coverage_action_added) {
+        add_code_action(doc, actions, "quickfix.memory-for-ai.coverage",
+                        "Check file coverage before relying on graph results",
+                        "No indexed symbol overlaps the requested range; the file may be skipped or outside the graph.",
+                        "check_index_coverage", project, "paths", path);
+    }
+    yyjson_mut_obj_add_val(doc, root, "actions", actions);
+    yyjson_mut_obj_add_int(doc, root, "action_count", (int)yyjson_arr_size(actions));
+    yyjson_mut_val *coverage_json = yyjson_mut_arr(doc);
+    for (int i = 0; i < coverage_count; i++) {
+        yyjson_mut_val *row = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_str(doc, row, "kind", coverage[i].kind ? coverage[i].kind : "unknown");
+        yyjson_mut_obj_add_str(doc, row, "detail", coverage[i].detail ? coverage[i].detail : "");
+        yyjson_mut_arr_add_val(coverage_json, row);
+    }
+    yyjson_mut_obj_add_val(doc, root, "coverage", coverage_json);
+
+    char *json = yy_doc_to_str(doc);
+    yyjson_mut_doc_free(doc);
+    cbm_store_free_coverage(coverage, coverage_count);
+    cbm_store_free_nodes(nodes, node_count);
+    free(path);
+    free(project);
+    char *result = cbm_mcp_text_result(json, false);
+    free(json);
+    return result;
+}
+
 static char *build_snippet_response(cbm_mcp_server_t *srv, cbm_node_t *node,
                                     const char *match_method, bool include_neighbors,
                                     cbm_node_t *alternatives, int alt_count) {
@@ -12754,6 +12943,9 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
     }
     if (strcmp(tool_name, "search_code") == 0) {
         return handle_search_code(srv, args_json);
+    }
+    if (strcmp(tool_name, "get_code_actions") == 0) {
+        return handle_get_code_actions(srv, args_json);
     }
     if (strcmp(tool_name, "detect_changes") == 0) {
         return handle_detect_changes(srv, args_json);

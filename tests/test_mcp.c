@@ -854,6 +854,7 @@ TEST(mcp_tools_list) {
     ASSERT_NOT_NULL(strstr(json, "get_graph_schema"));
     ASSERT_NOT_NULL(strstr(json, "get_architecture"));
     ASSERT_NOT_NULL(strstr(json, "search_code"));
+    ASSERT_NOT_NULL(strstr(json, "get_code_actions"));
     ASSERT_NOT_NULL(strstr(json, "list_projects"));
     ASSERT_NOT_NULL(strstr(json, "delete_project"));
     ASSERT_NOT_NULL(strstr(json, "index_status"));
@@ -943,6 +944,7 @@ TEST(mcp_tools_have_behavior_annotations) {
         {"compare_graphs", true, false, true, false},
         {"get_architecture", false, true, true, false},
         {"search_code", false, true, true, false},
+        {"get_code_actions", true, false, true, false},
         {"list_projects", true, false, true, false},
         {"delete_project", false, true, true, false},
         {"index_status", false, true, true, false},
@@ -1465,7 +1467,8 @@ TEST(server_handle_analysis_profile_filters_and_rejects_mutators) {
     static const char *const analysis_tools[] = {
         "search_graph",     "query_graph",    "trace_path",           "get_code_snippet",
         "get_graph_schema", "compare_graphs", "get_architecture",     "search_code",
-        "list_projects",    "index_status",   "check_index_coverage", "detect_changes",
+        "get_code_actions", "list_projects",  "index_status",          "check_index_coverage",
+        "detect_changes",
     };
     ASSERT_EQ(mcp_response_tool_count(resp), sizeof(analysis_tools) / sizeof(analysis_tools[0]));
     for (size_t i = 0U; i < sizeof(analysis_tools) / sizeof(analysis_tools[0]); i++) {
@@ -9744,6 +9747,35 @@ static bool snippet_source_has_replacement(const char *json) {
     bool found = source_str && strstr(source_str, "\xEF\xBF\xBD");
     yyjson_doc_free(doc);
     return found;
+}
+
+TEST(mcp_get_code_actions_returns_follow_up_commands) {
+    char tmp[256];
+    cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
+    ASSERT_NOT_NULL(srv);
+
+    char *envelope = cbm_mcp_handle_tool(
+        srv, "get_code_actions",
+        "{\"project\":\"test-project\",\"path\":\"main.go\",\"start_line\":3,\"end_line\":5}");
+    ASSERT_NOT_NULL(envelope);
+    char *inner = extract_text_content(envelope);
+    ASSERT_NOT_NULL(inner);
+    yyjson_doc *doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_NOT_NULL(root);
+    yyjson_val *actions = yyjson_obj_get(root, "actions");
+    ASSERT_NOT_NULL(actions);
+    ASSERT_TRUE(yyjson_is_arr(actions));
+    ASSERT_TRUE(yyjson_arr_size(actions) >= 1);
+    ASSERT_NOT_NULL(strstr(inner, "command"));
+    ASSERT_NOT_NULL(strstr(inner, "trace_path"));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(envelope);
+    cbm_mcp_server_free(srv);
+    cleanup_snippet_dir(tmp);
+    PASS();
 }
 
 /* ── TestSnippet_ExactQN ──────────────────────────────────────── */

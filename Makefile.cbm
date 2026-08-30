@@ -341,6 +341,7 @@ PIPELINE_SRCS = \
     src/pipeline/pass_usages.c \
     src/pipeline/pass_semantic.c \
     src/pipeline/pass_tests.c \
+    src/pipeline/pass_project_graph.c \
     src/pipeline/pass_githistory.c \
     src/pipeline/pass_gitdiff.c \
     src/pipeline/pass_configures.c \

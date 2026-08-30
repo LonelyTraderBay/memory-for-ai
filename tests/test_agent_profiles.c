@@ -92,6 +92,8 @@ TEST(agent_profiles_direct_dialects_are_coverage_aware_and_read_only) {
             }
             int valid = strstr(profile, "memory-for-ai") != NULL &&
                         strstr(profile, "check_index_coverage") != NULL &&
+                        (strstr(profile, "get_code_actions") != NULL) ==
+                            (tier != (int)CBM_GRAPH_TIER_SCOUT) &&
                         strstr(profile, expectation->syntax_fragment) != NULL &&
                         strstr(profile, expectation->read_fragment) != NULL &&
                         strstr(profile, expectation->grep_fragment) != NULL &&

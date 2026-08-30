@@ -1429,6 +1429,14 @@ static int run_postpasses(cbm_pipeline_ctx_t *ctx, cbm_file_info_t *changed_file
     }
 
     cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    rc = cbm_pipeline_pass_project_graph(ctx, changed_files, ci);
+    cbm_log_info("pass.timing", "pass", "incr_project_graph", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t)));
+    if (rc != 0 || cbm_pipeline_check_cancel(ctx)) {
+        return rc != 0 ? rc : CBM_NOT_FOUND;
+    }
+
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     rc = cbm_pipeline_pass_decorator_tags(ctx->gbuf, project);
     cbm_log_info("pass.timing", "pass", "incr_decorator_tags", "elapsed_ms",
                  itoa_buf((int)elapsed_ms(t)));

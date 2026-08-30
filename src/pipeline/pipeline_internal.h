@@ -591,6 +591,12 @@ int cbm_pipeline_pass_semantic(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
 
 int cbm_pipeline_pass_tests(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, int file_count);
 
+/* Post-extraction project graph: build targets, test suites, dependency
+ * manifests, and local security-audit evidence. It is read-only with respect
+ * to the repository and emits only graph nodes/edges. */
+int cbm_pipeline_pass_project_graph(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files,
+                                    int file_count);
+
 int cbm_pipeline_pass_githistory(cbm_pipeline_ctx_t *ctx);
 
 /* Pre-computed git history result for fused post-pass parallelism. */

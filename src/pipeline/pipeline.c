@@ -2108,6 +2108,12 @@ static int run_tests_and_history(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
     CBM_PROF_END_N("pipeline", "pass_tests", t_tests, file_count);
     cbm_log_info("pass.timing", "pass", "tests", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
     if (rc == 0 && !check_cancel(p)) {
+        cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+        rc = cbm_pipeline_pass_project_graph(ctx, files, file_count);
+        cbm_log_info("pass.timing", "pass", "project_graph", "elapsed_ms",
+                     itoa_buf((int)elapsed_ms(t)));
+    }
+    if (rc == 0 && !check_cancel(p)) {
         CBM_PROF_START(t_gh);
         rc = run_githistory(p, ctx);
         CBM_PROF_END("pipeline", "pass_githistory", t_gh);
