@@ -70,6 +70,7 @@ enum {
 #include "foundation/log.h"
 #include "foundation/limits.h"
 #include "foundation/subprocess.h"
+#include "foundation/sha256.h"
 #include "mcp/index_supervisor.h"
 #include "mcp/compact_out.h"
 #include "foundation/str_util.h"
@@ -9496,7 +9497,7 @@ static char *handle_get_code_actions(cbm_mcp_server_t *srv, const char *args) {
                         "check_index_coverage", project, "paths", path);
     }
     yyjson_mut_obj_add_val(doc, root, "actions", actions);
-    yyjson_mut_obj_add_int(doc, root, "action_count", (int)yyjson_arr_size(actions));
+    yyjson_mut_obj_add_int(doc, root, "action_count", (int)yyjson_mut_arr_size(actions));
     yyjson_mut_val *coverage_json = yyjson_mut_arr(doc);
     for (int i = 0; i < coverage_count; i++) {
         yyjson_mut_val *row = yyjson_mut_obj(doc);
