@@ -732,7 +732,7 @@ PP_OBJ_TSAN = $(BUILD_DIR)/tsan_preprocessor.o
 
 # ── Targets ──────────────────────────────────────────────────────
 
-.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security
+.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint metadata-check lint-tidy lint-tidy-diff lint-cppcheck lint-format security
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -1155,12 +1155,17 @@ lint-no-suppress:
 	@echo "  Checking NOLINT(misc-no-recursion) against whitelist..."
 	@scripts/check-nolint-whitelist.sh
 
+# Product identity, generated metadata, and active documentation claims.
+# This check is compiler-free so it can run before the native lint lanes.
+metadata-check:
+	@python3 scripts/check-product-metadata.py
+
 # All linters (run with make -j3 lint for parallel execution)
-lint: lint-tidy lint-cppcheck lint-format lint-no-suppress
+lint: metadata-check lint-tidy lint-cppcheck lint-format lint-no-suppress
 	@echo "=== All linters passed ==="
 
 # CI linters (no clang-tidy — platform-dependent, enforced locally via pre-commit)
-lint-ci: lint-cppcheck lint-format lint-no-suppress
+lint-ci: metadata-check lint-cppcheck lint-format lint-no-suppress
 	@echo "=== CI linters passed ==="
 
 # ── Local memory-diagnostic lanes (not PR-CI gates by decision: the diag

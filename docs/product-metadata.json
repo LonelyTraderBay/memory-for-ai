@@ -1,0 +1,31 @@
+{
+  "product_name": "memory-for-ai",
+  "display_name": "Memory for AI",
+  "repository": "LonelyTraderBay/memory-for-ai",
+  "repository_url": "https://github.com/LonelyTraderBay/memory-for-ai",
+  "version": "0.10.8",
+  "mcp_tool_count": 16,
+  "mcp_tools": [
+    "index_repository",
+    "search_graph",
+    "query_graph",
+    "trace_path",
+    "get_code_snippet",
+    "get_graph_schema",
+    "compare_graphs",
+    "get_architecture",
+    "search_code",
+    "list_projects",
+    "delete_project",
+    "index_status",
+    "check_index_coverage",
+    "detect_changes",
+    "manage_adr",
+    "ingest_traces"
+  ],
+  "language_count": 162,
+  "agent_surface_count": 45,
+  "cache_env": "MFA_CACHE_DIR",
+  "runtime_env": "MFA_RUNTIME_DIR",
+  "index_log_env": "MFA_INDEX_LOG"
+}
