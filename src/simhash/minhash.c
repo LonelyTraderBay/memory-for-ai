@@ -288,9 +288,22 @@ void cbm_minhash_to_hex(const cbm_minhash_t *fp, char *buf, int bufsize) {
         }
         return;
     }
-    int pos = 0;
+
+    const size_t capacity = (size_t)bufsize;
+    size_t pos = 0;
     for (int i = 0; i < CBM_MINHASH_K; i++) {
-        pos += snprintf(buf + pos, (size_t)(bufsize - pos), "%08x", fp->values[i]);
+        if (pos >= capacity - 1U) {
+            buf[capacity - 1U] = '\0';
+            return;
+        }
+
+        const size_t remaining = capacity - pos;
+        int written = snprintf(buf + pos, remaining, "%08x", fp->values[i]);
+        if (written < 0 || (size_t)written >= remaining) {
+            buf[capacity - 1U] = '\0';
+            return;
+        }
+        pos += (size_t)written;
     }
 }
 

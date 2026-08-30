@@ -10,7 +10,7 @@
 # libstdc++ and would fail on an older base. Because it's static, the runtime
 # base image is arbitrary. TARGETARCH is amd64 / arm64, matching the asset names.
 
-FROM debian:bookworm-slim AS fetch
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS fetch
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -19,7 +19,7 @@ RUN apt-get update \
  && chmod +x /tmp/memory-for-ai \
  && rm -rf /var/lib/apt/lists/*
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 COPY --from=fetch /tmp/memory-for-ai /usr/local/bin/memory-for-ai
 COPY --from=fetch /tmp/LICENSE /tmp/THIRD_PARTY_NOTICES.md /usr/share/doc/memory-for-ai/
 ENV MFA_CACHE_DIR=/tmp/cbm
