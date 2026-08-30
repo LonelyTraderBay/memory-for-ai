@@ -8,6 +8,7 @@ cd "$SRC/memory-for-ai"
 # application so fuzzing remains fast and deterministic.
 "$CC" $CFLAGS -Isrc -c src/foundation/secure_random.c -o "$WORK/secure_random.o"
 "$CC" $CFLAGS -Isrc -c src/foundation/sha256.c -o "$WORK/sha256.o"
-"$CXX" $CXXFLAGS -Isrc tests/fuzz_sha256.c \
+"$CC" $CFLAGS -Isrc -c tests/fuzz_sha256.c -o "$WORK/fuzz_sha256.o"
+"$CXX" $CXXFLAGS "$WORK/fuzz_sha256.o" \
     "$WORK/sha256.o" "$WORK/secure_random.o" \
     -o "$OUT/sha256_fuzzer" "$LIB_FUZZING_ENGINE"
