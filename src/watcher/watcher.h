@@ -2,8 +2,9 @@
  * watcher.h — File change watcher for auto-reindexing.
  *
  * Polls indexed projects for git changes (HEAD movement or dirty working tree)
- * and triggers re-indexing via a callback. Uses adaptive polling intervals
- * based on project size (5s base + 1s per 500 files, capped at 60s).
+ * or a discovery-filtered filesystem signature for non-Git projects, then
+ * triggers re-indexing via a callback. Uses adaptive polling intervals based
+ * on project size (5s base + 1s per 500 files, capped at 60s).
  *
  * Depends on: foundation, store (for project metadata)
  */

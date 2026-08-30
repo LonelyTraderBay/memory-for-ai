@@ -150,7 +150,7 @@ Enable automatic indexing on MCP session start:
 memory-for-ai config set auto_index true
 ```
 
-When enabled, new projects are indexed automatically on first connection. Previously-indexed projects are registered with the background watcher for ongoing git-based change detection. Configurable file limit: `config set auto_index_limit 50000`.
+When enabled, new projects are indexed automatically on first connection. Previously-indexed projects are registered with the background watcher for ongoing Git or filesystem change detection. Configurable file limit: `config set auto_index_limit 50000`.
 
 Watcher registration is controlled separately by `auto_watch` (default `true`). Set `config set auto_watch false` to keep a session from registering its project with the background watcher — useful when working across many projects and you want each session contained to explicit indexing.
 
@@ -235,7 +235,7 @@ The install script placed beside the binary is **reported, not deleted** — uni
 
 ### Distribution & operation
 - **Native runtime set, zero infrastructure services**: SQLite-backed, persists to `~/.cache/memory-for-ai/`
-- **Auto-sync**: Background watcher detects file changes and re-indexes automatically
+- **Auto-sync**: Background watcher detects Git or filesystem changes and re-indexes automatically
 - **Route nodes**: REST endpoints are first-class graph entities
 - **CLI mode**: `memory-for-ai cli search_graph '{"project": "my-project", "name_pattern": ".*Handler.*"}'`
 - **Available on**: npm, PyPI, Homebrew, Scoop, Winget, Chocolatey, AUR, `go install`
@@ -830,7 +830,7 @@ src/
   pipeline/           Multi-pass indexing (structure → definitions → calls → HTTP links → config → tests)
   cypher/             Cypher query lexer, parser, planner, executor
   discover/           File discovery (.gitignore, .cbmignore, symlink handling)
-  watcher/            Background auto-sync (git polling, adaptive intervals)
+  watcher/            Background auto-sync (Git/filesystem polling, adaptive intervals)
   traces/             Runtime trace ingestion
   ui/                 Local HTTP server + verified external 3D-UI asset pack
   foundation/         Platform abstractions (threads, filesystem, logging, memory)

@@ -1,8 +1,10 @@
 /*
- * watcher.c — Git-based file change watcher.
+ * watcher.c — Git/filesystem-based file change watcher.
  *
  * Strategy: git status + HEAD tracking (the most reliable approach).
- * For non-git projects, the watcher skips polling (no fsnotify/dirmtime yet).
+ * For non-git projects, the watcher uses the same discovery filters as the
+ * indexer and folds each discovered file's relative path, size, and mtime into
+ * a deterministic filesystem signature.
  *
  *
  * Per-project state tracks:
@@ -31,6 +33,7 @@
 #include "foundation/platform.h"
 #include "foundation/str_util.h"
 #include "foundation/subprocess.h"
+#include "discover/discover.h"
 #ifdef _WIN32
 #include "foundation/win_utf8.h"
 #define WIN32_LEAN_AND_MEAN
@@ -60,7 +63,7 @@ typedef struct {
     cbm_subprocess_t *active_git;
     /* Room for Git's 64-hex SHA-256 object ID plus newline/NUL while reading. */
     char last_head[CBM_SZ_128]; /* git HEAD hash (committed baseline) */
-    bool is_git;                /* false → skip polling */
+    bool is_git;                /* false → use discovery-filtered fs signature */
     bool baseline_done;         /* true after first poll */
     int missing_root_count;     /* consecutive polls where root was missing (ENOENT/ENOTDIR) */
     uint64_t first_missing_ms;  /* cbm_now_ms() of the streak's first miss (0 = no streak) */
@@ -75,6 +78,9 @@ typedef struct {
     uint64_t last_dirty_sig;       /* committed dirty-state signature */
     uint64_t pending_dirty_sig;    /* observed at check time */
     char pending_head[CBM_SZ_128]; /* HEAD observed at check time */
+    uint64_t last_fs_sig;          /* committed non-Git discovery signature */
+    uint64_t pending_fs_sig;       /* observed non-Git signature */
+    int pending_file_count;        /* file count paired with pending_fs_sig */
     /* Hop from root_path up to the repository root ("" when they are the same),
      * from `rev-parse --show-cdup`. Porcelain paths are repository-relative, so
      * the signature needs this to stat them. Resolved once at baseline. */
@@ -613,6 +619,67 @@ static uint64_t sig_fold_path_stat(uint64_t h, const char *root_path, const char
     return h;
 }
 
+static int non_git_file_compare(const void *left, const void *right) {
+    const cbm_file_info_t *a = left;
+    const cbm_file_info_t *b = right;
+    if (!a->rel_path && !b->rel_path) {
+        return 0;
+    }
+    if (!a->rel_path) {
+        return -1;
+    }
+    if (!b->rel_path) {
+        return 1;
+    }
+    return strcmp(a->rel_path, b->rel_path);
+}
+
+/* Snapshot files using the indexer's discovery policy. This keeps the watcher
+ * from reindexing for ignored/generated files while still detecting additions,
+ * deletions, renames, and in-place edits in a plain directory. */
+static bool non_git_filesystem_signature(const char *root_path, uint64_t *signature_out,
+                                         int *file_count_out) {
+    if (!root_path || !signature_out || !file_count_out) {
+        return false;
+    }
+    *signature_out = 0;
+    *file_count_out = 0;
+    cbm_discover_opts_t options = {
+        .mode = CBM_MODE_FULL,
+        .ignore_file = NULL,
+        .max_file_size = 0,
+    };
+    cbm_file_info_t *files = NULL;
+    int file_count = 0;
+    if (cbm_discover(root_path, &options, &files, &file_count) != CBM_DISCOVER_OK) {
+        cbm_discover_free(files, file_count);
+        return false;
+    }
+    if (file_count > 1) {
+        qsort(files, (size_t)file_count, sizeof(*files), non_git_file_compare);
+    }
+
+    uint64_t h = SIG_FNV_OFFSET;
+    for (int i = 0; i < file_count; i++) {
+        if (!files[i].rel_path || !files[i].path) {
+            cbm_discover_free(files, file_count);
+            return false;
+        }
+        cbm_path_info_t info = {0};
+        if (cbm_path_info_utf8(files[i].path, &info) != 0 || !info.is_regular) {
+            cbm_discover_free(files, file_count);
+            return false;
+        }
+        h = sig_fold(h, files[i].rel_path, strlen(files[i].rel_path) + 1U);
+        h = sig_fold(h, &info.size, sizeof(info.size));
+        h = sig_fold(h, &info.mtime_ns, sizeof(info.mtime_ns));
+    }
+    cbm_discover_free(files, file_count);
+    *signature_out = file_count > 0 ? (h ? h : 1U) : 0;
+    *file_count_out = file_count;
+    return true;
+}
+
 /* Signature of the current dirty state: FNV-1a over the entries of
  * `git status --porcelain -uall -z` plus each listed path's (size, mtime).
  * Returns 0 for a clean tree. Two polls over an untouched dirty tree yield
@@ -1142,7 +1209,7 @@ int cbm_watcher_watch_count(cbm_watcher_t *w) {
 
 /* ── Single poll cycle ──────────────────────────────────────────── */
 
-/* Init baseline for a project: check if git, get HEAD, count files */
+/* Init baseline for a project: classify Git, then snapshot its change source. */
 static bool init_baseline(cbm_watcher_t *w, project_state_t *s) {
     struct stat st;
     if (stat(s->root_path, &st) != 0) {
@@ -1153,10 +1220,16 @@ static bool init_baseline(cbm_watcher_t *w, project_state_t *s) {
     }
 
     watcher_git_status_t repository_status = git_repo_status(w, s);
-    if (repository_status != WATCHER_GIT_OK && repository_status != WATCHER_GIT_COMMAND_FAILED) {
-        return false;
-    }
+    /* A machine without Git, or a temporarily unusable Git executable, can
+     * still watch a plain project. Filesystem signatures are also a safe
+     * fallback for a repository whose Git metadata is unavailable because
+     * checkout state is changing. */
     s->is_git = repository_status == WATCHER_GIT_OK;
+    if (repository_status != WATCHER_GIT_OK) {
+        cbm_log_info("watcher.git_fallback", "project", s->project_name, "reason",
+                     repository_status == WATCHER_GIT_COMMAND_FAILED ? "not_a_repository"
+                                                                      : "git_unavailable");
+    }
 
     /* `rev-parse --git-dir` walks UP, so an ordinary folder that merely happens
      * to live under some unrelated repository answers yes. Treating it as a git
@@ -1172,10 +1245,7 @@ static bool init_baseline(cbm_watcher_t *w, project_state_t *s) {
     if (s->is_git && !git_has_own_dot_git(s->root_path)) {
         bool tracked = false;
         watcher_git_status_t tracked_status = git_tracks_anything_here(w, s, &tracked);
-        if (tracked_status != WATCHER_GIT_OK && tracked_status != WATCHER_GIT_COMMAND_FAILED) {
-            return false;
-        }
-        if (!tracked) {
+        if (tracked_status != WATCHER_GIT_OK || !tracked) {
             s->is_git = false;
             cbm_log_info("watcher.nested_non_git", "project", s->project_name, "path",
                          s->root_path);
@@ -1212,7 +1282,19 @@ static bool init_baseline(cbm_watcher_t *w, project_state_t *s) {
         cbm_log_info("watcher.baseline", "project", s->project_name, "strategy", "git", "files",
                      s->file_count > 0 ? "yes" : "0");
     } else {
-        cbm_log_info("watcher.baseline", "project", s->project_name, "strategy", "none");
+        int file_count = 0;
+        uint64_t signature = 0;
+        if (!non_git_filesystem_signature(s->root_path, &signature, &file_count)) {
+            s->baseline_done = false;
+            cbm_log_warn("watcher.baseline_failed", "project", s->project_name, "strategy",
+                         "filesystem");
+            return false;
+        }
+        s->last_fs_sig = signature;
+        s->file_count = file_count;
+        s->interval_ms = cbm_watcher_poll_interval_ms(file_count);
+        cbm_log_info("watcher.baseline", "project", s->project_name, "strategy", "filesystem",
+                     "files", itoa_buf(file_count));
     }
 
     s->next_poll_ns = now_ns() + ((int64_t)s->interval_ms * US_PER_MS);
@@ -1230,6 +1312,14 @@ static bool check_changes(cbm_watcher_t *w, project_state_t *s, bool *changed_ou
     }
     *changed_out = false;
     if (!s->is_git) {
+        uint64_t signature = 0;
+        int file_count = 0;
+        if (!non_git_filesystem_signature(s->root_path, &signature, &file_count)) {
+            return false;
+        }
+        s->pending_fs_sig = signature;
+        s->pending_file_count = file_count;
+        *changed_out = signature != s->last_fs_sig;
         return true;
     }
 
@@ -1397,11 +1487,6 @@ static void poll_project(const char *key, void *val, void *ud) {
         return;
     }
 
-    /* Skip non-git projects */
-    if (!s->is_git) {
-        return;
-    }
-
     /* Respect adaptive interval */
     if (ctx->now < s->next_poll_ns) {
         return;
@@ -1424,7 +1509,8 @@ static void poll_project(const char *key, void *val, void *ud) {
          * not admit an index callback after that ownership boundary. */
         return;
     }
-    cbm_log_info("watcher.changed", "project", s->project_name, "strategy", "git");
+    cbm_log_info("watcher.changed", "project", s->project_name, "strategy",
+                 s->is_git ? "git" : "filesystem");
     if (ctx->w->index_fn) {
         int rc = ctx->w->index_fn(s->project_name, s->root_path, ctx->w->user_data);
         if (rc == 0) {
@@ -1433,14 +1519,20 @@ static void poll_project(const char *key, void *val, void *ud) {
              * reindex just succeeded. A commit/edit landing during the
              * reindex is deliberately not absorbed: the next poll sees it
              * as a new delta (at-least-once, never lost). */
-            if (s->pending_head[0] != '\0') {
-                snprintf(s->last_head, sizeof(s->last_head), "%s", s->pending_head);
-            }
-            s->last_dirty_sig = s->pending_dirty_sig;
-            /* Refresh file count for interval */
-            int file_count = 0;
-            if (git_file_count(ctx->w, s, &file_count) == WATCHER_GIT_OK) {
-                s->file_count = file_count;
+            if (s->is_git) {
+                if (s->pending_head[0] != '\0') {
+                    snprintf(s->last_head, sizeof(s->last_head), "%s", s->pending_head);
+                }
+                s->last_dirty_sig = s->pending_dirty_sig;
+                /* Refresh file count for interval */
+                int file_count = 0;
+                if (git_file_count(ctx->w, s, &file_count) == WATCHER_GIT_OK) {
+                    s->file_count = file_count;
+                    s->interval_ms = cbm_watcher_poll_interval_ms(s->file_count);
+                }
+            } else {
+                s->last_fs_sig = s->pending_fs_sig;
+                s->file_count = s->pending_file_count;
                 s->interval_ms = cbm_watcher_poll_interval_ms(s->file_count);
             }
         } else if (rc > 0) {

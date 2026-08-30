@@ -1806,9 +1806,9 @@ TEST(watcher_multiple_projects) {
  *  NON-GIT PROJECT
  * ══════════════════════════════════════════════════════════════════ */
 
-TEST(watcher_non_git_skips) {
-    /* Non-git dir → baseline sets is_git=false → poll never reindexes.
-     * Port of TestProbeStrategyNonGit behavior. */
+TEST(watcher_non_git_detects_filesystem_changes) {
+    /* Non-git dir → baseline uses the discovery-filtered filesystem
+     * signature, then reindexes when a source file changes. */
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/cbm_watcher_nongit_XXXXXX");
     if (!cbm_mkdtemp(tmpdir))
@@ -1817,7 +1817,7 @@ TEST(watcher_non_git_skips) {
     /* Create a file so it's not empty */
     {
         char _p[1024];
-        snprintf(_p, sizeof(_p), "%s/file.txt", tmpdir);
+        snprintf(_p, sizeof(_p), "%s/file.c", tmpdir);
         th_write_file(_p, "hello\n");
     }
 
@@ -1830,27 +1830,32 @@ TEST(watcher_non_git_skips) {
     cbm_watcher_poll_once(w);
     ASSERT_EQ(index_call_count, 0);
 
-    /* Modify file */
+    /* Modify a discovered source file */
     {
         char _p[1024];
-        snprintf(_p, sizeof(_p), "%s/file.txt", tmpdir);
+        snprintf(_p, sizeof(_p), "%s/file.c", tmpdir);
         th_append_file(_p, "modified\n");
     }
 
-    /* Touch + poll — should NOT trigger (non-git projects are skipped) */
+    /* Touch + poll — should trigger exactly once */
     cbm_watcher_touch(w, "nongit");
-    cbm_watcher_poll_once(w);
-    ASSERT_EQ(index_call_count, 0);
+    ASSERT_EQ(cbm_watcher_poll_once(w), 1);
+    ASSERT_EQ(index_call_count, 1);
 
-    /* Even add a new file — still no reindex */
+    /* A new discovered file triggers the next distinct change */
     {
         char _p[1024];
-        snprintf(_p, sizeof(_p), "%s/new.txt", tmpdir);
+        snprintf(_p, sizeof(_p), "%s/new.c", tmpdir);
         th_write_file(_p, "new\n");
     }
     cbm_watcher_touch(w, "nongit");
-    cbm_watcher_poll_once(w);
-    ASSERT_EQ(index_call_count, 0);
+    ASSERT_EQ(cbm_watcher_poll_once(w), 1);
+    ASSERT_EQ(index_call_count, 2);
+
+    /* A repeated poll without a change is quiet. */
+    cbm_watcher_touch(w, "nongit");
+    ASSERT_EQ(cbm_watcher_poll_once(w), 0);
+    ASSERT_EQ(index_call_count, 2);
 
     cbm_watcher_free(w);
     cbm_store_close(store);
@@ -2219,7 +2224,7 @@ TEST(watcher_watch_after_unwatch) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
- *  FSNOTIFY PORTS (adapted for git-based change detection)
+ *  FSNOTIFY PORTS (adapted for Git/filesystem change detection)
  *
  *  The Go watcher has fsnotify/dir-mtime strategies alongside git.
  *  The C watcher is git-only. These tests verify the same SEMANTIC
@@ -2797,7 +2802,7 @@ TEST(watcher_poll_empty_returns_zero) {
 }
 
 TEST(watcher_poll_non_git_dir) {
-    /* poll_once with a non-git directory → 0 changes detected */
+    /* poll_once with an unchanged non-git directory → 0 changes detected */
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/cbm_watcher_ng2_XXXXXX");
     if (!cbm_mkdtemp(tmpdir))
@@ -2806,7 +2811,7 @@ TEST(watcher_poll_non_git_dir) {
     /* Create a regular file so directory is not empty */
     {
         char _p[1024];
-        snprintf(_p, sizeof(_p), "%s/file.txt", tmpdir);
+        snprintf(_p, sizeof(_p), "%s/file.c", tmpdir);
         th_write_file(_p, "hello\n");
     }
 
@@ -2821,15 +2826,15 @@ TEST(watcher_poll_non_git_dir) {
     /* Modify file */
     {
         char _p[1024];
-        snprintf(_p, sizeof(_p), "%s/file.txt", tmpdir);
+        snprintf(_p, sizeof(_p), "%s/file.c", tmpdir);
         th_append_file(_p, "world\n");
     }
 
-    /* Poll — non-git directory, should not trigger reindex */
+    /* Poll — filesystem signature detects the source edit. */
     cbm_watcher_touch(w, "nongit2");
     int reindexed = cbm_watcher_poll_once(w);
-    ASSERT_EQ(reindexed, 0);
-    ASSERT_EQ(index_call_count, 0);
+    ASSERT_EQ(reindexed, 1);
+    ASSERT_EQ(index_call_count, 1);
 
     cbm_watcher_free(w);
     cbm_store_close(store);
@@ -3181,7 +3186,7 @@ SUITE(watcher) {
     RUN_TEST(watcher_multiple_projects);
 
     /* Non-git project */
-    RUN_TEST(watcher_non_git_skips);
+    RUN_TEST(watcher_non_git_detects_filesystem_changes);
 
     /* Adaptive interval behavior */
     RUN_TEST(watcher_interval_blocks_repoll);
@@ -3194,7 +3199,7 @@ SUITE(watcher) {
     RUN_TEST(watcher_unwatch_prunes_state);
     RUN_TEST(watcher_watch_after_unwatch);
 
-    /* FSNotify ports (adapted for git-based detection) */
+    /* FSNotify ports (adapted for Git/filesystem detection) */
     RUN_TEST(watcher_detects_file_delete);
     RUN_TEST(watcher_detects_subdir_file);
     RUN_TEST(watcher_free_idempotent);
