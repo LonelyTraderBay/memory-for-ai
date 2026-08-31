@@ -53,7 +53,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
-#include <psapi.h> /* GetProcessMemoryInfo */
+#include <psapi.h>    /* GetProcessMemoryInfo */
 #include <tlhelp32.h> /* CreateToolhelp32Snapshot, Process32First/Next */
 #else
 #include <sys/stat.h>
@@ -590,9 +590,8 @@ static void handle_processes(cbm_http_conn_t *c) {
         pe.dwSize = sizeof(pe);
         for (BOOL ok = Process32First(hSnap, &pe); ok; ok = Process32Next(hSnap, &pe)) {
             if (_stricmp(pe.szExeFile, "memory-for-ai.exe") == 0) {
-                HANDLE hProc = OpenProcess(
-                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-                    FALSE, pe.th32ProcessID);
+                HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE,
+                                           pe.th32ProcessID);
                 if (hProc) {
                     PROCESS_MEMORY_COUNTERS ppmc;
                     FILETIME ftc, fte, ftk, ftu;
@@ -635,13 +634,10 @@ static void handle_processes(cbm_http_conn_t *c) {
                                  "\"command\":\"memory-for-ai\","
                                  "\"is_self\":%s}",
                                  pe.th32ProcessID, cpu_user + cpu_sys,
-                                 (double)proc_rss / (1024.0 * 1024.0),
-                                 elapsed_sec / 86400,
-                                 (elapsed_sec % 86400) / 3600,
-                                 (elapsed_sec % 3600) / 60,
+                                 (double)proc_rss / (1024.0 * 1024.0), elapsed_sec / 86400,
+                                 (elapsed_sec % 86400) / 3600, (elapsed_sec % 3600) / 60,
                                  elapsed_sec % 60,
-                                 pe.th32ProcessID == (DWORD)_getpid()
-                                     ? "true" : "false");
+                                 pe.th32ProcessID == (DWORD)_getpid() ? "true" : "false");
                     if (pos >= (int)sizeof(buf)) {
                         pos = (int)sizeof(buf) - 1;
                     }
@@ -1560,8 +1556,8 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
      * the linked stores when populating cross_edges. Neighborhood layouts are
      * deliberately local and do not attach satellite galaxies. */
     char *linked[LAYOUT_MAX_LINKED];
-    int linked_count = detail_graph ? 0 : find_cross_repo_targets(store, project, linked,
-                                                                    LAYOUT_MAX_LINKED);
+    int linked_count =
+        detail_graph ? 0 : find_cross_repo_targets(store, project, linked, LAYOUT_MAX_LINKED);
 
     if (!layout) {
         cbm_store_close(store);

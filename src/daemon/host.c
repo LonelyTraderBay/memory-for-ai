@@ -135,9 +135,8 @@ static bool host_log_open(char conflict_log_out[HOST_PATH_CAP]) {
     if (written <= 0 || written >= HOST_PATH_CAP) {
         return false;
     }
-    g_host_log_file =
-        cbm_daemon_ipc_private_log_open(logs, CBM_PRODUCT_NAME "-daemon.log",
-                                        HOST_OPERATION_LOG_CAP);
+    g_host_log_file = cbm_daemon_ipc_private_log_open(logs, CBM_PRODUCT_NAME "-daemon.log",
+                                                      HOST_OPERATION_LOG_CAP);
     if (!g_host_log_file) {
         conflict_log_out[0] = '\0';
         return false;

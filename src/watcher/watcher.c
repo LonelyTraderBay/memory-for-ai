@@ -1228,7 +1228,7 @@ static bool init_baseline(cbm_watcher_t *w, project_state_t *s) {
     if (repository_status != WATCHER_GIT_OK) {
         cbm_log_info("watcher.git_fallback", "project", s->project_name, "reason",
                      repository_status == WATCHER_GIT_COMMAND_FAILED ? "not_a_repository"
-                                                                      : "git_unavailable");
+                                                                     : "git_unavailable");
     }
 
     /* `rev-parse --git-dir` walks UP, so an ordinary folder that merely happens

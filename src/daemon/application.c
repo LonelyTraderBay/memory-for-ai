@@ -622,8 +622,8 @@ static bool application_cache_dir(char out[APPLICATION_PATH_CAP]) {
     if (!home[0]) {
         return false;
     }
-    int written = snprintf(out, APPLICATION_PATH_CAP, "%s/.cache/%s", home,
-                           CBM_PRODUCT_CACHE_DIR_NAME);
+    int written =
+        snprintf(out, APPLICATION_PATH_CAP, "%s/.cache/%s", home, CBM_PRODUCT_CACHE_DIR_NAME);
     if (written <= 0 || written >= APPLICATION_PATH_CAP) {
         return false;
     }

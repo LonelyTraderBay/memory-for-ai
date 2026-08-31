@@ -597,7 +597,8 @@ cbm_layout_result_t *cbm_layout_compute(cbm_store_t *store, const char *project,
     memset(&search_out, 0, sizeof(search_out));
     int search_rc;
     if (level == CBM_LAYOUT_DETAIL && center_node && center_node[0]) {
-        search_rc = build_detail_search(store, project, center_node, radius, max_nodes, &search_out);
+        search_rc =
+            build_detail_search(store, project, center_node, radius, max_nodes, &search_out);
     } else {
         search_rc = cbm_store_search(store, &params, &search_out);
     }

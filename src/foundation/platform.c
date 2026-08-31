@@ -520,8 +520,7 @@ const char *cbm_resolve_cache_dir(void) {
     static const char missing[] = "\x1f"
                                   "MFA_CACHE_DIR_MISSING"
                                   "\x1f";
-    const char *configured =
-        cbm_safe_getenv(CBM_PRODUCT_CACHE_ENV, buf, sizeof(buf), missing);
+    const char *configured = cbm_safe_getenv(CBM_PRODUCT_CACHE_ENV, buf, sizeof(buf), missing);
     if (!configured) {
         /* Present but not representable in the product path bound. */
         return NULL;

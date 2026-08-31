@@ -1830,7 +1830,7 @@ int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store) {
     cbm_store_end_bulk(store);
 
     free(temp_to_real);
-    return 0;
+    return cbm_store_refresh_runtime_static_generation(store, gb->project) == CBM_STORE_OK ? 0 : -1;
 }
 
 int cbm_gbuf_merge_into_store(cbm_gbuf_t *gb, cbm_store_t *store) {

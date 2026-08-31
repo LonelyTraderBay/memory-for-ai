@@ -591,8 +591,8 @@ TEST(daemon_ipc_windows_generation_address_binds_account_key_and_nonce) {
     ASSERT_TRUE(strcmp(address_a, address_other_key) != 0);
     ASSERT_TRUE(strcmp(address_a, address_other_nonce) != 0);
     ASSERT_STR_EQ(address_a, "\\\\.\\pipe\\memory-for-ai-daemon-"
-                             "e861648d9f8bc786dce31bbb16eda2ab"
-                             "ffa330a770752832ab5f2e4feaa506f1");
+                             "fac05b77f12a6c0fb2ed321bf275d028"
+                             "172af56866ec69efc3a3226df752f150");
     ASSERT_TRUE(strstr(address_a, "S-1-") == NULL);
     ASSERT_TRUE(strstr(address_a, key) == NULL);
     PASS();

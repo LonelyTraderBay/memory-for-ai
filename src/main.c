@@ -986,10 +986,9 @@ static int main_run_allow_root(int argc, char **argv) {
                    "always-refused roots (see docs/CONFIGURATION.md)\n");
         }
         if (!path && !list_only) {
-            (void)fprintf(stderr,
-                          "usage: memory-for-ai allow-root [--approve-sensitive] <path>\n"
-                          "       memory-for-ai allow-root --approve-manifest <project>\n"
-                          "       memory-for-ai allow-root --list\n");
+            (void)fprintf(stderr, "usage: memory-for-ai allow-root [--approve-sensitive] <path>\n"
+                                  "       memory-for-ai allow-root --approve-manifest <project>\n"
+                                  "       memory-for-ai allow-root --list\n");
             return EXIT_FAILURE;
         }
         return 0;
@@ -2563,8 +2562,7 @@ int main(int argc, char **argv) {
              * lines below has printed it since #1582. This path did not. */
             const char *why = cbm_daemon_ipc_validation_detail();
             (void)fprintf(
-                stderr,
-                "memory-for-ai: secure CLI coordination could not be created (%s)%s%s\n",
+                stderr, "memory-for-ai: secure CLI coordination could not be created (%s)%s%s\n",
                 coordination_failure, (why && why[0]) ? ": " : "", (why && why[0]) ? why : "");
             goto local_cli_cleanup;
         }
@@ -2678,9 +2676,8 @@ int main(int argc, char **argv) {
     char executable_path[MAIN_PATH_CAP];
     cbm_daemon_build_identity_t identity;
     if (!main_resolve_executable(argv[0], executable_path)) {
-        (void)fprintf(stderr,
-                      "memory-for-ai: exact executable identity could not be verified "
-                      "(executable-path)\n");
+        (void)fprintf(stderr, "memory-for-ai: exact executable identity could not be verified "
+                              "(executable-path)\n");
         return role == CBM_DAEMON_PROCESS_HOOK_CLIENT ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     main_build_identity_status_t identity_status = main_build_identity(&identity);

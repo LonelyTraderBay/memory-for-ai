@@ -11,7 +11,7 @@
 #include "foundation/platform.h" /* cbm_safe_getenv, path normalization */
 #include "foundation/profile.h"  /* cbm_profile_active (keep worker log under CBM_PROFILE) */
 #include "foundation/product.h"
-#include "ui/http_server.h"      /* cbm_http_server_resolve_binary_path */
+#include "ui/http_server.h" /* cbm_http_server_resolve_binary_path */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -538,8 +538,8 @@ static bool worker_cache_dir(char out[INDEX_WORKER_PATH_CAP]) {
     if (!home[0]) {
         return false;
     }
-    int written = snprintf(out, INDEX_WORKER_PATH_CAP, "%s/.cache/%s", home,
-                           CBM_PRODUCT_CACHE_DIR_NAME);
+    int written =
+        snprintf(out, INDEX_WORKER_PATH_CAP, "%s/.cache/%s", home, CBM_PRODUCT_CACHE_DIR_NAME);
     if (written <= 0 || written >= INDEX_WORKER_PATH_CAP) {
         return false;
     }

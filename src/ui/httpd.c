@@ -386,8 +386,8 @@ cbm_http_conn_t *cbm_httpd_accept(cbm_httpd_t *d, int timeout_ms) {
     }
     c->fd = cfd;
     c->owner = d;
-    c->send_deadline_ms = d->send_deadline_for_test_ms > 0 ? d->send_deadline_for_test_ms
-                                                            : CBM_HTTP_SEND_DEADLINE_MS;
+    c->send_deadline_ms =
+        d->send_deadline_for_test_ms > 0 ? d->send_deadline_for_test_ms : CBM_HTTP_SEND_DEADLINE_MS;
     atomic_init(&c->response_started, false);
 
     cbm_mutex_lock(&d->active_mutex);
