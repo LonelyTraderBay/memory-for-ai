@@ -144,6 +144,15 @@ typedef void (*cbm_mcp_project_mutation_end_fn)(void *context, const char *proje
  * successful call is released through the primary mutation guard's end hook. */
 typedef bool (*cbm_mcp_project_mutation_try_begin_fn)(void *context, const char *project);
 
+/* Optional host authorization hook for runtime trace ingestion. The callback
+ * runs after complete wire/privacy validation but before opening a writable
+ * store or making any durable mutation. Standalone local stdio servers leave
+ * it unset (the local process is the trust boundary); daemon/remote hosts can
+ * install it to bind project and producer identity to their session policy. */
+typedef bool (*cbm_mcp_runtime_authorize_fn)(void *context, const char *project,
+                                             const char *producer_id, const char *producer_epoch,
+                                             const char *semantic_version);
+
 /* Create an MCP server. store_path is the SQLite database directory. */
 cbm_mcp_server_t *cbm_mcp_server_new(const char *store_path);
 
@@ -195,6 +204,10 @@ void cbm_mcp_server_set_project_mutation_guard(cbm_mcp_server_t *srv,
  * configuration error rather than invoking the blocking begin callback. */
 void cbm_mcp_server_set_project_mutation_try_guard(cbm_mcp_server_t *srv,
                                                    cbm_mcp_project_mutation_try_begin_fn try_begin);
+
+/* Configure/clear the optional runtime-ingestion authorization policy. */
+void cbm_mcp_server_set_runtime_authorizer(cbm_mcp_server_t *srv,
+                                           cbm_mcp_runtime_authorize_fn authorize, void *context);
 
 /* Read one complete MCP message from in. Supports newline-delimited JSON and
  * Content-Length framing, including additional headers. Returns 1 on success,

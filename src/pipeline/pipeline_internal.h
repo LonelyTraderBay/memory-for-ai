@@ -110,6 +110,12 @@ typedef struct {
     char **excluded_dirs;
     int excluded_count;
 
+    /* Individually ignored files captured during discovery. Project graph
+     * consumes ignored JSON manifests from this list as evidence without
+     * sending them through source extraction. Borrowed from the pipeline. */
+    const cbm_ignored_file_t *ignored_files;
+    int ignored_count;
+
     /* Sequential cross-LSP registry arena. The lsp_cross pass builds its
      * shared per-language registries here; resolved_calls entries may BORROW
      * strings owned by these registries, and the later calls pass still

@@ -17,6 +17,9 @@
  *     local_name_gen) so sibling named imports coexist (#768) — old
  *     binaries cannot upsert against the widened constraint. */
 #define CBM_ARTIFACT_SCHEMA_VERSION 2
+/* Runtime sidecar layout is versioned independently from the static graph
+ * artifact schema. Missing metadata is treated as version 0 for old exports. */
+#define CBM_RUNTIME_ARTIFACT_VERSION 1
 
 #define CBM_ARTIFACT_FILENAME "graph.db.zst"
 #define CBM_ARTIFACT_META "artifact.json"

@@ -1433,8 +1433,6 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
                      itoa_buf(fmt));
         p->format_migration = true;
         int adr_rc = capture_existing_adr(p, db_path);
-        (void)cbm_unlink(db_path);
-        (void)cbm_remove_db_sidecars(db_path);
         free(db_path);
         return adr_rc != 0 ? adr_rc : CBM_PIPELINE_FORCE_FULL_REINDEX;
     }
@@ -1453,8 +1451,6 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
         if (adr_rc != 0) {
             rc = adr_rc;
         }
-        (void)cbm_unlink(db_path);
-        (void)cbm_remove_db_sidecars(db_path);
     }
     free(db_path);
     return rc;
@@ -1756,6 +1752,20 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
         free(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
+    /* The wholesale path writes a fresh static SQLite file. Runtime data is
+     * a separate sidecar contract and must survive that replacement; copy it
+     * before any publication metadata is finalized. The delta path already
+     * cloned the live database, so copying it again would be redundant. */
+    if (!destination_known_healthy &&
+        cbm_store_preserve_runtime_sidecar(store, generation->final_db_path, generation->project) !=
+            CBM_STORE_OK) {
+        cbm_log_error("publish.runtime_sidecar_failed", "project", generation->project, "reason",
+                      cbm_store_error(store));
+        cbm_store_close(store);
+        discard_generation_stage(stage_path);
+        free(stage_path);
+        return CBM_PIPELINE_PERSIST_FAILED;
+    }
     bool ok = cbm_store_exec(store, "PRAGMA synchronous=FULL;") == CBM_STORE_OK;
     ok = ok && cbm_store_delete_file_hashes(store, generation->project) == CBM_STORE_OK &&
          cbm_store_upsert_file_hash_batch(store, generation->manifest,
@@ -1776,6 +1786,12 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
     if (ok && generation->adr_content) {
         ok = cbm_store_adr_store(store, generation->project, generation->adr_content) ==
              CBM_STORE_OK;
+    }
+    if (ok &&
+        cbm_store_refresh_runtime_static_generation(store, generation->project) != CBM_STORE_OK) {
+        cbm_log_error("publish.runtime_generation_refresh_failed", "project", generation->project,
+                      "reason", cbm_store_error(store));
+        ok = false;
     }
 
     if (ok) {
@@ -2336,6 +2352,8 @@ static int cbm_pipeline_run_staged(cbm_pipeline_t *p) {
         .path_aliases = path_aliases,
         .excluded_dirs = p->excluded_dirs,
         .excluded_count = p->excluded_count,
+        .ignored_files = p->ignored_files,
+        .ignored_count = p->ignored_count,
     };
 
     rc = run_extraction_phase(p, &ctx, files, file_count);

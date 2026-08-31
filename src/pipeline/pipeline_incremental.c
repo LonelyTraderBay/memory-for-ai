@@ -375,9 +375,8 @@ static int semantic_manifest_walk_controls(semantic_manifest_builder_t *builder,
                                                  excluded_dirs, excluded_count);
             continue;
         }
-        bool root_control =
-            (!rel_dir || !rel_dir[0]) &&
-            (strcmp(name, ".cbmignore") == 0 || strcmp(name, ".memory-for-ai.json") == 0);
+        bool root_control = (!rel_dir || !rel_dir[0]) && (strcmp(name, ".cbmignore") == 0 ||
+                                                          strcmp(name, ".memory-for-ai.json") == 0);
         if (path_info.is_regular && (strcmp(name, ".gitignore") == 0 || root_control ||
                                      semantic_manifest_package_control(name))) {
             rc = semantic_manifest_add(builder, project, rel_path, abs_path);
@@ -2141,6 +2140,9 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
     char **excluded_dirs = NULL;
     int excluded_count = 0;
     cbm_pipeline_get_excluded(p, &excluded_dirs, &excluded_count);
+    cbm_ignored_file_t *ignored_files = NULL;
+    int ignored_count = 0;
+    cbm_pipeline_get_ignored(p, &ignored_files, &ignored_count, NULL);
     path_aliases =
         cbm_load_path_aliases_excluded(cbm_pipeline_repo_path(p), excluded_dirs, excluded_count);
     cbm_pipeline_ctx_t ctx = {
@@ -2154,6 +2156,8 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
         .path_aliases = path_aliases,
         .excluded_dirs = excluded_dirs,
         .excluded_count = excluded_count,
+        .ignored_files = ignored_files,
+        .ignored_count = ignored_count,
     };
     for (int i = 0; i < ci; i++) {
         char *file_qn = cbm_pipeline_fqn_compute(project, changed_files[i].rel_path, "__file__");
@@ -2710,6 +2714,9 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
 
     cbm_path_alias_collection_t *path_aliases =
         cbm_load_path_aliases_excluded(cbm_pipeline_repo_path(p), excluded_dirs, excluded_count);
+    cbm_ignored_file_t *ignored_files = NULL;
+    int ignored_count = 0;
+    cbm_pipeline_get_ignored(p, &ignored_files, &ignored_count, NULL);
 
     cbm_pipeline_ctx_t ctx = {
         .project_name = project,
@@ -2722,6 +2729,8 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         .path_aliases = path_aliases,
         .excluded_dirs = excluded_dirs,
         .excluded_count = excluded_count,
+        .ignored_files = ignored_files,
+        .ignored_count = ignored_count,
     };
 
     for (int i = 0; i < ci; i++) {

@@ -8,9 +8,12 @@
  * mapping return SQLITE_IOERR instead of crashing the process with SIGBUS.
  */
 #include "../src/foundation/compat.h"
+#include "../src/foundation/compat_thread.h"
 #include "test_framework.h"
 #include "test_helpers.h"
 #include <store/store.h>
+#include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,6 +86,234 @@ TEST(store_open_with_mmap_disabled) {
     unlink(tmp_shm);
 
     clear_mmap_env();
+    PASS();
+}
+
+TEST(runtime_operational_hardening_quota_metrics_rebuild) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cbm_store_upsert_project(s, "runtime-ops", "/tmp/runtime-ops"), CBM_STORE_OK);
+
+    cbm_runtime_quota_t quota = {1, 1, 1};
+    ASSERT_EQ(cbm_store_set_runtime_quota(s, &quota), CBM_STORE_OK);
+    cbm_runtime_quota_t read_quota = {0};
+    ASSERT_EQ(cbm_store_get_runtime_quota(s, &read_quota), CBM_STORE_OK);
+    ASSERT_EQ(read_quota.max_legacy_batches, 1);
+    ASSERT_EQ(read_quota.max_canonical_contributions, 1);
+    ASSERT_EQ(read_quota.max_canonical_spans, 1);
+
+    cbm_runtime_trace_edge_t edge = {.caller = "a",
+                                     .callee = "b",
+                                     .call_count = 2,
+                                     .duration_ns_total = 10,
+                                     .duration_ns_max = 5,
+                                     .observations = 1};
+    bool idempotent = false;
+    int64_t observations = 0;
+    ASSERT_EQ(cbm_store_ingest_runtime_traces(s, "runtime-ops", "batch-1", "hash-1", &edge, 1,
+                                              &idempotent, &observations),
+              CBM_STORE_OK);
+    ASSERT_FALSE(idempotent);
+    ASSERT_EQ(observations, 1);
+
+    cbm_runtime_metrics_t metrics = {0};
+    ASSERT_EQ(cbm_store_get_runtime_metrics(s, "runtime-ops", &metrics), CBM_STORE_OK);
+    ASSERT_EQ(metrics.legacy_batches, 1);
+    ASSERT_EQ(metrics.canonical_contributions, 0);
+    ASSERT_EQ(metrics.runtime_edges, 1);
+    ASSERT_EQ(metrics.runtime_publications, 1);
+    ASSERT_EQ(metrics.runtime_endpoints, 2);
+    ASSERT_EQ(metrics.quota.max_canonical_spans, 1);
+
+    ASSERT_EQ(cbm_store_ingest_runtime_traces(s, "runtime-ops", "batch-2", "hash-2", &edge, 1,
+                                              &idempotent, &observations),
+              CBM_STORE_QUOTA_EXCEEDED);
+    ASSERT_EQ(cbm_store_get_runtime_metrics(s, "runtime-ops", &metrics), CBM_STORE_OK);
+    ASSERT_EQ(metrics.legacy_batches, 1);
+
+    /* The live aggregate is mutable derived state. Recovery copies the latest
+     * immutable publication and never rewrites its historical snapshot. */
+    ASSERT_EQ(sqlite3_exec(cbm_store_get_db(s),
+                           "DELETE FROM runtime_trace_edges WHERE project='runtime-ops';", NULL,
+                           NULL, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(cbm_store_rebuild_runtime_aggregates(s, "runtime-ops"), CBM_STORE_OK);
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(s),
+                                 "SELECT call_count, duration_ns_total FROM runtime_trace_edges "
+                                 "WHERE project='runtime-ops' AND caller='a' AND callee='b';",
+                                 -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 0), 2);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 1), 10);
+    sqlite3_finalize(stmt);
+    cbm_store_close(s);
+    PASS();
+}
+
+TEST(runtime_canonical_span_histograms_are_per_span) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cbm_store_upsert_project(s, "runtime-hist", "/tmp/runtime-hist"), CBM_STORE_OK);
+    cbm_runtime_trace_span_t spans[2] = {
+        {.producer_id = "producer",
+         .producer_epoch = "epoch",
+         .trace_id = "trace-1",
+         .span_id = "span-1",
+         .normalized_hash = "payload-1",
+         .caller = "a",
+         .callee = "b",
+         .call_count = 1,
+         .duration_ns_total = 1,
+         .duration_ns_max = 1},
+        {.producer_id = "producer",
+         .producer_epoch = "epoch",
+         .trace_id = "trace-2",
+         .span_id = "span-2",
+         .normalized_hash = "payload-2",
+         .caller = "a",
+         .callee = "b",
+         .call_count = 1,
+         .duration_ns_total = 1000,
+         .duration_ns_max = 1000},
+    };
+    bool idempotent = false;
+    int64_t observations = 0;
+    int new_spans = 0;
+    ASSERT_EQ(cbm_store_ingest_runtime_trace_contribution(
+                  s, "runtime-hist", "producer", "epoch", "contribution", "hash", spans, 2,
+                  &idempotent, &observations, &new_spans),
+              CBM_STORE_OK);
+    ASSERT_EQ(new_spans, 2);
+
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(s),
+                  "SELECT duration_histogram FROM runtime_trace_spans "
+                  "WHERE project='runtime-hist' ORDER BY span_id;",
+                  -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    const char *first = (const char *)sqlite3_column_text(stmt, 0);
+    ASSERT_NOT_NULL(first);
+    ASSERT_TRUE(strcmp(first, "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") == 0);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    const char *second = (const char *)sqlite3_column_text(stmt, 0);
+    ASSERT_NOT_NULL(second);
+    ASSERT_TRUE(strcmp(second, "0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0") == 0);
+    sqlite3_finalize(stmt);
+    cbm_store_close(s);
+    PASS();
+}
+
+typedef struct {
+    cbm_store_t *store;
+    int index;
+    atomic_int *ready;
+    atomic_int *go;
+    int result;
+} runtime_producer_worker_t;
+
+static void *runtime_producer_worker(void *arg) {
+    runtime_producer_worker_t *worker = (runtime_producer_worker_t *)arg;
+    atomic_fetch_add(worker->ready, 1);
+    while (atomic_load(worker->go) == 0) {
+        cbm_usleep(1000);
+    }
+    char producer[32];
+    char contribution[32];
+    char trace[32];
+    char span_id[32];
+    char payload[32];
+    snprintf(producer, sizeof(producer), "producer-%d", worker->index);
+    snprintf(contribution, sizeof(contribution), "contribution-%d", worker->index);
+    snprintf(trace, sizeof(trace), "trace-%d", worker->index);
+    snprintf(span_id, sizeof(span_id), "span-%d", worker->index);
+    snprintf(payload, sizeof(payload), "payload-%d", worker->index);
+    cbm_runtime_trace_span_t span = {.producer_id = producer,
+                                     .producer_epoch = "epoch-1",
+                                     .trace_id = trace,
+                                     .span_id = span_id,
+                                     .normalized_hash = payload,
+                                     .caller = "shared-caller",
+                                     .callee = "shared-callee",
+                                     .call_count = 1,
+                                     .duration_ns_total = 10,
+                                     .duration_ns_max = 10};
+    bool idempotent = false;
+    int64_t observations = 0;
+    int new_spans = 0;
+    worker->result = cbm_store_ingest_runtime_trace_contribution(
+        worker->store, "runtime-concurrent", producer, "epoch-1", contribution, payload, &span, 1,
+        &idempotent, &observations, &new_spans);
+    return NULL;
+}
+
+TEST(runtime_multi_producer_handles_are_serializable) {
+    enum { WORKERS = 8 };
+    char *td = th_mktempdir("cbm_runtime_concurrent");
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/runtime.db", td);
+    cbm_store_t *seed = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(seed);
+    ASSERT_EQ(cbm_store_upsert_project(seed, "runtime-concurrent", "/tmp/runtime-concurrent"),
+              CBM_STORE_OK);
+    cbm_store_close(seed);
+
+    cbm_store_t *stores[WORKERS] = {0};
+    runtime_producer_worker_t workers[WORKERS] = {0};
+    cbm_thread_t threads[WORKERS];
+    atomic_int ready;
+    atomic_int go;
+    atomic_init(&ready, 0);
+    atomic_init(&go, 0);
+    bool opened = true;
+    for (int i = 0; i < WORKERS; i++) {
+        stores[i] = cbm_store_open_path_existing(db_path);
+        opened = opened && stores[i] != NULL;
+        workers[i].store = stores[i];
+        workers[i].index = i;
+        workers[i].ready = &ready;
+        workers[i].go = &go;
+        workers[i].result = CBM_STORE_ERR;
+    }
+    ASSERT_TRUE(opened);
+    bool started[WORKERS] = {false};
+    for (int i = 0; i < WORKERS; i++) {
+        started[i] = cbm_thread_create(&threads[i], 0, runtime_producer_worker, &workers[i]) == 0;
+    }
+    atomic_store(&go, 1);
+    for (int i = 0; i < WORKERS; i++) {
+        if (started[i]) {
+            ASSERT_EQ(cbm_thread_join(&threads[i]), 0);
+        }
+    }
+    for (int i = 0; i < WORKERS; i++) {
+        ASSERT_EQ(workers[i].result, CBM_STORE_OK);
+        cbm_store_close(stores[i]);
+    }
+
+    cbm_store_t *check = cbm_store_open_path_query(db_path);
+    ASSERT_NOT_NULL(check);
+    cbm_runtime_metrics_t metrics = {0};
+    ASSERT_EQ(cbm_store_get_runtime_metrics(check, "runtime-concurrent", &metrics), CBM_STORE_OK);
+    ASSERT_EQ(metrics.canonical_contributions, WORKERS);
+    ASSERT_EQ(metrics.canonical_spans, WORKERS);
+    ASSERT_EQ(metrics.runtime_edges, 1);
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(check),
+                  "SELECT call_count, observations FROM runtime_trace_edges "
+                  "WHERE project='runtime-concurrent';",
+                  -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int(stmt, 0), WORKERS);
+    ASSERT_EQ(sqlite3_column_int(stmt, 1), WORKERS);
+    sqlite3_finalize(stmt);
+    cbm_store_close(check);
+    th_rmtree(td);
     PASS();
 }
 
@@ -244,4 +475,7 @@ SUITE(store_pragmas) {
     RUN_TEST(mmap_size_garbage_falls_back_to_default);
     RUN_TEST(mmap_size_partial_garbage_falls_back_to_default);
     RUN_TEST(store_open_with_mmap_disabled);
+    RUN_TEST(runtime_operational_hardening_quota_metrics_rebuild);
+    RUN_TEST(runtime_canonical_span_histograms_are_per_span);
+    RUN_TEST(runtime_multi_producer_handles_are_serializable);
 }

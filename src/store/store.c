@@ -14,6 +14,8 @@
 #include "foundation/sha256.h"
 
 #include <math.h>
+#include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 
 enum {
@@ -30,6 +32,7 @@ enum {
     ST_COL_11 = 11,
     ST_COL_12 = 12,
     ST_COL_13 = 13,
+    ST_COL_14 = 14,
     ST_FOUND = -1,
     ST_BUF_16 = 16,
     ST_BUF_64 = 64,
@@ -118,6 +121,7 @@ struct cbm_store {
     sqlite3 *db;
     const char *db_path; /* heap-allocated, or NULL for :memory: */
     char errbuf[CBM_SZ_512];
+    cbm_runtime_quota_t runtime_quota;
 
     /* Prepared statements (lazily initialized, cached for lifetime) */
     sqlite3_stmt *stmt_upsert_node;
@@ -156,7 +160,17 @@ struct cbm_store {
     sqlite3_stmt *stmt_delete_file_hashes;
 };
 
+static const cbm_runtime_quota_t RUNTIME_DEFAULT_QUOTA = {
+    CBM_RUNTIME_DEFAULT_MAX_LEGACY_BATCHES,
+    CBM_RUNTIME_DEFAULT_MAX_CANONICAL_CONTRIBUTIONS,
+    CBM_RUNTIME_DEFAULT_MAX_CANONICAL_SPANS,
+};
+
 /* ── Helpers ────────────────────────────────────────────────────── */
+
+static void store_set_error(cbm_store_t *s, const char *msg);
+static void store_set_error_sqlite(cbm_store_t *s, const char *prefix);
+static const char *safe_str(const char *s);
 
 static void store_set_error(cbm_store_t *s, const char *msg) {
     snprintf(s->errbuf, sizeof(s->errbuf), "%s", msg);
@@ -229,6 +243,1147 @@ static void iso_now(char *buf, size_t sz) {
     (void)strftime(buf, sz, "%Y-%m-%dT%H:%M:%SZ",
                    &tm); // cert-err33-c: strftime only fails if buffer is too small — 21-byte ISO
                          // timestamp always fits in caller-provided buffers
+}
+
+/* Runtime publication identities are content-addressed, but deliberately use
+ * a product-owned domain separator so they cannot collide with file or IPC
+ * digests. The contribution identity is already canonicalized by the MCP
+ * boundary for both compact-v1 and canonical-v2. */
+static void runtime_make_generation(const char *project, const char *contribution_id,
+                                    const char *payload_hash, char out[CBM_SHA256_HEX_LEN + 1]) {
+    cbm_sha256_ctx sha;
+    cbm_sha256_init(&sha);
+    static const char domain[] = "memory-for-ai-runtime-publication-v1";
+    cbm_sha256_update(&sha, domain, sizeof(domain));
+    cbm_sha256_update(&sha, safe_str(project), strlen(safe_str(project)) + 1U);
+    cbm_sha256_update(&sha, safe_str(contribution_id), strlen(safe_str(contribution_id)) + 1U);
+    cbm_sha256_update(&sha, safe_str(payload_hash), strlen(safe_str(payload_hash)) + 1U);
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    cbm_sha256_final(&sha, digest);
+    for (int i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        static const char hex[] = "0123456789abcdef";
+        out[i * 2] = hex[(digest[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+}
+
+/* Runtime duration distributions use a deliberately fixed representation so
+ * ingestion is associative and mergeable without retaining raw spans. Bucket
+ * 0 covers 0..1 ns, buckets 1..14 cover exponentially widened ranges, and
+ * bucket 15 is an overflow bucket. The persisted text is internal SQLite
+ * metadata, not a user-controlled SQL fragment. */
+static int runtime_duration_bucket(int64_t duration_ns) {
+    uint64_t value = (uint64_t)(duration_ns < 0 ? 0 : duration_ns);
+    int bucket = 0;
+    while (value > 1U && bucket < CBM_RUNTIME_DURATION_BUCKETS - 1) {
+        value = value / 2U + value % 2U;
+        bucket++;
+    }
+    return bucket;
+}
+
+static bool runtime_histogram_add(uint64_t dst[CBM_RUNTIME_DURATION_BUCKETS],
+                                  const uint64_t src[CBM_RUNTIME_DURATION_BUCKETS]) {
+    for (int i = 0; i < CBM_RUNTIME_DURATION_BUCKETS; i++) {
+        if (UINT64_MAX - dst[i] < src[i]) {
+            return false;
+        }
+        dst[i] += src[i];
+    }
+    return true;
+}
+
+static bool runtime_histogram_from_values(int64_t call_count, int64_t duration_ns_total,
+                                          int64_t duration_ns_max, int64_t observations,
+                                          uint64_t out[CBM_RUNTIME_DURATION_BUCKETS]) {
+    if (!out || call_count < 0 || duration_ns_total < 0 || duration_ns_max < 0 ||
+        observations < 0) {
+        return false;
+    }
+    memset(out, 0, sizeof(uint64_t) * CBM_RUNTIME_DURATION_BUCKETS);
+    uint64_t weight = call_count > 0 ? (uint64_t)call_count : (uint64_t)observations;
+    if (weight == 0) {
+        return true;
+    }
+    int64_t sample = call_count > 0 ? duration_ns_total / call_count : duration_ns_max;
+    out[runtime_duration_bucket(sample)] = weight;
+    return true;
+}
+
+static bool runtime_histogram_parse(const char *text, uint64_t out[CBM_RUNTIME_DURATION_BUCKETS]) {
+    if (!text || !text[0] || !out) {
+        return false;
+    }
+    const char *cursor = text;
+    for (int i = 0; i < CBM_RUNTIME_DURATION_BUCKETS; i++) {
+        if (!isdigit((unsigned char)*cursor)) {
+            return false;
+        }
+        char *end = NULL;
+        errno = 0;
+        unsigned long long value = strtoull(cursor, &end, 10);
+        if (errno == ERANGE || end == cursor ||
+            (i < CBM_RUNTIME_DURATION_BUCKETS - 1 ? *end != ',' : *end != '\0')) {
+            return false;
+        }
+        out[i] = (uint64_t)value;
+        if (i < CBM_RUNTIME_DURATION_BUCKETS - 1) {
+            cursor = end + SKIP_ONE;
+        }
+    }
+    return true;
+}
+
+static bool runtime_histogram_serialize(const uint64_t values[CBM_RUNTIME_DURATION_BUCKETS],
+                                        char *out, size_t out_size) {
+    if (!values || !out || out_size == 0) {
+        return false;
+    }
+    size_t used = 0;
+    for (int i = 0; i < CBM_RUNTIME_DURATION_BUCKETS; i++) {
+        int written = snprintf(out + used, out_size - used, "%s%llu", i ? "," : "",
+                               (unsigned long long)values[i]);
+        if (written < 0 || (size_t)written >= out_size - used) {
+            return false;
+        }
+        used += (size_t)written;
+    }
+    return true;
+}
+
+static bool runtime_histogram_p99(const char *text, int64_t duration_ns_max, int64_t *p99_out) {
+    uint64_t values[CBM_RUNTIME_DURATION_BUCKETS];
+    if (!p99_out || !runtime_histogram_parse(text, values)) {
+        return false;
+    }
+    uint64_t total = 0;
+    for (int i = 0; i < CBM_RUNTIME_DURATION_BUCKETS; i++) {
+        if (UINT64_MAX - total < values[i]) {
+            return false;
+        }
+        total += values[i];
+    }
+    if (total == 0) {
+        return false;
+    }
+    uint64_t rank = total - total / 100U; /* ceil(0.99 * total), including total < 100 */
+    uint64_t cumulative = 0;
+    for (int i = 0; i < CBM_RUNTIME_DURATION_BUCKETS; i++) {
+        cumulative += values[i];
+        if (rank <= cumulative) {
+            uint64_t upper = (i == 0 && duration_ns_max == 0) ? 0U : 1U;
+            if (i > 0 && i < CBM_RUNTIME_DURATION_BUCKETS - 1) {
+                upper = (1ULL << (i + 1)) - 1U;
+            } else if (i == CBM_RUNTIME_DURATION_BUCKETS - 1) {
+                upper = duration_ns_max > 0 ? (uint64_t)duration_ns_max : 65535U;
+            }
+            *p99_out = upper > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)upper;
+            return true;
+        }
+    }
+    return false;
+}
+
+static int runtime_apply_duration_stats(cbm_store_t *s, cbm_runtime_trace_edge_t *row,
+                                        const char *histogram) {
+    uint64_t values[CBM_RUNTIME_DURATION_BUCKETS];
+    if (!row || !runtime_histogram_parse(histogram, values)) {
+        store_set_error(s, "runtime duration histogram is corrupt");
+        return CBM_STORE_ERR;
+    }
+    row->duration_p99_ns = 0;
+    row->duration_p99_available =
+        runtime_histogram_p99(histogram, row->duration_ns_max, &row->duration_p99_ns);
+    return CBM_STORE_OK;
+}
+
+static int runtime_ensure_column(cbm_store_t *s, const char *table, const char *column,
+                                 const char *definition) {
+    if (!s || !s->db || !table || !column || !definition) {
+        return CBM_STORE_ERR;
+    }
+    char pragma[CBM_SZ_256];
+    int written = snprintf(pragma, sizeof(pragma), "PRAGMA table_info(%s);", table);
+    if (written < 0 || (size_t)written >= sizeof(pragma)) {
+        store_set_error(s, "runtime schema table name is too large");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, pragma, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime schema probe prepare");
+        return CBM_STORE_ERR;
+    }
+    bool present = false;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        if (name && strcmp(name, column) == 0) {
+            present = true;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime schema probe");
+        return CBM_STORE_ERR;
+    }
+    if (present) {
+        return CBM_STORE_OK;
+    }
+    char alter[CBM_SZ_512];
+    written = snprintf(alter, sizeof(alter), "ALTER TABLE %s ADD COLUMN %s %s;", table, column,
+                       definition);
+    if (written < 0 || (size_t)written >= sizeof(alter) || exec_sql(s, alter) != CBM_STORE_OK) {
+        store_set_error_sqlite(s, "runtime schema migration");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+static int runtime_resolution_needs_migration(cbm_store_t *s, bool *needs_migration) {
+    if (!s || !s->db || !needs_migration) {
+        return CBM_STORE_ERR;
+    }
+    *needs_migration = false;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, "PRAGMA table_info(runtime_resolutions);", CBM_NOT_FOUND, &stmt,
+                           NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime resolution schema probe prepare");
+        return CBM_STORE_ERR;
+    }
+    bool have_static = false;
+    bool have_endpoint = false;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        int pk_position = sqlite3_column_int(stmt, 5);
+        if (name && strcmp(name, "static_generation") == 0 && pk_position > 0) {
+            have_static = true;
+        }
+        if (name && strcmp(name, "endpoint_key") == 0 && pk_position > 0) {
+            have_endpoint = true;
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime resolution schema probe");
+        return CBM_STORE_ERR;
+    }
+    *needs_migration = !have_static || !have_endpoint;
+    return CBM_STORE_OK;
+}
+
+static int runtime_migrate_resolutions(cbm_store_t *s) {
+    bool needs_migration = false;
+    if (runtime_resolution_needs_migration(s, &needs_migration) != CBM_STORE_OK ||
+        !needs_migration) {
+        return needs_migration ? CBM_STORE_ERR : CBM_STORE_OK;
+    }
+    static const char *const ddl =
+        "CREATE TABLE runtime_resolutions_v2 ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  runtime_generation TEXT NOT NULL,"
+        "  static_generation TEXT NOT NULL,"
+        "  endpoint_key TEXT NOT NULL,"
+        "  endpoint_identity TEXT NOT NULL,"
+        "  resolution_status TEXT NOT NULL,"
+        "  resolved_qualified_name TEXT NOT NULL DEFAULT '',"
+        "  resolver_version TEXT NOT NULL,"
+        "  resolved_at TEXT NOT NULL,"
+        "  PRIMARY KEY (project, runtime_generation, static_generation, endpoint_key),"
+        "  FOREIGN KEY (project, runtime_generation) "
+        "    REFERENCES runtime_publications(project, runtime_generation) ON DELETE CASCADE"
+        ");";
+    if (exec_sql(s, "BEGIN IMMEDIATE;") != CBM_STORE_OK || exec_sql(s, ddl) != CBM_STORE_OK ||
+        exec_sql(s, "INSERT OR IGNORE INTO runtime_resolutions_v2 "
+                    "(project, runtime_generation, static_generation, endpoint_key, "
+                    "endpoint_identity, resolution_status, resolved_qualified_name, "
+                    "resolver_version, resolved_at) "
+                    "SELECT project, runtime_generation, static_generation, endpoint_key, "
+                    "endpoint_identity, resolution_status, resolved_qualified_name, "
+                    "resolver_version, resolved_at FROM runtime_resolutions;") != CBM_STORE_OK ||
+        exec_sql(s, "DROP TABLE runtime_resolutions;") != CBM_STORE_OK ||
+        exec_sql(s, "ALTER TABLE runtime_resolutions_v2 RENAME TO runtime_resolutions;") !=
+            CBM_STORE_OK ||
+        exec_sql(s, "COMMIT;") != CBM_STORE_OK) {
+        (void)exec_sql(s, "ROLLBACK;");
+        store_set_error(s, "runtime resolution schema migration failed");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+static int runtime_touch_store_generation(cbm_store_t *s) {
+    if (!s || !s->db ||
+        exec_sql(s, "CREATE TABLE IF NOT EXISTS store_meta (k TEXT PRIMARY KEY, v TEXT);"
+                    "INSERT OR IGNORE INTO store_meta VALUES"
+                    "('db_uid', lower(hex(randomblob(8))));"
+                    "INSERT OR IGNORE INTO store_meta VALUES('mutation_gen','0');"
+                    "UPDATE store_meta SET v = CAST(CAST(v AS INTEGER)+1 AS TEXT) "
+                    "WHERE k='mutation_gen';") != CBM_STORE_OK) {
+        if (s) {
+            store_set_error(s, "store generation update failed");
+        }
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+static int runtime_node_match_count(cbm_store_t *s, const char *project, const char *endpoint,
+                                    int *count) {
+    sqlite3_stmt *stmt = NULL;
+    if (!s || !s->db || !project || !endpoint || !count ||
+        sqlite3_prepare_v2(s->db,
+                           "SELECT COUNT(*) FROM nodes WHERE project = ?1 AND qualified_name = ?2;",
+                           CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        if (s) {
+            store_set_error_sqlite(s, "runtime endpoint lookup prepare");
+        }
+        return CBM_STORE_ERR;
+    }
+    *count = 0;
+    if (bind_text(stmt, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(stmt, ST_COL_2, endpoint) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        store_set_error(s, "runtime endpoint lookup bind failed");
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        sqlite3_int64 matched = sqlite3_column_int64(stmt, 0);
+        if (matched < 0 || matched > INT_MAX) {
+            sqlite3_finalize(stmt);
+            store_set_error(s, "runtime endpoint match count is out of range");
+            return CBM_STORE_ERR;
+        }
+        *count = (int)matched;
+    } else if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        store_set_error_sqlite(s, "runtime endpoint lookup");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_finalize(stmt);
+    return CBM_STORE_OK;
+}
+
+static int runtime_endpoint_tag_for_store(cbm_store_t *s, const char *project, const char *endpoint,
+                                          char *out, size_t out_size) {
+    if (!s || !project || !project[0] || !endpoint || !endpoint[0] || !out || out_size < 8U) {
+        if (s) {
+            store_set_error(s, "invalid runtime endpoint classification");
+        }
+        return CBM_STORE_ERR;
+    }
+    int match_count = 0;
+    if (runtime_node_match_count(s, project, endpoint, &match_count) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    const char *tag =
+        match_count == 1
+            ? "symbol"
+            : ((strncmp(endpoint, "http://", 7U) == 0 || strncmp(endpoint, "https://", 8U) == 0 ||
+                strncmp(endpoint, "service:", 8U) == 0 || strncmp(endpoint, "rpc:", 4U) == 0)
+                   ? "runtime"
+                   : "unknown");
+    int written = snprintf(out, out_size, "%s", tag);
+    if (written < 0 || (size_t)written >= out_size) {
+        store_set_error(s, "runtime endpoint classification buffer is too small");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+static int runtime_endpoint_key(const char *project, const char *endpoint,
+                                char out[CBM_SHA256_HEX_LEN + 1]) {
+    if (!project || !project[0] || !endpoint || !endpoint[0] || !out) {
+        return CBM_STORE_ERR;
+    }
+    cbm_sha256_ctx sha;
+    cbm_sha256_init(&sha);
+    cbm_sha256_update(&sha, project, strlen(project) + 1U);
+    cbm_sha256_update(&sha, endpoint, strlen(endpoint) + 1U);
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    cbm_sha256_final(&sha, digest);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        out[i * 2] = hex[(digest[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+    return CBM_STORE_OK;
+}
+
+static int runtime_upsert_endpoint(cbm_store_t *s, const char *project, const char *endpoint,
+                                   const char *ts) {
+    char tag[16];
+    if (runtime_endpoint_tag_for_store(s, project, endpoint, tag, sizeof(tag)) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    char endpoint_key[CBM_SHA256_HEX_LEN + 1];
+    if (runtime_endpoint_key(project, endpoint, endpoint_key) != CBM_STORE_OK) {
+        store_set_error(s, "runtime endpoint key construction failed");
+        return CBM_STORE_ERR;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_endpoints "
+            "(project, endpoint_key, endpoint_tag, endpoint_identity, first_seen, last_seen) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6) "
+            "ON CONFLICT(project, endpoint_key) DO UPDATE SET "
+            "endpoint_tag=excluded.endpoint_tag, endpoint_identity=excluded.endpoint_identity, "
+            "last_seen=excluded.last_seen;",
+            CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime endpoint upsert prepare");
+        return CBM_STORE_ERR;
+    }
+    int rc = bind_text(stmt, ST_COL_1, project) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_2, endpoint_key) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_3, tag) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_4, endpoint) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_5, ts) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_6, ts) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_DONE;
+    if (!rc) {
+        store_set_error_sqlite(s, "runtime endpoint upsert");
+    }
+    sqlite3_finalize(stmt);
+    return rc ? CBM_STORE_OK : CBM_STORE_ERR;
+}
+
+#define CBM_RUNTIME_RESOLVER_VERSION "qualified-name-v1"
+#define CBM_RUNTIME_PUBLICATION_RETENTION 32
+
+static int runtime_upsert_resolution(cbm_store_t *s, const char *project,
+                                     const char *runtime_generation, const char *static_generation,
+                                     const char *endpoint, const char *ts) {
+    int match_count = 0;
+    if (!s || !project || !runtime_generation || !static_generation || !endpoint || !endpoint[0] ||
+        !ts || runtime_node_match_count(s, project, endpoint, &match_count) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    const char *status = NULL;
+    const char *resolved = "";
+    if (match_count == 1) {
+        status = "resolved";
+        resolved = endpoint;
+    } else if (match_count > 1) {
+        status = "ambiguous";
+    } else if (strncmp(endpoint, "http://", 7U) == 0 || strncmp(endpoint, "https://", 8U) == 0 ||
+               strncmp(endpoint, "service:", 8U) == 0 || strncmp(endpoint, "rpc:", 4U) == 0) {
+        status = "runtime";
+    } else {
+        status = "unknown";
+    }
+    char endpoint_key[CBM_SHA256_HEX_LEN + 1];
+    if (runtime_endpoint_key(project, endpoint, endpoint_key) != CBM_STORE_OK) {
+        store_set_error(s, "runtime resolution key construction failed");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_resolutions "
+            "(project, runtime_generation, static_generation, endpoint_key, endpoint_identity, "
+            "resolution_status, resolved_qualified_name, resolver_version, resolved_at) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) "
+            "ON CONFLICT(project, runtime_generation, static_generation, endpoint_key) DO UPDATE "
+            "SET "
+            "static_generation=excluded.static_generation, "
+            "endpoint_identity=excluded.endpoint_identity, "
+            "resolution_status=excluded.resolution_status, "
+            "resolved_qualified_name=excluded.resolved_qualified_name, "
+            "resolver_version=excluded.resolver_version, resolved_at=excluded.resolved_at;",
+            CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime resolution prepare");
+        return CBM_STORE_ERR;
+    }
+    int ok = bind_text(stmt, ST_COL_1, project) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_2, runtime_generation) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_3, static_generation) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_4, endpoint_key) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_5, endpoint) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_6, status) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_7, resolved) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_8, CBM_RUNTIME_RESOLVER_VERSION) == SQLITE_OK &&
+             bind_text(stmt, ST_COL_9, ts) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_DONE;
+    if (!ok) {
+        store_set_error_sqlite(s, "runtime resolution upsert");
+    }
+    sqlite3_finalize(stmt);
+    return ok ? CBM_STORE_OK : CBM_STORE_ERR;
+}
+
+static int runtime_prune_publications(cbm_store_t *s, const char *project) {
+    sqlite3_stmt *stmt = NULL;
+    if (!s || !project ||
+        sqlite3_prepare_v2(
+            s->db,
+            "DELETE FROM runtime_publications WHERE project = ?1 AND runtime_generation NOT IN "
+            "(SELECT runtime_generation FROM runtime_publications WHERE project = ?1 "
+            "ORDER BY published_at DESC, runtime_generation DESC LIMIT ?2);",
+            CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        if (s) {
+            store_set_error_sqlite(s, "runtime publication retention prepare");
+        }
+        return CBM_STORE_ERR;
+    }
+    int ok = bind_text(stmt, ST_COL_1, project) == SQLITE_OK &&
+             sqlite3_bind_int(stmt, ST_COL_2, CBM_RUNTIME_PUBLICATION_RETENTION) == SQLITE_OK &&
+             sqlite3_step(stmt) == SQLITE_DONE;
+    if (!ok) {
+        store_set_error_sqlite(s, "runtime publication retention");
+    }
+    sqlite3_finalize(stmt);
+    return ok ? CBM_STORE_OK : CBM_STORE_ERR;
+}
+
+static int runtime_count_project_rows(cbm_store_t *s, const char *table, const char *project,
+                                      int64_t *out) {
+    if (!s || !s->db || !table || !project || !project[0] || !out) {
+        if (s) {
+            store_set_error(s, "invalid runtime metric query");
+        }
+        return CBM_STORE_ERR;
+    }
+    /* Table names are compile-time callers only; keep a strict identifier
+     * guard here because this helper necessarily interpolates the table name. */
+    for (const char *p = table; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) {
+            store_set_error(s, "invalid runtime metric table");
+            return CBM_STORE_ERR;
+        }
+    }
+    char sql[CBM_SZ_256];
+    int written = snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s WHERE project=?1;", table);
+    if (written < 0 || (size_t)written >= sizeof(sql)) {
+        store_set_error(s, "runtime metric query is too large");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK ||
+        bind_text(stmt, ST_COL_1, project) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        store_set_error_sqlite(s, "runtime metric query prepare");
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        store_set_error_sqlite(s, "runtime metric query");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_int64 value = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    if (value < 0) {
+        store_set_error(s, "runtime metric count is invalid");
+        return CBM_STORE_ERR;
+    }
+    *out = value;
+    return CBM_STORE_OK;
+}
+
+static bool runtime_quota_valid(const cbm_runtime_quota_t *quota) {
+    return quota && quota->max_legacy_batches > 0 && quota->max_canonical_contributions > 0 &&
+           quota->max_canonical_spans > 0;
+}
+
+static bool runtime_quota_allows(int64_t current, int64_t incoming, int64_t maximum) {
+    return current >= 0 && incoming >= 0 && maximum > 0 && current <= maximum &&
+           incoming <= maximum - current;
+}
+
+static int runtime_static_generation(cbm_store_t *s, const char *project, char *out,
+                                     size_t out_size) {
+    if (!s || !project || !project[0] || !out || out_size == 0) {
+        if (s) {
+            store_set_error(s, "invalid runtime static generation query");
+        }
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *project_stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT 1 FROM projects WHERE name = ?1;", CBM_NOT_FOUND,
+                           &project_stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime static generation prepare");
+        return CBM_STORE_ERR;
+    }
+    if (bind_text(project_stmt, ST_COL_1, project) != SQLITE_OK ||
+        sqlite3_step(project_stmt) != SQLITE_ROW) {
+        sqlite3_finalize(project_stmt);
+        store_set_error(s, "runtime publication project is missing");
+        return CBM_STORE_NOT_FOUND;
+    }
+    sqlite3_finalize(project_stmt);
+    return cbm_store_generation(s, out, out_size);
+}
+
+static int runtime_finalize_publication(cbm_store_t *s, const char *project,
+                                        const char *contribution_id, const char *payload_hash,
+                                        const char *semantic_version,
+                                        const char *runtime_generation, const char *ts) {
+    char static_generation[CBM_SHA256_HEX_LEN + 1];
+    if (runtime_static_generation(s, project, static_generation, sizeof(static_generation)) !=
+        CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *publication = NULL;
+    sqlite3_stmt *snapshot = NULL;
+    sqlite3_stmt *head = NULL;
+    sqlite3_stmt *endpoints = NULL;
+    int result = CBM_STORE_ERR;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_publications "
+            "(project, runtime_generation, contribution_id, payload_hash, semantic_version, "
+            "static_generation, published_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+            CBM_NOT_FOUND, &publication, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_publication_edges "
+            "(project, runtime_generation, caller, callee, call_count, error_count, "
+            "duration_ns_total, duration_ns_max, duration_histogram, observations) "
+            "SELECT project, ?2, caller, callee, call_count, error_count, duration_ns_total, "
+            "duration_ns_max, duration_histogram, observations FROM runtime_trace_edges "
+            "WHERE project = ?1;",
+            CBM_NOT_FOUND, &snapshot, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_publication_heads "
+            "(project, static_generation, runtime_generation, semantic_version, updated_at) "
+            "VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(project) DO UPDATE SET "
+            "static_generation=excluded.static_generation, "
+            "runtime_generation=excluded.runtime_generation, "
+            "semantic_version=excluded.semantic_version, updated_at=excluded.updated_at;",
+            CBM_NOT_FOUND, &head, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime publication statement prepare");
+        goto done;
+    }
+    if (bind_text(publication, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(publication, ST_COL_2, runtime_generation) != SQLITE_OK ||
+        bind_text(publication, ST_COL_3, contribution_id) != SQLITE_OK ||
+        bind_text(publication, ST_COL_4, payload_hash) != SQLITE_OK ||
+        bind_text(publication, ST_COL_5, semantic_version) != SQLITE_OK ||
+        bind_text(publication, ST_COL_6, static_generation) != SQLITE_OK ||
+        bind_text(publication, ST_COL_7, ts) != SQLITE_OK ||
+        sqlite3_step(publication) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime publication insert");
+        goto done;
+    }
+    if (bind_text(snapshot, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(snapshot, ST_COL_2, runtime_generation) != SQLITE_OK ||
+        sqlite3_step(snapshot) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime publication snapshot");
+        goto done;
+    }
+    if (sqlite3_prepare_v2(s->db,
+                           "SELECT caller, callee FROM runtime_trace_edges WHERE project = ?1;",
+                           CBM_NOT_FOUND, &endpoints, NULL) != SQLITE_OK ||
+        bind_text(endpoints, ST_COL_1, project) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime resolution source prepare");
+        goto done;
+    }
+    int endpoint_rc;
+    while ((endpoint_rc = sqlite3_step(endpoints)) == SQLITE_ROW) {
+        const char *caller = (const char *)sqlite3_column_text(endpoints, 0);
+        const char *callee = (const char *)sqlite3_column_text(endpoints, 1);
+        if (!caller || !callee ||
+            runtime_upsert_resolution(s, project, runtime_generation, static_generation, caller,
+                                      ts) != CBM_STORE_OK ||
+            runtime_upsert_resolution(s, project, runtime_generation, static_generation, callee,
+                                      ts) != CBM_STORE_OK) {
+            goto done;
+        }
+    }
+    if (endpoint_rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime resolution source query");
+        goto done;
+    }
+    if (bind_text(head, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(head, ST_COL_2, static_generation) != SQLITE_OK ||
+        bind_text(head, ST_COL_3, runtime_generation) != SQLITE_OK ||
+        bind_text(head, ST_COL_4, semantic_version) != SQLITE_OK ||
+        bind_text(head, ST_COL_5, ts) != SQLITE_OK || sqlite3_step(head) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime publication head");
+        goto done;
+    }
+    if (runtime_prune_publications(s, project) != CBM_STORE_OK) {
+        goto done;
+    }
+    result = CBM_STORE_OK;
+done:
+    sqlite3_finalize(publication);
+    sqlite3_finalize(snapshot);
+    sqlite3_finalize(head);
+    sqlite3_finalize(endpoints);
+    return result;
+}
+
+static int runtime_source_table_exists(sqlite3 *source_db, const char *table, bool *exists) {
+    if (!source_db || !table || !exists) {
+        return CBM_STORE_ERR;
+    }
+    *exists = false;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(source_db,
+                           "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1;",
+                           CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK ||
+        sqlite3_bind_text(stmt, ST_COL_1, table, CBM_NOT_FOUND, BIND_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        *exists = true;
+    } else if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return CBM_STORE_ERR;
+    }
+    sqlite3_finalize(stmt);
+    return CBM_STORE_OK;
+}
+
+static int runtime_source_column_exists(sqlite3 *source_db, const char *table, const char *column,
+                                        bool *exists) {
+    if (!source_db || !table || !column || !exists) {
+        return CBM_STORE_ERR;
+    }
+    *exists = false;
+    for (const char *p = table; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) {
+            return CBM_STORE_ERR;
+        }
+    }
+    char pragma[CBM_SZ_256];
+    int written = snprintf(pragma, sizeof(pragma), "PRAGMA table_info(%s);", table);
+    if (written < 0 || (size_t)written >= sizeof(pragma)) {
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(source_db, pragma, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        return CBM_STORE_ERR;
+    }
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        if (name && strcmp(name, column) == 0) {
+            *exists = true;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+/* Copy a fixed-shape runtime table from a separate read-only SQLite handle.
+ * The normal store connection deliberately denies ATTACH/DETACH, so runtime
+ * preservation must not weaken that authorizer. Both statements are static;
+ * only the project value and typed row values cross the boundary. */
+static int runtime_copy_project_rows(cbm_store_t *s, sqlite3 *source_db, const char *select_sql,
+                                     const char *insert_sql, const char *project,
+                                     int column_count) {
+    sqlite3_stmt *source = NULL;
+    sqlite3_stmt *target = NULL;
+    if (sqlite3_prepare_v2(source_db, select_sql, CBM_NOT_FOUND, &source, NULL) != SQLITE_OK ||
+        sqlite3_bind_text(source, ST_COL_1, project, CBM_NOT_FOUND, BIND_TRANSIENT) != SQLITE_OK ||
+        sqlite3_prepare_v2(s->db, insert_sql, CBM_NOT_FOUND, &target, NULL) != SQLITE_OK) {
+        sqlite3_finalize(source);
+        sqlite3_finalize(target);
+        store_set_error_sqlite(s, "runtime sidecar copy prepare");
+        return CBM_STORE_ERR;
+    }
+    int source_rc;
+    while ((source_rc = sqlite3_step(source)) == SQLITE_ROW) {
+        if (sqlite3_reset(target) != SQLITE_OK || sqlite3_clear_bindings(target) != SQLITE_OK) {
+            store_set_error_sqlite(s, "runtime sidecar copy reset");
+            sqlite3_finalize(source);
+            sqlite3_finalize(target);
+            return CBM_STORE_ERR;
+        }
+        for (int i = 0; i < column_count; i++) {
+            if (sqlite3_bind_value(target, i + ST_COL_1, sqlite3_column_value(source, i)) !=
+                SQLITE_OK) {
+                store_set_error_sqlite(s, "runtime sidecar copy bind");
+                sqlite3_finalize(source);
+                sqlite3_finalize(target);
+                return CBM_STORE_ERR;
+            }
+        }
+        if (sqlite3_step(target) != SQLITE_DONE) {
+            store_set_error_sqlite(s, "runtime sidecar copy insert");
+            sqlite3_finalize(source);
+            sqlite3_finalize(target);
+            return CBM_STORE_ERR;
+        }
+    }
+    if (source_rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime sidecar copy read");
+        sqlite3_finalize(source);
+        sqlite3_finalize(target);
+        return CBM_STORE_ERR;
+    }
+    sqlite3_finalize(source);
+    sqlite3_finalize(target);
+    return CBM_STORE_OK;
+}
+
+int cbm_store_preserve_runtime_sidecar(cbm_store_t *s, const char *source_db_path,
+                                       const char *project) {
+    if (!s || !s->db || !source_db_path || !source_db_path[0] || !project || !project[0]) {
+        if (s) {
+            store_set_error(s, "invalid runtime sidecar copy request");
+        }
+        return CBM_STORE_ERR;
+    }
+    cbm_path_info_t source_info;
+    if (cbm_path_info_utf8(source_db_path, &source_info) != 0) {
+        /* A first index has no previous generation to preserve. */
+        return CBM_STORE_OK;
+    }
+    if (!source_info.is_regular || source_info.is_symlink) {
+        store_set_error(s, "runtime sidecar source is not a regular database file");
+        return CBM_STORE_ERR;
+    }
+
+    char source_open_path[4096];
+    if (!cbm_path_for_file_api(source_db_path, source_open_path, sizeof(source_open_path))) {
+        store_set_error(s, "runtime sidecar source path is invalid");
+        return CBM_STORE_ERR;
+    }
+    sqlite3 *source_db = NULL;
+    if (sqlite3_open_v2(source_open_path, &source_db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        store_set_error(s, "runtime sidecar source open failed");
+        sqlite3_close(source_db);
+        return CBM_STORE_ERR;
+    }
+    int result = CBM_STORE_ERR;
+    bool transaction = false;
+    bool source_has_batches = false;
+    bool source_has_batch_edges = false;
+    bool source_has_contributions = false;
+    bool source_has_spans = false;
+    bool source_has_edges = false;
+    bool source_has_publications = false;
+    bool source_has_heads = false;
+    bool source_has_publication_edges = false;
+    bool source_has_endpoints = false;
+    bool source_has_observation_maps = false;
+    bool source_has_resolutions = false;
+    if (runtime_source_table_exists(source_db, "runtime_trace_batches", &source_has_batches) !=
+            CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_trace_batch_edges",
+                                    &source_has_batch_edges) != CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_trace_contributions",
+                                    &source_has_contributions) != CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_trace_spans", &source_has_spans) !=
+            CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_trace_edges", &source_has_edges) !=
+            CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_publications", &source_has_publications) !=
+            CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_publication_heads", &source_has_heads) !=
+            CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_publication_edges",
+                                    &source_has_publication_edges) != CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_endpoints", &source_has_endpoints) !=
+            CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_observation_contributions",
+                                    &source_has_observation_maps) != CBM_STORE_OK ||
+        runtime_source_table_exists(source_db, "runtime_resolutions", &source_has_resolutions) !=
+            CBM_STORE_OK) {
+        goto done;
+    }
+    if (cbm_store_begin(s) != CBM_STORE_OK) {
+        goto done;
+    }
+    transaction = true;
+
+    /* Every copy uses an explicit column list. This keeps a newer target
+     * compatible with a source artifact that predates the histogram column. */
+    if ((source_has_batches &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,batch_id,payload_hash,trace_count,accepted_at "
+             "FROM runtime_trace_batches WHERE project=?1;",
+             "INSERT INTO "
+             "runtime_trace_batches(project,batch_id,payload_hash,trace_count,accepted_at) "
+             "VALUES(?1,?2,?3,?4,?5);",
+             project, 5) != CBM_STORE_OK) ||
+        (source_has_batch_edges &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,batch_id,edge_index,caller,callee,call_count,error_count,"
+             "duration_ns_total,duration_ns_max,duration_histogram,observations "
+             "FROM runtime_trace_batch_edges WHERE project=?1;",
+             "INSERT INTO runtime_trace_batch_edges(project,batch_id,edge_index,caller,callee,"
+             "call_count,error_count,duration_ns_total,duration_ns_max,duration_histogram,"
+             "observations) "
+             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);",
+             project, 11) != CBM_STORE_OK) ||
+        (source_has_contributions &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,producer_id,producer_epoch,contribution_id,payload_hash,trace_count,"
+             "accepted_at FROM runtime_trace_contributions WHERE project=?1;",
+             "INSERT INTO runtime_trace_contributions(project,producer_id,producer_epoch,"
+             "contribution_id,payload_hash,trace_count,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7);",
+             project, 7) != CBM_STORE_OK)) {
+        goto rollback;
+    }
+    bool source_has_histogram = false;
+    if (source_has_spans &&
+        runtime_source_column_exists(source_db, "runtime_trace_spans", "duration_histogram",
+                                     &source_has_histogram) != CBM_STORE_OK) {
+        goto rollback;
+    }
+    if (source_has_spans &&
+        runtime_copy_project_rows(
+            s, source_db,
+            source_has_histogram
+                ? "SELECT "
+                  "project,producer_id,producer_epoch,trace_id,span_id,normalized_hash,caller,"
+                  "callee,call_count,error_count,duration_ns_total,duration_ns_max,duration_"
+                  "histogram,"
+                  "accepted_at FROM runtime_trace_spans WHERE project=?1;"
+                : "SELECT "
+                  "project,producer_id,producer_epoch,trace_id,span_id,normalized_hash,caller,"
+                  "callee,call_count,error_count,duration_ns_total,duration_ns_max,accepted_at "
+                  "FROM runtime_trace_spans WHERE project=?1;",
+            source_has_histogram
+                ? "INSERT INTO runtime_trace_spans(project,producer_id,producer_epoch,trace_id,"
+                  "span_id,normalized_hash,caller,callee,call_count,error_count,duration_ns_total,"
+                  "duration_ns_max,duration_histogram,accepted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,"
+                  "?9,?10,?11,?12,?13,?14);"
+                : "INSERT INTO runtime_trace_spans(project,producer_id,producer_epoch,trace_id,"
+                  "span_id,normalized_hash,caller,callee,call_count,error_count,duration_ns_total,"
+                  "duration_ns_max,accepted_at) "
+                  "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13);",
+            project, source_has_histogram ? 14 : 13) != CBM_STORE_OK) {
+        goto rollback;
+    }
+    source_has_histogram = false;
+    if (source_has_edges &&
+        runtime_source_column_exists(source_db, "runtime_trace_edges", "duration_histogram",
+                                     &source_has_histogram) != CBM_STORE_OK) {
+        goto rollback;
+    }
+    if (source_has_edges &&
+        runtime_copy_project_rows(
+            s, source_db,
+            source_has_histogram
+                ? "SELECT "
+                  "project,caller,callee,call_count,error_count,duration_ns_total,duration_ns_max,"
+                  "duration_histogram,observations,first_seen,last_seen FROM runtime_trace_edges "
+                  "WHERE project=?1;"
+                : "SELECT "
+                  "project,caller,callee,call_count,error_count,duration_ns_total,duration_ns_max,"
+                  "observations,first_seen,last_seen FROM runtime_trace_edges WHERE project=?1;",
+            source_has_histogram
+                ? "INSERT INTO runtime_trace_edges(project,caller,callee,call_count,error_count,"
+                  "duration_ns_total,duration_ns_max,duration_histogram,observations,first_seen,"
+                  "last_seen) "
+                  "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11);"
+                : "INSERT INTO runtime_trace_edges(project,caller,callee,call_count,error_count,"
+                  "duration_ns_total,duration_ns_max,observations,first_seen,last_seen) "
+                  "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);",
+            project, source_has_histogram ? 11 : 10) != CBM_STORE_OK) {
+        goto rollback;
+    }
+
+    if ((source_has_publications &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,runtime_generation,contribution_id,payload_hash,semantic_version,"
+             "static_generation,published_at FROM runtime_publications WHERE project=?1;",
+             "INSERT INTO runtime_publications(project,runtime_generation,contribution_id,"
+             "payload_hash,semantic_version,static_generation,published_at) "
+             "VALUES(?1,?2,?3,?4,?5,?6,?7);",
+             project, 7) != CBM_STORE_OK) ||
+        (source_has_heads &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,static_generation,runtime_generation,semantic_version,updated_at "
+             "FROM runtime_publication_heads WHERE project=?1;",
+             "INSERT INTO runtime_publication_heads(project,static_generation,runtime_generation,"
+             "semantic_version,updated_at) VALUES(?1,?2,?3,?4,?5);",
+             project, 5) != CBM_STORE_OK)) {
+        goto rollback;
+    }
+    if (source_has_publication_edges &&
+        runtime_source_column_exists(source_db, "runtime_publication_edges", "duration_histogram",
+                                     &source_has_histogram) != CBM_STORE_OK) {
+        goto rollback;
+    }
+    if (source_has_publication_edges &&
+        runtime_copy_project_rows(
+            s, source_db,
+            source_has_histogram
+                ? "SELECT project,runtime_generation,caller,callee,call_count,error_count,"
+                  "duration_ns_total,duration_ns_max,duration_histogram,observations "
+                  "FROM runtime_publication_edges WHERE project=?1;"
+                : "SELECT project,runtime_generation,caller,callee,call_count,error_count,"
+                  "duration_ns_total,duration_ns_max,observations FROM runtime_publication_edges "
+                  "WHERE project=?1;",
+            source_has_histogram
+                ? "INSERT INTO runtime_publication_edges(project,runtime_generation,caller,callee,"
+                  "call_count,error_count,duration_ns_total,duration_ns_max,duration_histogram,"
+                  "observations) "
+                  "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);"
+                : "INSERT INTO runtime_publication_edges(project,runtime_generation,caller,callee,"
+                  "call_count,error_count,duration_ns_total,duration_ns_max,observations) "
+                  "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
+            project, source_has_histogram ? 10 : 9) != CBM_STORE_OK) {
+        goto rollback;
+    }
+    if ((source_has_endpoints &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,endpoint_key,endpoint_tag,endpoint_identity,first_seen,last_seen "
+             "FROM runtime_endpoints WHERE project=?1;",
+             "INSERT INTO runtime_endpoints(project,endpoint_key,endpoint_tag,endpoint_identity,"
+             "first_seen,last_seen) VALUES(?1,?2,?3,?4,?5,?6);",
+             project, 6) != CBM_STORE_OK) ||
+        (source_has_observation_maps &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,runtime_generation,producer_id,producer_epoch,trace_id,span_id,"
+             "contribution_id FROM runtime_observation_contributions WHERE project=?1;",
+             "INSERT INTO runtime_observation_contributions(project,runtime_generation,producer_id,"
+             "producer_epoch,trace_id,span_id,contribution_id) VALUES(?1,?2,?3,?4,?5,?6,?7);",
+             project, 7) != CBM_STORE_OK) ||
+        (source_has_resolutions &&
+         runtime_copy_project_rows(
+             s, source_db,
+             "SELECT project,runtime_generation,static_generation,endpoint_key,endpoint_identity,"
+             "resolution_status,resolved_qualified_name,resolver_version,resolved_at "
+             "FROM runtime_resolutions WHERE project=?1;",
+             "INSERT INTO "
+             "runtime_resolutions(project,runtime_generation,static_generation,endpoint_key,"
+             "endpoint_identity,resolution_status,resolved_qualified_name,resolver_version,"
+             "resolved_at) "
+             "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);",
+             project, 9) != CBM_STORE_OK)) {
+        goto rollback;
+    }
+    if (cbm_store_commit(s) != CBM_STORE_OK) {
+        goto done;
+    }
+    transaction = false;
+    result = CBM_STORE_OK;
+    goto done;
+
+rollback:
+    if (transaction) {
+        (void)cbm_store_rollback(s);
+    }
+done:
+    sqlite3_close(source_db);
+    return result;
+}
+
+int cbm_store_refresh_runtime_static_generation(cbm_store_t *s, const char *project) {
+    if (!s || !s->db || !project || !project[0]) {
+        if (s) {
+            store_set_error(s, "invalid runtime static generation refresh");
+        }
+        return CBM_STORE_ERR;
+    }
+    if (cbm_store_begin(s) != CBM_STORE_OK || runtime_touch_store_generation(s) != CBM_STORE_OK) {
+        (void)cbm_store_rollback(s);
+        return CBM_STORE_ERR;
+    }
+    char static_generation[CBM_SHA256_HEX_LEN + 1];
+    if (cbm_store_generation(s, static_generation, sizeof(static_generation)) != CBM_STORE_OK) {
+        (void)cbm_store_rollback(s);
+        store_set_error(s, "static generation refresh is unavailable");
+        return CBM_STORE_ERR;
+    }
+    char ts[CBM_SZ_64];
+    iso_now(ts, sizeof(ts));
+    sqlite3_stmt *head = NULL;
+    if (sqlite3_prepare_v2(
+            s->db, "SELECT runtime_generation FROM runtime_publication_heads WHERE project=?1;",
+            CBM_NOT_FOUND, &head, NULL) != SQLITE_OK ||
+        bind_text(head, ST_COL_1, project) != SQLITE_OK) {
+        sqlite3_finalize(head);
+        (void)cbm_store_rollback(s);
+        store_set_error_sqlite(s, "runtime static generation head prepare");
+        return CBM_STORE_ERR;
+    }
+    int head_rc = sqlite3_step(head);
+    if (head_rc == SQLITE_DONE) {
+        sqlite3_finalize(head);
+        if (cbm_store_commit(s) != CBM_STORE_OK) {
+            return CBM_STORE_ERR;
+        }
+        return CBM_STORE_OK;
+    }
+    if (head_rc != SQLITE_ROW) {
+        sqlite3_finalize(head);
+        (void)cbm_store_rollback(s);
+        store_set_error_sqlite(s, "runtime static generation head query");
+        return CBM_STORE_ERR;
+    }
+    const char *runtime_generation = (const char *)sqlite3_column_text(head, 0);
+    char runtime_generation_copy[CBM_SHA256_HEX_LEN + 1];
+    int generation_written = snprintf(runtime_generation_copy, sizeof(runtime_generation_copy),
+                                      "%s", runtime_generation ? runtime_generation : "");
+    sqlite3_finalize(head);
+    if (generation_written < 0 || (size_t)generation_written >= sizeof(runtime_generation_copy) ||
+        !runtime_generation_copy[0]) {
+        (void)cbm_store_rollback(s);
+        store_set_error(s, "runtime publication generation is invalid");
+        return CBM_STORE_ERR;
+    }
+
+    sqlite3_stmt *update = NULL;
+    sqlite3_stmt *edges = NULL;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "UPDATE runtime_publication_heads SET static_generation=?2,updated_at=?3 "
+            "WHERE project=?1;",
+            CBM_NOT_FOUND, &update, NULL) != SQLITE_OK ||
+        bind_text(update, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(update, ST_COL_2, static_generation) != SQLITE_OK ||
+        bind_text(update, ST_COL_3, ts) != SQLITE_OK || sqlite3_step(update) != SQLITE_DONE ||
+        sqlite3_prepare_v2(s->db,
+                           "SELECT caller,callee FROM runtime_publication_edges WHERE project=?1 "
+                           "AND runtime_generation=?2;",
+                           CBM_NOT_FOUND, &edges, NULL) != SQLITE_OK ||
+        bind_text(edges, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(edges, ST_COL_2, runtime_generation_copy) != SQLITE_OK) {
+        sqlite3_finalize(update);
+        sqlite3_finalize(edges);
+        (void)cbm_store_rollback(s);
+        store_set_error_sqlite(s, "runtime static generation update prepare");
+        return CBM_STORE_ERR;
+    }
+    int edge_rc;
+    while ((edge_rc = sqlite3_step(edges)) == SQLITE_ROW) {
+        const char *caller = (const char *)sqlite3_column_text(edges, 0);
+        const char *callee = (const char *)sqlite3_column_text(edges, 1);
+        if (!caller || !callee ||
+            runtime_upsert_resolution(s, project, runtime_generation_copy, static_generation,
+                                      caller, ts) != CBM_STORE_OK ||
+            runtime_upsert_resolution(s, project, runtime_generation_copy, static_generation,
+                                      callee, ts) != CBM_STORE_OK) {
+            sqlite3_finalize(update);
+            sqlite3_finalize(edges);
+            (void)cbm_store_rollback(s);
+            return CBM_STORE_ERR;
+        }
+    }
+    sqlite3_finalize(update);
+    sqlite3_finalize(edges);
+    if (edge_rc != SQLITE_DONE || cbm_store_commit(s) != CBM_STORE_OK) {
+        (void)cbm_store_rollback(s);
+        store_set_error_sqlite(s, "runtime static generation resolution refresh");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
 }
 
 /* ── Schema ─────────────────────────────────────────────────────── */
@@ -350,6 +1505,7 @@ static int init_schema(cbm_store_t *s) {
         "  error_count INTEGER NOT NULL DEFAULT 0,"
         "  duration_ns_total INTEGER NOT NULL DEFAULT 0,"
         "  duration_ns_max INTEGER NOT NULL DEFAULT 0,"
+        "  duration_histogram TEXT NOT NULL DEFAULT '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0',"
         "  observations INTEGER NOT NULL DEFAULT 0,"
         "  first_seen TEXT NOT NULL,"
         "  last_seen TEXT NOT NULL,"
@@ -357,6 +1513,30 @@ static int init_schema(cbm_store_t *s) {
         ");"
         "CREATE INDEX IF NOT EXISTS idx_runtime_trace_edges_project_count "
         "ON runtime_trace_edges(project, call_count DESC)"
+        ";"
+        /* Compact-v1 batches retain their normalized per-edge contribution so
+         * the live aggregate can be rebuilt from immutable evidence. Older
+         * databases without this additive table remain readable, but an
+         * explicit rebuild correctly fails closed when that evidence is not
+         * available. */
+        "CREATE TABLE IF NOT EXISTS runtime_trace_batch_edges ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  batch_id TEXT NOT NULL,"
+        "  edge_index INTEGER NOT NULL,"
+        "  caller TEXT NOT NULL,"
+        "  callee TEXT NOT NULL,"
+        "  call_count INTEGER NOT NULL DEFAULT 0,"
+        "  error_count INTEGER NOT NULL DEFAULT 0,"
+        "  duration_ns_total INTEGER NOT NULL DEFAULT 0,"
+        "  duration_ns_max INTEGER NOT NULL DEFAULT 0,"
+        "  duration_histogram TEXT NOT NULL DEFAULT '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0',"
+        "  observations INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (project, batch_id, edge_index),"
+        "  FOREIGN KEY (project, batch_id) REFERENCES runtime_trace_batches(project, batch_id) "
+        "    ON DELETE CASCADE"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_batch_edges_project "
+        "ON runtime_trace_batch_edges(project, batch_id)"
         ";"
         /* Canonical-v2 keeps immutable producer contributions and exact span
          * identities alongside the compact aggregate. These tables are an
@@ -384,16 +1564,110 @@ static int init_schema(cbm_store_t *s) {
         "  error_count INTEGER NOT NULL,"
         "  duration_ns_total INTEGER NOT NULL,"
         "  duration_ns_max INTEGER NOT NULL,"
+        "  duration_histogram TEXT NOT NULL DEFAULT '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0',"
         "  accepted_at TEXT NOT NULL,"
         "  PRIMARY KEY (project, producer_id, producer_epoch, trace_id, span_id)"
         ");"
         "CREATE INDEX IF NOT EXISTS idx_runtime_trace_spans_project_endpoint "
         "ON runtime_trace_spans(project, caller, callee)"
-        ";";
+        ";"
+        /* Runtime publications are an additive, versioned sidecar. The
+         * publication edge snapshot makes a generation immutable and lets a
+         * reader pin one coherent overlay instead of mixing live aggregates
+         * from different ingests. */
+        "CREATE TABLE IF NOT EXISTS runtime_publications ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  runtime_generation TEXT NOT NULL,"
+        "  contribution_id TEXT NOT NULL,"
+        "  payload_hash TEXT NOT NULL,"
+        "  semantic_version TEXT NOT NULL,"
+        "  static_generation TEXT NOT NULL,"
+        "  published_at TEXT NOT NULL,"
+        "  PRIMARY KEY (project, runtime_generation),"
+        "  UNIQUE (project, contribution_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS runtime_publication_heads ("
+        "  project TEXT PRIMARY KEY REFERENCES projects(name) ON DELETE CASCADE,"
+        "  static_generation TEXT NOT NULL,"
+        "  runtime_generation TEXT NOT NULL,"
+        "  semantic_version TEXT NOT NULL,"
+        "  updated_at TEXT NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS runtime_publication_edges ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  runtime_generation TEXT NOT NULL,"
+        "  caller TEXT NOT NULL,"
+        "  callee TEXT NOT NULL,"
+        "  call_count INTEGER NOT NULL DEFAULT 0,"
+        "  error_count INTEGER NOT NULL DEFAULT 0,"
+        "  duration_ns_total INTEGER NOT NULL DEFAULT 0,"
+        "  duration_ns_max INTEGER NOT NULL DEFAULT 0,"
+        "  duration_histogram TEXT NOT NULL DEFAULT '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0',"
+        "  observations INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (project, runtime_generation, caller, callee),"
+        "  FOREIGN KEY (project, runtime_generation) "
+        "    REFERENCES runtime_publications(project, runtime_generation) ON DELETE CASCADE"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_runtime_publication_edges_order "
+        "ON runtime_publication_edges(project, runtime_generation, call_count DESC, caller, callee)"
+        ";"
+        "CREATE TABLE IF NOT EXISTS runtime_endpoints ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  endpoint_key TEXT NOT NULL,"
+        "  endpoint_tag TEXT NOT NULL,"
+        "  endpoint_identity TEXT NOT NULL,"
+        "  first_seen TEXT NOT NULL,"
+        "  last_seen TEXT NOT NULL,"
+        "  PRIMARY KEY (project, endpoint_key)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS runtime_observation_contributions ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  runtime_generation TEXT NOT NULL,"
+        "  producer_id TEXT NOT NULL,"
+        "  producer_epoch TEXT NOT NULL,"
+        "  trace_id TEXT NOT NULL,"
+        "  span_id TEXT NOT NULL,"
+        "  contribution_id TEXT NOT NULL,"
+        "  PRIMARY KEY (project, runtime_generation, producer_id, producer_epoch, trace_id, "
+        "span_id),"
+        "  FOREIGN KEY (project, runtime_generation) "
+        "    REFERENCES runtime_publications(project, runtime_generation) ON DELETE CASCADE"
+        ");"
+        "CREATE TABLE IF NOT EXISTS runtime_resolutions ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  runtime_generation TEXT NOT NULL,"
+        "  static_generation TEXT NOT NULL,"
+        "  endpoint_key TEXT NOT NULL,"
+        "  endpoint_identity TEXT NOT NULL,"
+        "  resolution_status TEXT NOT NULL,"
+        "  resolved_qualified_name TEXT NOT NULL DEFAULT '',"
+        "  resolver_version TEXT NOT NULL,"
+        "  resolved_at TEXT NOT NULL,"
+        "  PRIMARY KEY (project, runtime_generation, static_generation, endpoint_key),"
+        "  FOREIGN KEY (project, runtime_generation) "
+        "    REFERENCES runtime_publications(project, runtime_generation) ON DELETE CASCADE"
+        ");";
 
     int rc = exec_sql(s, ddl);
     if (rc != CBM_STORE_OK) {
         return rc;
+    }
+
+    /* Additive migration for databases created before mergeable runtime
+     * duration distributions were introduced. Existing rows receive an empty
+     * distribution and therefore correctly report p99 as unavailable until a
+     * new observation contributes a bucket. */
+    const char *histogram_definition = "TEXT NOT NULL DEFAULT '0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'";
+    if (runtime_ensure_column(s, "runtime_trace_edges", "duration_histogram",
+                              histogram_definition) != CBM_STORE_OK ||
+        runtime_ensure_column(s, "runtime_trace_spans", "duration_histogram",
+                              histogram_definition) != CBM_STORE_OK ||
+        runtime_ensure_column(s, "runtime_publication_edges", "duration_histogram",
+                              histogram_definition) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    if (runtime_migrate_resolutions(s) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
     }
 
     /* Schema-compat probe (#768): DBs created before the local_name_gen
@@ -853,6 +2127,7 @@ static cbm_store_t *store_open_internal(const char *path, bool in_memory, bool c
     if (!s) {
         return NULL;
     }
+    s->runtime_quota = RUNTIME_DEFAULT_QUOTA;
 
     int flags = SQLITE_OPEN_READWRITE | (create ? SQLITE_OPEN_CREATE : 0);
     if (in_memory) {
@@ -1015,6 +2290,7 @@ cbm_store_t *cbm_store_open_path_query(const char *db_path) {
     if (!s) {
         return NULL;
     }
+    s->runtime_quota = RUNTIME_DEFAULT_QUOTA;
 
     /* Query tools open the project DB READ-ONLY: a read query must never
      * mutate the DB (the previous READWRITE open + WAL write-pragmas did),
@@ -1361,6 +2637,184 @@ int cbm_store_exec(cbm_store_t *s, const char *sql) {
 
 const char *cbm_store_error(cbm_store_t *s) {
     return s ? s->errbuf : "null store";
+}
+
+int cbm_store_set_runtime_quota(cbm_store_t *s, const cbm_runtime_quota_t *quota) {
+    if (!s || !runtime_quota_valid(quota)) {
+        if (s) {
+            store_set_error(s, "runtime quota values must be positive");
+        }
+        return CBM_STORE_ERR;
+    }
+    s->runtime_quota = *quota;
+    return CBM_STORE_OK;
+}
+
+int cbm_store_get_runtime_quota(cbm_store_t *s, cbm_runtime_quota_t *out) {
+    if (!s || !out) {
+        if (s) {
+            store_set_error(s, "invalid runtime quota query");
+        }
+        return CBM_STORE_ERR;
+    }
+    *out = s->runtime_quota;
+    return CBM_STORE_OK;
+}
+
+int cbm_store_get_runtime_metrics(cbm_store_t *s, const char *project, cbm_runtime_metrics_t *out) {
+    if (!s || !s->db || !project || !project[0] || !out) {
+        if (s) {
+            store_set_error(s, "invalid runtime metrics query");
+        }
+        return CBM_STORE_ERR;
+    }
+    memset(out, 0, sizeof(*out));
+    if (runtime_count_project_rows(s, "runtime_trace_batches", project, &out->legacy_batches) !=
+            CBM_STORE_OK ||
+        runtime_count_project_rows(s, "runtime_trace_contributions", project,
+                                   &out->canonical_contributions) != CBM_STORE_OK ||
+        runtime_count_project_rows(s, "runtime_trace_spans", project, &out->canonical_spans) !=
+            CBM_STORE_OK ||
+        runtime_count_project_rows(s, "runtime_trace_edges", project, &out->runtime_edges) !=
+            CBM_STORE_OK ||
+        runtime_count_project_rows(s, "runtime_publications", project,
+                                   &out->runtime_publications) != CBM_STORE_OK ||
+        runtime_count_project_rows(s, "runtime_endpoints", project, &out->runtime_endpoints) !=
+            CBM_STORE_OK ||
+        runtime_count_project_rows(s, "runtime_resolutions", project, &out->runtime_resolutions) !=
+            CBM_STORE_OK ||
+        cbm_store_get_runtime_quota(s, &out->quota) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+int cbm_store_rebuild_runtime_aggregates(cbm_store_t *s, const char *project) {
+    if (!s || !s->db || !project || !project[0]) {
+        if (s) {
+            store_set_error(s, "invalid runtime aggregate rebuild request");
+        }
+        return CBM_STORE_ERR;
+    }
+    if (cbm_store_begin(s) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+
+    cbm_runtime_publication_t head;
+    memset(&head, 0, sizeof(head));
+    if (cbm_store_get_runtime_publication_head(s, project, &head) != CBM_STORE_OK ||
+        !head.available || !head.runtime_generation[0]) {
+        store_set_error(s, "runtime aggregate rebuild requires an immutable publication");
+        (void)cbm_store_rollback(s);
+        return CBM_STORE_NOT_FOUND;
+    }
+
+    sqlite3_stmt *validate = NULL;
+    sqlite3_stmt *delete_edges = NULL;
+    sqlite3_stmt *delete_endpoints = NULL;
+    sqlite3_stmt *copy_edges = NULL;
+    sqlite3_stmt *endpoint_scan = NULL;
+    int result = CBM_STORE_ERR;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "SELECT caller, callee, call_count, error_count, duration_ns_total, "
+            "duration_ns_max, duration_histogram, observations "
+            "FROM runtime_publication_edges WHERE project=?1 AND runtime_generation=?2;",
+            CBM_NOT_FOUND, &validate, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(s->db, "DELETE FROM runtime_trace_edges WHERE project=?1;",
+                           CBM_NOT_FOUND, &delete_edges, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(s->db, "DELETE FROM runtime_endpoints WHERE project=?1;", CBM_NOT_FOUND,
+                           &delete_endpoints, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_trace_edges "
+            "(project, caller, callee, call_count, error_count, duration_ns_total, "
+            "duration_ns_max, duration_histogram, observations, first_seen, last_seen) "
+            "SELECT e.project, e.caller, e.callee, e.call_count, e.error_count, "
+            "e.duration_ns_total, e.duration_ns_max, e.duration_histogram, e.observations, "
+            "p.published_at, p.published_at "
+            "FROM runtime_publication_edges e "
+            "JOIN runtime_publications p ON p.project=e.project "
+            "AND p.runtime_generation=e.runtime_generation "
+            "WHERE e.project=?1 AND e.runtime_generation=?2;",
+            CBM_NOT_FOUND, &copy_edges, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime aggregate rebuild prepare");
+        goto rebuild_cleanup;
+    }
+    if (bind_text(validate, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(validate, ST_COL_2, head.runtime_generation) != SQLITE_OK) {
+        store_set_error(s, "runtime aggregate rebuild validation bind failed");
+        goto rebuild_rollback;
+    }
+    int validate_rc;
+    while ((validate_rc = sqlite3_step(validate)) == SQLITE_ROW) {
+        const char *caller = (const char *)sqlite3_column_text(validate, 0);
+        const char *callee = (const char *)sqlite3_column_text(validate, 1);
+        const char *histogram = (const char *)sqlite3_column_text(validate, 6);
+        if (!caller || !callee || !caller[0] || !callee[0] ||
+            sqlite3_column_int64(validate, 2) < 0 || sqlite3_column_int64(validate, 3) < 0 ||
+            sqlite3_column_int64(validate, 4) < 0 || sqlite3_column_int64(validate, 5) < 0 ||
+            sqlite3_column_int64(validate, 7) < 0) {
+            store_set_error(s, "runtime publication aggregate is invalid");
+            goto rebuild_rollback;
+        }
+        uint64_t values[CBM_RUNTIME_DURATION_BUCKETS];
+        if (!runtime_histogram_parse(histogram, values)) {
+            store_set_error(s, "runtime publication histogram is corrupt");
+            goto rebuild_rollback;
+        }
+    }
+    if (validate_rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime aggregate rebuild validation");
+        goto rebuild_rollback;
+    }
+
+    if (bind_text(delete_edges, ST_COL_1, project) != SQLITE_OK ||
+        sqlite3_step(delete_edges) != SQLITE_DONE ||
+        bind_text(delete_endpoints, ST_COL_1, project) != SQLITE_OK ||
+        sqlite3_step(delete_endpoints) != SQLITE_DONE ||
+        bind_text(copy_edges, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(copy_edges, ST_COL_2, head.runtime_generation) != SQLITE_OK ||
+        sqlite3_step(copy_edges) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime aggregate rebuild copy");
+        goto rebuild_rollback;
+    }
+
+    if (sqlite3_prepare_v2(s->db,
+                           "SELECT caller, callee FROM runtime_trace_edges WHERE project=?1;",
+                           CBM_NOT_FOUND, &endpoint_scan, NULL) != SQLITE_OK ||
+        bind_text(endpoint_scan, ST_COL_1, project) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime aggregate rebuild endpoint scan");
+        goto rebuild_rollback;
+    }
+    int endpoint_rc;
+    char rebuild_ts[CBM_SZ_64];
+    iso_now(rebuild_ts, sizeof(rebuild_ts));
+    while ((endpoint_rc = sqlite3_step(endpoint_scan)) == SQLITE_ROW) {
+        const char *caller = (const char *)sqlite3_column_text(endpoint_scan, 0);
+        const char *callee = (const char *)sqlite3_column_text(endpoint_scan, 1);
+        if (!caller || !callee ||
+            runtime_upsert_endpoint(s, project, caller, rebuild_ts) != CBM_STORE_OK ||
+            runtime_upsert_endpoint(s, project, callee, rebuild_ts) != CBM_STORE_OK) {
+            goto rebuild_rollback;
+        }
+    }
+    if (endpoint_rc != SQLITE_DONE || cbm_store_commit(s) != CBM_STORE_OK) {
+        store_set_error_sqlite(s, "runtime aggregate rebuild endpoint commit");
+        goto rebuild_rollback;
+    }
+    result = CBM_STORE_OK;
+    goto rebuild_cleanup;
+
+rebuild_rollback:
+    (void)cbm_store_rollback(s);
+rebuild_cleanup:
+    sqlite3_finalize(validate);
+    sqlite3_finalize(delete_edges);
+    sqlite3_finalize(delete_endpoints);
+    sqlite3_finalize(copy_edges);
+    sqlite3_finalize(endpoint_scan);
+    return result;
 }
 
 /* ── Transaction ────────────────────────────────────────────────── */
@@ -2269,29 +3723,48 @@ int cbm_store_upsert_project(cbm_store_t *s, const char *name, const char *root_
      * point every index run (full, incremental, watcher) passes through.
      * Created here rather than in the byte-level writer: adding a table to
      * its hand-built sqlite_master is rootpage surgery for zero benefit. */
-    (void)sqlite3_exec(s->db,
-                       "CREATE TABLE IF NOT EXISTS store_meta (k TEXT PRIMARY KEY, v TEXT);"
-                       "INSERT OR IGNORE INTO store_meta VALUES"
-                       "('db_uid', lower(hex(randomblob(8))));"
-                       "INSERT OR IGNORE INTO store_meta VALUES('mutation_gen','0');"
-                       "UPDATE store_meta SET v = CAST(CAST(v AS INTEGER)+1 AS TEXT) "
-                       "WHERE k='mutation_gen';",
-                       NULL, NULL, NULL);
+    if (runtime_touch_store_generation(s) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    char static_generation[CBM_SHA256_HEX_LEN + 1];
+    if (cbm_store_generation(s, static_generation, sizeof(static_generation)) != CBM_STORE_OK) {
+        store_set_error(s, "static generation is unavailable");
+        return CBM_STORE_ERR;
+    }
+
+    /* Re-pin the static half whenever the project generation advances. The
+     * runtime generation remains unchanged, so a source reindex cannot make
+     * an existing runtime publication disappear or silently bind to a stale
+     * static generation. */
+    sqlite3_stmt *runtime_head_update = NULL;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "UPDATE runtime_publication_heads SET static_generation = ?2, updated_at = ?3 "
+            "WHERE project = ?1;",
+            CBM_NOT_FOUND, &runtime_head_update, NULL) != SQLITE_OK ||
+        bind_text(runtime_head_update, ST_COL_1, name) != SQLITE_OK ||
+        bind_text(runtime_head_update, ST_COL_2, static_generation) != SQLITE_OK ||
+        bind_text(runtime_head_update, ST_COL_3, ts) != SQLITE_OK ||
+        sqlite3_step(runtime_head_update) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "update runtime static generation");
+        sqlite3_finalize(runtime_head_update);
+        return CBM_STORE_ERR;
+    }
+    sqlite3_finalize(runtime_head_update);
     return CBM_STORE_OK;
 }
 
-int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
-                                    const char *batch_id, const char *payload_hash,
-                                    const cbm_runtime_trace_edge_t *edges, int count,
-                                    bool *idempotent, int64_t *observations_out) {
+int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project, const char *batch_id,
+                                    const char *payload_hash, const cbm_runtime_trace_edge_t *edges,
+                                    int count, bool *idempotent, int64_t *observations_out) {
     if (idempotent) {
         *idempotent = false;
     }
     if (observations_out) {
         *observations_out = 0;
     }
-    if (!s || !s->db || !project || !project[0] || !batch_id || !batch_id[0] ||
-        !payload_hash || !payload_hash[0] || count < 0 || (count > 0 && !edges)) {
+    if (!s || !s->db || !project || !project[0] || !batch_id || !batch_id[0] || !payload_hash ||
+        !payload_hash[0] || count < 0 || (count > 0 && !edges)) {
         if (s) {
             store_set_error(s, "invalid runtime trace batch");
         }
@@ -2321,12 +3794,16 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
         observations += edge->observations;
     }
 
+    char runtime_generation[CBM_SHA256_HEX_LEN + 1];
+    runtime_make_generation(project, batch_id, payload_hash, runtime_generation);
+
     if (cbm_store_begin(s) != CBM_STORE_OK) {
         return CBM_STORE_ERR;
     }
 
     sqlite3_stmt *batch_lookup = NULL;
     sqlite3_stmt *batch_insert = NULL;
+    sqlite3_stmt *batch_edge_insert = NULL;
     sqlite3_stmt *edge_lookup = NULL;
     sqlite3_stmt *edge_upsert = NULL;
     int result = CBM_STORE_ERR;
@@ -2363,6 +3840,15 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
         goto rollback;
     }
 
+    int64_t existing_batches = 0;
+    if (runtime_count_project_rows(s, "runtime_trace_batches", project, &existing_batches) !=
+            CBM_STORE_OK ||
+        !runtime_quota_allows(existing_batches, 1, s->runtime_quota.max_legacy_batches)) {
+        store_set_error(s, "runtime legacy batch quota exceeded");
+        result = CBM_STORE_QUOTA_EXCEEDED;
+        goto rollback;
+    }
+
     if (sqlite3_prepare_v2(s->db,
                            "INSERT INTO runtime_trace_batches "
                            "(project, batch_id, payload_hash, trace_count, accepted_at) "
@@ -2390,12 +3876,12 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
          * immediately before every upsert. The lookup and upsert are kept in
          * the same transaction, so duplicate edges within one batch see the
          * aggregate produced by earlier rows. */
-        if (sqlite3_prepare_v2(
-                s->db,
-                "SELECT call_count, error_count, duration_ns_total, observations "
-                "FROM runtime_trace_edges "
-                "WHERE project = ?1 AND caller = ?2 AND callee = ?3;",
-                CBM_NOT_FOUND, &edge_lookup, NULL) != SQLITE_OK) {
+        if (sqlite3_prepare_v2(s->db,
+                               "SELECT call_count, error_count, duration_ns_total, observations, "
+                               "duration_histogram "
+                               "FROM runtime_trace_edges "
+                               "WHERE project = ?1 AND caller = ?2 AND callee = ?3;",
+                               CBM_NOT_FOUND, &edge_lookup, NULL) != SQLITE_OK) {
             store_set_error_sqlite(s, "runtime trace edge lookup prepare");
             goto rollback;
         }
@@ -2403,22 +3889,53 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
                 s->db,
                 "INSERT INTO runtime_trace_edges "
                 "(project, caller, callee, call_count, error_count, duration_ns_total, "
-                "duration_ns_max, observations, first_seen, last_seen) "
-                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) "
+                "duration_ns_max, duration_histogram, observations, first_seen, last_seen) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) "
                 "ON CONFLICT(project, caller, callee) DO UPDATE SET "
                 "call_count = call_count + excluded.call_count, "
                 "error_count = error_count + excluded.error_count, "
                 "duration_ns_total = duration_ns_total + excluded.duration_ns_total, "
                 "duration_ns_max = MAX(duration_ns_max, excluded.duration_ns_max), "
+                "duration_histogram = excluded.duration_histogram, "
                 "observations = observations + excluded.observations, "
                 "last_seen = excluded.last_seen;",
                 CBM_NOT_FOUND, &edge_upsert, NULL) != SQLITE_OK) {
             store_set_error_sqlite(s, "runtime trace edge upsert prepare");
             goto rollback;
         }
+        if (sqlite3_prepare_v2(
+                s->db,
+                "INSERT INTO runtime_trace_batch_edges "
+                "(project, batch_id, edge_index, caller, callee, call_count, error_count, "
+                "duration_ns_total, duration_ns_max, duration_histogram, observations) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);",
+                CBM_NOT_FOUND, &batch_edge_insert, NULL) != SQLITE_OK) {
+            store_set_error_sqlite(s, "runtime trace batch evidence prepare");
+            goto rollback;
+        }
 
         for (int i = 0; i < count; i++) {
             const cbm_runtime_trace_edge_t *edge = &edges[i];
+            uint64_t incoming_histogram[CBM_RUNTIME_DURATION_BUCKETS];
+            uint64_t merged_histogram[CBM_RUNTIME_DURATION_BUCKETS];
+            char incoming_histogram_text[CBM_SZ_512];
+            char merged_histogram_text[CBM_SZ_512];
+            if (!runtime_histogram_from_values(edge->call_count, edge->duration_ns_total,
+                                               edge->duration_ns_max, edge->observations,
+                                               incoming_histogram)) {
+                store_set_error(s, "runtime duration histogram construction failed");
+                goto rollback;
+            }
+            memset(merged_histogram, 0, sizeof(merged_histogram));
+            if (!runtime_histogram_add(merged_histogram, incoming_histogram)) {
+                store_set_error(s, "runtime duration histogram construction failed");
+                goto rollback;
+            }
+            if (!runtime_histogram_serialize(incoming_histogram, incoming_histogram_text,
+                                             sizeof(incoming_histogram_text))) {
+                store_set_error(s, "runtime duration histogram serialization failed");
+                goto rollback;
+            }
             sqlite3_reset(edge_lookup);
             sqlite3_clear_bindings(edge_lookup);
             if (bind_text(edge_lookup, ST_COL_1, project) != SQLITE_OK ||
@@ -2433,6 +3950,7 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
                 int64_t current_error_count = sqlite3_column_int64(edge_lookup, 1);
                 int64_t current_duration_total = sqlite3_column_int64(edge_lookup, 2);
                 int64_t current_observations = sqlite3_column_int64(edge_lookup, 3);
+                const char *current_histogram = (const char *)sqlite3_column_text(edge_lookup, 4);
                 if (current_call_count < 0 || current_error_count < 0 ||
                     current_duration_total < 0 || current_observations < 0 ||
                     INT64_MAX - current_call_count < edge->call_count ||
@@ -2442,8 +3960,43 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
                     store_set_error(s, "runtime trace aggregate counter overflow");
                     goto rollback;
                 }
+                uint64_t existing_histogram[CBM_RUNTIME_DURATION_BUCKETS];
+                if (!runtime_histogram_parse(current_histogram, existing_histogram)) {
+                    store_set_error(s, "runtime duration histogram is corrupt");
+                    goto rollback;
+                }
+                memcpy(merged_histogram, existing_histogram, sizeof(merged_histogram));
+                if (!runtime_histogram_add(merged_histogram, incoming_histogram)) {
+                    store_set_error(s, "runtime duration histogram overflow");
+                    goto rollback;
+                }
             } else if (edge_rc != SQLITE_DONE) {
                 store_set_error_sqlite(s, "runtime trace edge lookup");
+                goto rollback;
+            }
+            if (!runtime_histogram_serialize(merged_histogram, merged_histogram_text,
+                                             sizeof(merged_histogram_text))) {
+                store_set_error(s, "runtime duration histogram serialization failed");
+                goto rollback;
+            }
+
+            sqlite3_reset(batch_edge_insert);
+            sqlite3_clear_bindings(batch_edge_insert);
+            if (bind_text(batch_edge_insert, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(batch_edge_insert, ST_COL_2, batch_id) != SQLITE_OK ||
+                sqlite3_bind_int(batch_edge_insert, ST_COL_3, i) != SQLITE_OK ||
+                bind_text(batch_edge_insert, ST_COL_4, edge->caller) != SQLITE_OK ||
+                bind_text(batch_edge_insert, ST_COL_5, edge->callee) != SQLITE_OK ||
+                sqlite3_bind_int64(batch_edge_insert, ST_COL_6, edge->call_count) != SQLITE_OK ||
+                sqlite3_bind_int64(batch_edge_insert, ST_COL_7, edge->error_count) != SQLITE_OK ||
+                sqlite3_bind_int64(batch_edge_insert, ST_COL_8, edge->duration_ns_total) !=
+                    SQLITE_OK ||
+                sqlite3_bind_int64(batch_edge_insert, ST_COL_9, edge->duration_ns_max) !=
+                    SQLITE_OK ||
+                bind_text(batch_edge_insert, ST_COL_10, incoming_histogram_text) != SQLITE_OK ||
+                sqlite3_bind_int64(batch_edge_insert, ST_COL_11, edge->observations) != SQLITE_OK ||
+                sqlite3_step(batch_edge_insert) != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime trace batch evidence insert");
                 goto rollback;
             }
 
@@ -2456,14 +4009,26 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
                 sqlite3_bind_int64(edge_upsert, ST_COL_5, edge->error_count) != SQLITE_OK ||
                 sqlite3_bind_int64(edge_upsert, ST_COL_6, edge->duration_ns_total) != SQLITE_OK ||
                 sqlite3_bind_int64(edge_upsert, ST_COL_7, edge->duration_ns_max) != SQLITE_OK ||
-                sqlite3_bind_int64(edge_upsert, ST_COL_8, edge->observations) != SQLITE_OK ||
-                bind_text(edge_upsert, ST_COL_9, ts) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_8, merged_histogram_text) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_9, edge->observations) != SQLITE_OK ||
                 bind_text(edge_upsert, ST_COL_10, ts) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_11, ts) != SQLITE_OK ||
                 sqlite3_step(edge_upsert) != SQLITE_DONE) {
                 store_set_error_sqlite(s, "runtime trace edge upsert");
                 goto rollback;
             }
         }
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (runtime_upsert_endpoint(s, project, edges[i].caller, ts) != CBM_STORE_OK ||
+            runtime_upsert_endpoint(s, project, edges[i].callee, ts) != CBM_STORE_OK) {
+            goto rollback;
+        }
+    }
+    if (runtime_finalize_publication(s, project, batch_id, payload_hash, "compact-v1",
+                                     runtime_generation, ts) != CBM_STORE_OK) {
+        goto rollback;
     }
 
     if (cbm_store_commit(s) != CBM_STORE_OK) {
@@ -2481,6 +4046,7 @@ rollback:
 cleanup:
     sqlite3_finalize(batch_lookup);
     sqlite3_finalize(batch_insert);
+    sqlite3_finalize(batch_edge_insert);
     sqlite3_finalize(edge_lookup);
     sqlite3_finalize(edge_upsert);
     return result;
@@ -2488,9 +4054,8 @@ cleanup:
 
 int cbm_store_ingest_runtime_trace_contribution(
     cbm_store_t *s, const char *project, const char *producer_id, const char *producer_epoch,
-    const char *contribution_id, const char *payload_hash,
-    const cbm_runtime_trace_span_t *spans, int count, bool *idempotent,
-    int64_t *observations_out, int *new_spans_out) {
+    const char *contribution_id, const char *payload_hash, const cbm_runtime_trace_span_t *spans,
+    int count, bool *idempotent, int64_t *observations_out, int *new_spans_out) {
     if (idempotent) {
         *idempotent = false;
     }
@@ -2512,11 +4077,11 @@ int cbm_store_ingest_runtime_trace_contribution(
     for (int i = 0; i < count; i++) {
         const cbm_runtime_trace_span_t *span = &spans[i];
         if (!span->producer_id || !span->producer_id[0] || !span->producer_epoch ||
-            !span->producer_epoch[0] || !span->trace_id || !span->trace_id[0] ||
-            !span->span_id || !span->span_id[0] || !span->normalized_hash ||
-            !span->normalized_hash[0] || !span->caller || !span->caller[0] || !span->callee ||
-            !span->callee[0] || span->call_count < 0 || span->error_count < 0 ||
-            span->duration_ns_total < 0 || span->duration_ns_max < 0) {
+            !span->producer_epoch[0] || !span->trace_id || !span->trace_id[0] || !span->span_id ||
+            !span->span_id[0] || !span->normalized_hash || !span->normalized_hash[0] ||
+            !span->caller || !span->caller[0] || !span->callee || !span->callee[0] ||
+            span->call_count < 0 || span->error_count < 0 || span->duration_ns_total < 0 ||
+            span->duration_ns_max < 0) {
             store_set_error(s, "invalid canonical runtime span");
             return CBM_STORE_ERR;
         }
@@ -2526,6 +4091,9 @@ int cbm_store_ingest_runtime_trace_contribution(
             return CBM_STORE_ERR;
         }
     }
+
+    char runtime_generation[CBM_SHA256_HEX_LEN + 1];
+    runtime_make_generation(project, contribution_id, payload_hash, runtime_generation);
 
     if (cbm_store_begin(s) != CBM_STORE_OK) {
         return CBM_STORE_ERR;
@@ -2537,13 +4105,13 @@ int cbm_store_ingest_runtime_trace_contribution(
     sqlite3_stmt *span_insert = NULL;
     sqlite3_stmt *edge_lookup = NULL;
     sqlite3_stmt *edge_upsert = NULL;
+    sqlite3_stmt *map_insert = NULL;
     int result = CBM_STORE_ERR;
 
-    if (sqlite3_prepare_v2(
-            s->db,
-            "SELECT producer_epoch, payload_hash FROM runtime_trace_contributions "
-            "WHERE project = ?1 AND producer_id = ?2 AND contribution_id = ?3;",
-            CBM_NOT_FOUND, &contribution_lookup, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(s->db,
+                           "SELECT producer_epoch, payload_hash FROM runtime_trace_contributions "
+                           "WHERE project = ?1 AND producer_id = ?2 AND contribution_id = ?3;",
+                           CBM_NOT_FOUND, &contribution_lookup, NULL) != SQLITE_OK) {
         store_set_error_sqlite(s, "runtime contribution lookup prepare");
         goto rollback;
     }
@@ -2574,12 +4142,21 @@ int cbm_store_ingest_runtime_trace_contribution(
         goto rollback;
     }
 
-    if (sqlite3_prepare_v2(
-            s->db,
-            "INSERT INTO runtime_trace_contributions "
-            "(project, producer_id, producer_epoch, contribution_id, payload_hash, "
-            "trace_count, accepted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
-            CBM_NOT_FOUND, &contribution_insert, NULL) != SQLITE_OK) {
+    int64_t existing_contributions = 0;
+    if (runtime_count_project_rows(s, "runtime_trace_contributions", project,
+                                   &existing_contributions) != CBM_STORE_OK ||
+        !runtime_quota_allows(existing_contributions, 1,
+                              s->runtime_quota.max_canonical_contributions)) {
+        store_set_error(s, "runtime canonical contribution quota exceeded");
+        result = CBM_STORE_QUOTA_EXCEEDED;
+        goto rollback;
+    }
+
+    if (sqlite3_prepare_v2(s->db,
+                           "INSERT INTO runtime_trace_contributions "
+                           "(project, producer_id, producer_epoch, contribution_id, payload_hash, "
+                           "trace_count, accepted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+                           CBM_NOT_FOUND, &contribution_insert, NULL) != SQLITE_OK) {
         store_set_error_sqlite(s, "runtime contribution insert prepare");
         goto rollback;
     }
@@ -2598,35 +4175,37 @@ int cbm_store_ingest_runtime_trace_contribution(
     }
 
     if (count > 0) {
-        if (sqlite3_prepare_v2(
-                s->db,
-                "SELECT normalized_hash FROM runtime_trace_spans WHERE project = ?1 "
-                "AND producer_id = ?2 AND producer_epoch = ?3 AND trace_id = ?4 "
-                "AND span_id = ?5;",
-                CBM_NOT_FOUND, &span_lookup, NULL) != SQLITE_OK ||
+        if (sqlite3_prepare_v2(s->db,
+                               "SELECT normalized_hash FROM runtime_trace_spans WHERE project = ?1 "
+                               "AND producer_id = ?2 AND producer_epoch = ?3 AND trace_id = ?4 "
+                               "AND span_id = ?5;",
+                               CBM_NOT_FOUND, &span_lookup, NULL) != SQLITE_OK ||
             sqlite3_prepare_v2(
                 s->db,
                 "INSERT INTO runtime_trace_spans "
                 "(project, producer_id, producer_epoch, trace_id, span_id, normalized_hash, "
                 "caller, callee, call_count, error_count, duration_ns_total, duration_ns_max, "
-                "accepted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);",
+                "duration_histogram, accepted_at) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);",
                 CBM_NOT_FOUND, &span_insert, NULL) != SQLITE_OK ||
             sqlite3_prepare_v2(
                 s->db,
-                "SELECT call_count, error_count, duration_ns_total, observations "
+                "SELECT call_count, error_count, duration_ns_total, observations, "
+                "duration_histogram "
                 "FROM runtime_trace_edges WHERE project = ?1 AND caller = ?2 AND callee = ?3;",
                 CBM_NOT_FOUND, &edge_lookup, NULL) != SQLITE_OK ||
             sqlite3_prepare_v2(
                 s->db,
                 "INSERT INTO runtime_trace_edges "
                 "(project, caller, callee, call_count, error_count, duration_ns_total, "
-                "duration_ns_max, observations, first_seen, last_seen) "
-                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) "
+                "duration_ns_max, duration_histogram, observations, first_seen, last_seen) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) "
                 "ON CONFLICT(project, caller, callee) DO UPDATE SET "
                 "call_count = call_count + excluded.call_count, "
                 "error_count = error_count + excluded.error_count, "
                 "duration_ns_total = duration_ns_total + excluded.duration_ns_total, "
                 "duration_ns_max = MAX(duration_ns_max, excluded.duration_ns_max), "
+                "duration_histogram = excluded.duration_histogram, "
                 "observations = observations + excluded.observations, "
                 "last_seen = excluded.last_seen;",
                 CBM_NOT_FOUND, &edge_upsert, NULL) != SQLITE_OK) {
@@ -2634,6 +4213,11 @@ int cbm_store_ingest_runtime_trace_contribution(
             goto rollback;
         }
 
+        int64_t existing_spans = 0;
+        if (runtime_count_project_rows(s, "runtime_trace_spans", project, &existing_spans) !=
+            CBM_STORE_OK) {
+            goto rollback;
+        }
         int64_t new_observations = 0;
         int new_spans = 0;
         for (int i = 0; i < count; i++) {
@@ -2662,6 +4246,12 @@ int cbm_store_ingest_runtime_trace_contribution(
                 store_set_error_sqlite(s, "runtime span lookup");
                 goto rollback;
             }
+            if (!runtime_quota_allows(existing_spans, (int64_t)new_spans + 1,
+                                      s->runtime_quota.max_canonical_spans)) {
+                store_set_error(s, "runtime canonical span quota exceeded");
+                result = CBM_STORE_QUOTA_EXCEEDED;
+                goto rollback;
+            }
 
             sqlite3_reset(edge_lookup);
             sqlite3_clear_bindings(edge_lookup);
@@ -2672,11 +4262,31 @@ int cbm_store_ingest_runtime_trace_contribution(
                 goto rollback;
             }
             int edge_rc = sqlite3_step(edge_lookup);
+            uint64_t incoming_histogram[CBM_RUNTIME_DURATION_BUCKETS];
+            uint64_t merged_histogram[CBM_RUNTIME_DURATION_BUCKETS];
+            char incoming_histogram_text[CBM_SZ_512];
+            char merged_histogram_text[CBM_SZ_512];
+            if (!runtime_histogram_from_values(span->call_count, span->duration_ns_total,
+                                               span->duration_ns_max, 1, incoming_histogram)) {
+                store_set_error(s, "runtime duration histogram construction failed");
+                goto rollback;
+            }
+            memset(merged_histogram, 0, sizeof(merged_histogram));
+            if (!runtime_histogram_add(merged_histogram, incoming_histogram)) {
+                store_set_error(s, "runtime duration histogram construction failed");
+                goto rollback;
+            }
+            if (!runtime_histogram_serialize(incoming_histogram, incoming_histogram_text,
+                                             sizeof(incoming_histogram_text))) {
+                store_set_error(s, "runtime duration histogram serialization failed");
+                goto rollback;
+            }
             if (edge_rc == SQLITE_ROW) {
                 int64_t current_call_count = sqlite3_column_int64(edge_lookup, 0);
                 int64_t current_error_count = sqlite3_column_int64(edge_lookup, 1);
                 int64_t current_duration_total = sqlite3_column_int64(edge_lookup, 2);
                 int64_t current_observations = sqlite3_column_int64(edge_lookup, 3);
+                const char *current_histogram = (const char *)sqlite3_column_text(edge_lookup, 4);
                 if (current_call_count < 0 || current_error_count < 0 ||
                     current_duration_total < 0 || current_observations < 0 ||
                     INT64_MAX - current_call_count < span->call_count ||
@@ -2686,8 +4296,23 @@ int cbm_store_ingest_runtime_trace_contribution(
                     store_set_error(s, "runtime aggregate counter overflow");
                     goto rollback;
                 }
+                uint64_t existing_histogram[CBM_RUNTIME_DURATION_BUCKETS];
+                if (!runtime_histogram_parse(current_histogram, existing_histogram)) {
+                    store_set_error(s, "runtime duration histogram is corrupt");
+                    goto rollback;
+                }
+                memcpy(merged_histogram, existing_histogram, sizeof(merged_histogram));
+                if (!runtime_histogram_add(merged_histogram, incoming_histogram)) {
+                    store_set_error(s, "runtime duration histogram overflow");
+                    goto rollback;
+                }
             } else if (edge_rc != SQLITE_DONE) {
                 store_set_error_sqlite(s, "runtime aggregate lookup");
+                goto rollback;
+            }
+            if (!runtime_histogram_serialize(merged_histogram, merged_histogram_text,
+                                             sizeof(merged_histogram_text))) {
+                store_set_error(s, "runtime duration histogram serialization failed");
                 goto rollback;
             }
 
@@ -2705,7 +4330,8 @@ int cbm_store_ingest_runtime_trace_contribution(
                 sqlite3_bind_int64(span_insert, ST_COL_10, span->error_count) != SQLITE_OK ||
                 sqlite3_bind_int64(span_insert, ST_COL_11, span->duration_ns_total) != SQLITE_OK ||
                 sqlite3_bind_int64(span_insert, ST_COL_12, span->duration_ns_max) != SQLITE_OK ||
-                bind_text(span_insert, ST_COL_13, ts) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_13, incoming_histogram_text) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_14, ts) != SQLITE_OK ||
                 sqlite3_step(span_insert) != SQLITE_DONE) {
                 store_set_error_sqlite(s, "runtime span insert");
                 goto rollback;
@@ -2720,9 +4346,10 @@ int cbm_store_ingest_runtime_trace_contribution(
                 sqlite3_bind_int64(edge_upsert, ST_COL_5, span->error_count) != SQLITE_OK ||
                 sqlite3_bind_int64(edge_upsert, ST_COL_6, span->duration_ns_total) != SQLITE_OK ||
                 sqlite3_bind_int64(edge_upsert, ST_COL_7, span->duration_ns_max) != SQLITE_OK ||
-                sqlite3_bind_int64(edge_upsert, ST_COL_8, 1) != SQLITE_OK ||
-                bind_text(edge_upsert, ST_COL_9, ts) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_8, merged_histogram_text) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_9, 1) != SQLITE_OK ||
                 bind_text(edge_upsert, ST_COL_10, ts) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_11, ts) != SQLITE_OK ||
                 sqlite3_step(edge_upsert) != SQLITE_DONE) {
                 store_set_error_sqlite(s, "runtime aggregate upsert");
                 goto rollback;
@@ -2738,6 +4365,38 @@ int cbm_store_ingest_runtime_trace_contribution(
         }
     }
 
+    if (runtime_finalize_publication(s, project, contribution_id, payload_hash, "canonical-v2",
+                                     runtime_generation, ts) != CBM_STORE_OK) {
+        goto rollback;
+    }
+    if (sqlite3_prepare_v2(
+            s->db,
+            "INSERT OR IGNORE INTO runtime_observation_contributions "
+            "(project, runtime_generation, producer_id, producer_epoch, trace_id, span_id, "
+            "contribution_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+            CBM_NOT_FOUND, &map_insert, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime observation map prepare");
+        goto rollback;
+    }
+    for (int i = 0; i < count; i++) {
+        if (runtime_upsert_endpoint(s, project, spans[i].caller, ts) != CBM_STORE_OK ||
+            runtime_upsert_endpoint(s, project, spans[i].callee, ts) != CBM_STORE_OK) {
+            goto rollback;
+        }
+        sqlite3_reset(map_insert);
+        sqlite3_clear_bindings(map_insert);
+        if (bind_text(map_insert, ST_COL_1, project) != SQLITE_OK ||
+            bind_text(map_insert, ST_COL_2, runtime_generation) != SQLITE_OK ||
+            bind_text(map_insert, ST_COL_3, spans[i].producer_id) != SQLITE_OK ||
+            bind_text(map_insert, ST_COL_4, spans[i].producer_epoch) != SQLITE_OK ||
+            bind_text(map_insert, ST_COL_5, spans[i].trace_id) != SQLITE_OK ||
+            bind_text(map_insert, ST_COL_6, spans[i].span_id) != SQLITE_OK ||
+            bind_text(map_insert, ST_COL_7, contribution_id) != SQLITE_OK ||
+            sqlite3_step(map_insert) != SQLITE_DONE) {
+            store_set_error_sqlite(s, "runtime observation map insert");
+            goto rollback;
+        }
+    }
     if (cbm_store_commit(s) != CBM_STORE_OK) {
         (void)cbm_store_rollback(s);
         goto cleanup;
@@ -2754,7 +4413,181 @@ cleanup:
     sqlite3_finalize(span_insert);
     sqlite3_finalize(edge_lookup);
     sqlite3_finalize(edge_upsert);
+    sqlite3_finalize(map_insert);
     return result;
+}
+
+int cbm_store_get_runtime_publication_head(cbm_store_t *s, const char *project,
+                                           cbm_runtime_publication_t *out) {
+    if (!s || !s->db || !project || !project[0] || !out) {
+        if (s) {
+            store_set_error(s, "invalid runtime publication head query");
+        }
+        return CBM_STORE_ERR;
+    }
+    memset(out, 0, sizeof(*out));
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+                           "SELECT static_generation, runtime_generation, semantic_version "
+                           "FROM runtime_publication_heads WHERE project = ?1;",
+                           CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime publication head prepare");
+        return CBM_STORE_ERR;
+    }
+    if (bind_text(stmt, ST_COL_1, project) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        store_set_error(s, "runtime publication head bind failed");
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return CBM_STORE_NOT_FOUND;
+    }
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        store_set_error_sqlite(s, "runtime publication head query");
+        return CBM_STORE_ERR;
+    }
+    const char *static_generation = (const char *)sqlite3_column_text(stmt, 0);
+    const char *runtime_generation = (const char *)sqlite3_column_text(stmt, 1);
+    const char *semantic_version = (const char *)sqlite3_column_text(stmt, 2);
+    int static_written = snprintf(out->static_generation, sizeof(out->static_generation), "%s",
+                                  static_generation ? static_generation : "");
+    int runtime_written = snprintf(out->runtime_generation, sizeof(out->runtime_generation), "%s",
+                                   runtime_generation ? runtime_generation : "");
+    int semantic_written = snprintf(out->semantic_version, sizeof(out->semantic_version), "%s",
+                                    semantic_version ? semantic_version : "");
+    sqlite3_finalize(stmt);
+    if (static_written < 0 || runtime_written < 0 || semantic_written < 0 ||
+        (size_t)static_written >= sizeof(out->static_generation) ||
+        (size_t)runtime_written >= sizeof(out->runtime_generation) ||
+        (size_t)semantic_written >= sizeof(out->semantic_version)) {
+        store_set_error(s, "runtime publication head value is too large");
+        return CBM_STORE_ERR;
+    }
+    out->available = out->runtime_generation[0] != '\0';
+    return out->available ? CBM_STORE_OK : CBM_STORE_NOT_FOUND;
+}
+
+int cbm_store_get_runtime_publication(cbm_store_t *s, const char *project,
+                                      const char *runtime_generation,
+                                      cbm_runtime_publication_t *out) {
+    if (!s || !s->db || !project || !project[0] || !runtime_generation || !runtime_generation[0] ||
+        !out) {
+        if (s) {
+            store_set_error(s, "invalid runtime publication query");
+        }
+        return CBM_STORE_ERR;
+    }
+    memset(out, 0, sizeof(*out));
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "SELECT static_generation, runtime_generation, semantic_version "
+            "FROM runtime_publications WHERE project = ?1 AND runtime_generation = ?2;",
+            CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime publication prepare");
+        return CBM_STORE_ERR;
+    }
+    if (bind_text(stmt, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(stmt, ST_COL_2, runtime_generation) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        store_set_error(s, "runtime publication bind failed");
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return CBM_STORE_NOT_FOUND;
+    }
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        store_set_error_sqlite(s, "runtime publication query");
+        return CBM_STORE_ERR;
+    }
+    const char *static_generation = (const char *)sqlite3_column_text(stmt, 0);
+    const char *stored_generation = (const char *)sqlite3_column_text(stmt, 1);
+    const char *semantic_version = (const char *)sqlite3_column_text(stmt, 2);
+    int static_written = snprintf(out->static_generation, sizeof(out->static_generation), "%s",
+                                  static_generation ? static_generation : "");
+    int runtime_written = snprintf(out->runtime_generation, sizeof(out->runtime_generation), "%s",
+                                   stored_generation ? stored_generation : "");
+    int semantic_written = snprintf(out->semantic_version, sizeof(out->semantic_version), "%s",
+                                    semantic_version ? semantic_version : "");
+    sqlite3_finalize(stmt);
+    if (static_written < 0 || runtime_written < 0 || semantic_written < 0 ||
+        (size_t)static_written >= sizeof(out->static_generation) ||
+        (size_t)runtime_written >= sizeof(out->runtime_generation) ||
+        (size_t)semantic_written >= sizeof(out->semantic_version)) {
+        store_set_error(s, "runtime publication value is too large");
+        return CBM_STORE_ERR;
+    }
+    out->available = true;
+    return CBM_STORE_OK;
+}
+
+int cbm_store_runtime_endpoint_tag(cbm_store_t *s, const char *project, const char *endpoint,
+                                   char *out, size_t out_size) {
+    return runtime_endpoint_tag_for_store(s, project, endpoint, out, out_size);
+}
+
+int cbm_store_runtime_publication_endpoint_tag(cbm_store_t *s, const char *project,
+                                               const char *static_generation,
+                                               const char *runtime_generation, const char *endpoint,
+                                               char *out, size_t out_size) {
+    if (!s || !s->db || !project || !project[0] || !runtime_generation || !runtime_generation[0] ||
+        !static_generation || !static_generation[0] || !endpoint || !endpoint[0] || !out ||
+        out_size < 8U) {
+        if (s) {
+            store_set_error(s, "invalid pinned runtime endpoint classification");
+        }
+        return CBM_STORE_ERR;
+    }
+    char endpoint_key[CBM_SHA256_HEX_LEN + 1];
+    if (runtime_endpoint_key(project, endpoint, endpoint_key) != CBM_STORE_OK) {
+        store_set_error(s, "runtime endpoint key construction failed");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            s->db,
+            "SELECT resolution_status FROM runtime_resolutions "
+            "WHERE project = ?1 AND runtime_generation = ?2 AND static_generation = ?3 "
+            "AND endpoint_key = ?4;",
+            CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "pinned runtime resolution prepare");
+        return CBM_STORE_ERR;
+    }
+    if (bind_text(stmt, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(stmt, ST_COL_2, runtime_generation) != SQLITE_OK ||
+        bind_text(stmt, ST_COL_3, static_generation) != SQLITE_OK ||
+        bind_text(stmt, ST_COL_4, endpoint_key) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        store_set_error(s, "pinned runtime resolution bind failed");
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return CBM_STORE_NOT_FOUND;
+    }
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        store_set_error_sqlite(s, "pinned runtime resolution query");
+        return CBM_STORE_ERR;
+    }
+    const char *status = (const char *)sqlite3_column_text(stmt, 0);
+    const char *tag = status && strcmp(status, "resolved") == 0  ? "symbol"
+                      : status && strcmp(status, "runtime") == 0 ? "runtime"
+                                                                 : "unknown";
+    int written = snprintf(out, out_size, "%s", tag);
+    sqlite3_finalize(stmt);
+    if (written < 0 || (size_t)written >= out_size) {
+        store_set_error(s, "pinned runtime endpoint classification buffer is too small");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
 }
 
 int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char *caller,
@@ -2787,9 +4620,9 @@ int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char
     }
 
     char count_sql[ST_SQL_BUF];
-    int count_written = snprintf(count_sql, sizeof(count_sql),
-                                 "SELECT COUNT(*) FROM runtime_trace_edges WHERE project = ?1%s;",
-                                 filter);
+    int count_written =
+        snprintf(count_sql, sizeof(count_sql),
+                 "SELECT COUNT(*) FROM runtime_trace_edges WHERE project = ?1%s;", filter);
     if (count_written < 0 || (size_t)count_written >= sizeof(count_sql)) {
         store_set_error(s, "runtime trace count query is too large");
         return CBM_STORE_ERR;
@@ -2831,7 +4664,7 @@ int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char
     int rows_written = snprintf(
         rows_sql, sizeof(rows_sql),
         "SELECT caller, callee, call_count, error_count, duration_ns_total, duration_ns_max, "
-        "observations FROM runtime_trace_edges WHERE project = ?1%s "
+        "observations, duration_histogram FROM runtime_trace_edges WHERE project = ?1%s "
         "ORDER BY call_count DESC, caller ASC, callee ASC LIMIT ?%d OFFSET ?%d;",
         filter, bind_index, bind_index + 1);
     if (rows_written < 0 || (size_t)rows_written >= sizeof(rows_sql)) {
@@ -2858,8 +4691,7 @@ int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char
         return CBM_STORE_ERR;
     }
 
-    cbm_runtime_trace_edge_t *rows =
-        calloc((size_t)limit, sizeof(*rows));
+    cbm_runtime_trace_edge_t *rows = calloc((size_t)limit, sizeof(*rows));
     if (!rows) {
         sqlite3_finalize(rows_stmt);
         store_set_error(s, "out of memory while reading runtime traces");
@@ -2883,12 +4715,169 @@ int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char
         row->duration_ns_total = sqlite3_column_int64(rows_stmt, 4);
         row->duration_ns_max = sqlite3_column_int64(rows_stmt, 5);
         row->observations = sqlite3_column_int64(rows_stmt, 6);
+        if (runtime_apply_duration_stats(s, row, (const char *)sqlite3_column_text(rows_stmt, 7)) !=
+            CBM_STORE_OK) {
+            sqlite3_finalize(rows_stmt);
+            cbm_store_free_runtime_traces(rows, row_count + 1);
+            return CBM_STORE_ERR;
+        }
         row_count++;
     }
     sqlite3_finalize(rows_stmt);
     if (row_rc != SQLITE_DONE) {
         cbm_store_free_runtime_traces(rows, row_count);
         store_set_error_sqlite(s, "runtime trace row query");
+        return CBM_STORE_ERR;
+    }
+    *out = rows;
+    *count = row_count;
+    return CBM_STORE_OK;
+}
+
+int cbm_store_get_runtime_publication_edges(cbm_store_t *s, const char *project,
+                                            const char *runtime_generation, const char *caller,
+                                            const char *callee, int limit, int offset,
+                                            cbm_runtime_trace_edge_t **out, int *count,
+                                            int *total) {
+    if (out) {
+        *out = NULL;
+    }
+    if (count) {
+        *count = 0;
+    }
+    if (total) {
+        *total = 0;
+    }
+    if (!s || !s->db || !project || !project[0] || !runtime_generation || !runtime_generation[0] ||
+        limit < 1 || limit > 10000 || offset < 0 || !out || !count) {
+        if (s) {
+            store_set_error(s, "invalid runtime publication query");
+        }
+        return CBM_STORE_ERR;
+    }
+
+    int next_filter = ST_COL_3;
+    char filter[128] = "";
+    if (caller && caller[0]) {
+        int written = snprintf(filter, sizeof(filter), " AND caller = ?%d", next_filter++);
+        if (written < 0 || (size_t)written >= sizeof(filter)) {
+            store_set_error(s, "runtime publication filter is too large");
+            return CBM_STORE_ERR;
+        }
+    }
+    if (callee && callee[0]) {
+        size_t used = strlen(filter);
+        int written =
+            snprintf(filter + used, sizeof(filter) - used, " AND callee = ?%d", next_filter++);
+        if (written < 0 || (size_t)written >= sizeof(filter) - used) {
+            store_set_error(s, "runtime publication filter is too large");
+            return CBM_STORE_ERR;
+        }
+    }
+
+    char count_sql[ST_SQL_BUF];
+    int written = snprintf(count_sql, sizeof(count_sql),
+                           "SELECT COUNT(*) FROM runtime_publication_edges "
+                           "WHERE project = ?1 AND runtime_generation = ?2%s;",
+                           filter);
+    if (written < 0 || (size_t)written >= sizeof(count_sql)) {
+        store_set_error(s, "runtime publication count query is too large");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *count_stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, count_sql, CBM_NOT_FOUND, &count_stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime publication count prepare");
+        return CBM_STORE_ERR;
+    }
+    int bind_index = ST_COL_1;
+    if (bind_text(count_stmt, bind_index++, project) != SQLITE_OK ||
+        bind_text(count_stmt, bind_index++, runtime_generation) != SQLITE_OK ||
+        ((caller && caller[0]) && bind_text(count_stmt, bind_index++, caller) != SQLITE_OK) ||
+        ((callee && callee[0]) && bind_text(count_stmt, bind_index++, callee) != SQLITE_OK)) {
+        sqlite3_finalize(count_stmt);
+        store_set_error(s, "runtime publication count bind failed");
+        return CBM_STORE_ERR;
+    }
+    int rc = sqlite3_step(count_stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(count_stmt);
+        store_set_error_sqlite(s, "runtime publication count query");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_int64 total_rows = sqlite3_column_int64(count_stmt, 0);
+    sqlite3_finalize(count_stmt);
+    if (total_rows < 0 || total_rows > INT_MAX) {
+        store_set_error(s, "runtime publication result count is out of range");
+        return CBM_STORE_ERR;
+    }
+    if (total) {
+        *total = (int)total_rows;
+    }
+
+    int limit_index = next_filter;
+    int offset_index = next_filter + 1;
+    char rows_sql[ST_SQL_BUF];
+    written = snprintf(
+        rows_sql, sizeof(rows_sql),
+        "SELECT caller, callee, call_count, error_count, duration_ns_total, duration_ns_max, "
+        "observations, duration_histogram FROM runtime_publication_edges WHERE project = ?1 "
+        "AND runtime_generation = ?2%s ORDER BY call_count DESC, caller ASC, callee ASC "
+        "LIMIT ?%d OFFSET ?%d;",
+        filter, limit_index, offset_index);
+    if (written < 0 || (size_t)written >= sizeof(rows_sql)) {
+        store_set_error(s, "runtime publication row query is too large");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *rows_stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, rows_sql, CBM_NOT_FOUND, &rows_stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime publication row prepare");
+        return CBM_STORE_ERR;
+    }
+    bind_index = ST_COL_1;
+    if (bind_text(rows_stmt, bind_index++, project) != SQLITE_OK ||
+        bind_text(rows_stmt, bind_index++, runtime_generation) != SQLITE_OK ||
+        ((caller && caller[0]) && bind_text(rows_stmt, bind_index++, caller) != SQLITE_OK) ||
+        ((callee && callee[0]) && bind_text(rows_stmt, bind_index++, callee) != SQLITE_OK) ||
+        sqlite3_bind_int(rows_stmt, limit_index, limit) != SQLITE_OK ||
+        sqlite3_bind_int(rows_stmt, offset_index, offset) != SQLITE_OK) {
+        sqlite3_finalize(rows_stmt);
+        store_set_error(s, "runtime publication row bind failed");
+        return CBM_STORE_ERR;
+    }
+
+    cbm_runtime_trace_edge_t *rows = calloc((size_t)limit, sizeof(*rows));
+    if (!rows) {
+        sqlite3_finalize(rows_stmt);
+        store_set_error(s, "out of memory while reading runtime publication");
+        return CBM_STORE_ERR;
+    }
+    int row_count = 0;
+    while ((rc = sqlite3_step(rows_stmt)) == SQLITE_ROW) {
+        cbm_runtime_trace_edge_t *row = &rows[row_count++];
+        row->caller = heap_strdup((const char *)sqlite3_column_text(rows_stmt, 0));
+        row->callee = heap_strdup((const char *)sqlite3_column_text(rows_stmt, 1));
+        if (!row->caller || !row->callee) {
+            sqlite3_finalize(rows_stmt);
+            cbm_store_free_runtime_traces(rows, row_count);
+            store_set_error(s, "out of memory while copying runtime publication");
+            return CBM_STORE_ERR;
+        }
+        row->call_count = sqlite3_column_int64(rows_stmt, 2);
+        row->error_count = sqlite3_column_int64(rows_stmt, 3);
+        row->duration_ns_total = sqlite3_column_int64(rows_stmt, 4);
+        row->duration_ns_max = sqlite3_column_int64(rows_stmt, 5);
+        row->observations = sqlite3_column_int64(rows_stmt, 6);
+        if (runtime_apply_duration_stats(s, row, (const char *)sqlite3_column_text(rows_stmt, 7)) !=
+            CBM_STORE_OK) {
+            sqlite3_finalize(rows_stmt);
+            cbm_store_free_runtime_traces(rows, row_count);
+            return CBM_STORE_ERR;
+        }
+    }
+    sqlite3_finalize(rows_stmt);
+    if (rc != SQLITE_DONE) {
+        cbm_store_free_runtime_traces(rows, row_count);
+        store_set_error_sqlite(s, "runtime publication row query");
         return CBM_STORE_ERR;
     }
     *out = rows;

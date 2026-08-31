@@ -71,8 +71,8 @@ const char *cbm_extract_path_from_url(const char *url, char *buf, size_t buf_sz)
 
     /* Copy path, stopping at query or fragment delimiters. */
     size_t j = 0;
-    for (size_t i = path_start; url[i] && url[i] != '?' && url[i] != '#' &&
-         j < buf_sz - SKIP_ONE; i++) {
+    for (size_t i = path_start; url[i] && url[i] != '?' && url[i] != '#' && j < buf_sz - SKIP_ONE;
+         i++) {
         buf[j++] = url[i];
     }
     buf[j] = '\0';
@@ -172,8 +172,8 @@ bool cbm_extract_http_info(const cbm_trace_span_t *span, const char *service_nam
         } else if (strcmp(key, "http.status_code") == 0) {
             out->status_code = val;
         } else if (strcmp(key, "url.full") == 0 && path_priority < TRACE_PATH_URL_FULL) {
-            const char *path = cbm_extract_path_from_url(val, out->path_storage,
-                                                         sizeof(out->path_storage));
+            const char *path =
+                cbm_extract_path_from_url(val, out->path_storage, sizeof(out->path_storage));
             if (path[0] != '\0') {
                 out->path = path;
                 path_priority = TRACE_PATH_URL_FULL;

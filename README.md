@@ -3,7 +3,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/LonelyTraderBay/memory-for-ai?style=flat&color=blue)](https://github.com/LonelyTraderBay/memory-for-ai/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/LonelyTraderBay/memory-for-ai/dry-run.yml?label=CI)](https://github.com/LonelyTraderBay/memory-for-ai/actions/workflows/dry-run.yml)
-[![Tests](https://img.shields.io/badge/tests-6768_passing-brightgreen)](https://github.com/LonelyTraderBay/memory-for-ai)
+[![Tests](https://img.shields.io/badge/tests-7613_passing-brightgreen)](https://github.com/LonelyTraderBay/memory-for-ai)
 [![Languages](https://img.shields.io/badge/languages-162-orange)](https://github.com/LonelyTraderBay/memory-for-ai)
 [![Hybrid LSP](https://img.shields.io/badge/Hybrid_LSP-10_languages-blue)](#hybrid-lsp)
 [![Agents](https://img.shields.io/badge/agent_surfaces-45-purple)](https://github.com/LonelyTraderBay/memory-for-ai)
@@ -420,7 +420,7 @@ scripts/build.sh                    # without the UI (development only)
 
 Every platform ships **one self-contained executable**: the graph UI and the agent integration templates are linked into the binary, so an extracted archive is immediately complete.
 
-Run the test suite (6,768 tests across 120 suites):
+Run the test suite (7,613 tests passed; 7 platform-conditional skips across 137 suites):
 
 ```bash
 scripts/test.sh                     # full: clean sanitizer build + all suites + guards
@@ -678,6 +678,14 @@ have stable lowercase hexadecimal `trace_id`/`span_id` values may opt into
 `source_batch_id`; the server deduplicates producer-scoped spans and rejects conflicting
 replays without modifying the static graph. See
 [`docs/RUNTIME_TRACE_MODEL.md`](docs/RUNTIME_TRACE_MODEL.md) for the version boundary.
+
+Runtime ingestion is bounded before persistence: requests are limited to 16 MiB and 10,000
+trace records, sensitive control/query/fragment/userinfo-bearing endpoint text is rejected,
+and per-project quotas prevent unbounded sidecar growth. `get_runtime_traces` includes exact
+durable `runtime_metrics` gauges and the store exposes an explicit transactional rebuild API
+for restoring a damaged live aggregate from its latest immutable publication snapshot.
+Daemon or remote hosts can install the runtime authorization callback; a standalone local
+stdio server treats its owning process as the trust boundary.
 
 `manage_adr(mode='set_sections')` writes one or more sections by name and splices them into the stored document, so text outside the named sections — including a preamble, code fences and section ordering — is preserved byte-for-byte. Any `## Heading` works, not just the conventional PURPOSE / STACK / ARCHITECTURE / PATTERNS / TRADEOFFS / PHILOSOPHY set; names match exactly, including case. Writing the same section twice is a no-op, so a retry after a lost response cannot duplicate content.
 

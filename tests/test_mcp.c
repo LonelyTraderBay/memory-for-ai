@@ -28,6 +28,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h> /* chmod / stat for read-only query reproductions */
+
+static bool mcp_runtime_authorization_denied(void *context, const char *project,
+                                             const char *producer_id,
+                                             const char *producer_epoch,
+                                             const char *semantic_version);
 #ifdef _WIN32
 #include <direct.h>
 #define cbm_chdir _chdir
@@ -8599,6 +8604,50 @@ TEST(detect_changes_zero_overlap_falls_back_issue1363) {
     PASS();
 }
 
+TEST(tool_ingest_traces_authorization_and_privacy_policy) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-policy", "/tmp/runtime-policy"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "runtime-policy");
+    cbm_mcp_server_set_runtime_authorizer(srv, mcp_runtime_authorization_denied, NULL);
+
+    char *resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-policy\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "not authorized"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+
+    /* Authorization rejection happens before the mutation lease/store write. */
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(store),
+                                 "SELECT COUNT(*) FROM runtime_trace_batches "
+                                 "WHERE project='runtime-policy';",
+                                 -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int(stmt, 0), 0);
+    sqlite3_finalize(stmt);
+
+    cbm_mcp_server_set_runtime_authorizer(srv, NULL, NULL);
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-policy\",\"source_batch_id\":\"batch-2\","
+        "\"traces\":[{\"caller\":\"https://user:secret@example.test/api\","
+        "\"callee\":\"b\"}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "privacy-sensitive"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 TEST(tool_ingest_traces_basic) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     cbm_store_t *store = cbm_mcp_server_store(srv);
@@ -8705,6 +8754,18 @@ TEST(tool_ingest_traces_basic) {
 
     cbm_mcp_server_free(srv);
     PASS();
+}
+
+static bool mcp_runtime_authorization_denied(void *context, const char *project,
+                                             const char *producer_id,
+                                             const char *producer_epoch,
+                                             const char *semantic_version) {
+    (void)context;
+    (void)project;
+    (void)producer_id;
+    (void)producer_epoch;
+    (void)semantic_version;
+    return false;
 }
 
 TEST(tool_ingest_traces_canonical_array_order) {
@@ -8932,6 +8993,163 @@ TEST(tool_get_runtime_traces_returns_sorted_pages) {
     ASSERT_NOT_NULL(strstr(resp, "\"callee\":\"b\""));
     ASSERT_NOT_NULL(strstr(resp, "\"call_count\":1"));
     ASSERT_NOT_NULL(strstr(resp, "\"has_more\":false"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+TEST(tool_get_runtime_traces_pinned_overlay_publication) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    const char *project = "runtime-overlay";
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/runtime-overlay"), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    cbm_node_t handler = {.project = project,
+                          .label = "Function",
+                          .name = "handler",
+                          .qualified_name = "handler",
+                          .file_path = "server.c"};
+    ASSERT_GT(cbm_store_upsert_node(store, &handler), 0);
+
+    char *resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-overlay\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"caller\":\"handler\",\"callee\":\"https://api.example/v1\","
+        "\"count\":2}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    free(resp);
+
+    cbm_runtime_publication_t first = {0};
+    ASSERT_EQ(cbm_store_get_runtime_publication_head(store, project, &first), CBM_STORE_OK);
+    ASSERT_TRUE(first.available);
+    ASSERT_TRUE(first.runtime_generation[0] != '\0');
+
+    resp = cbm_mcp_handle_tool(
+        srv, "get_runtime_traces",
+        "{\"project\":\"runtime-overlay\",\"include_overlay\":true}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"overlay_available\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"overlay_edge_type\":\"RUNTIME_CALL\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"caller_endpoint_type\":\"symbol\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"callee_endpoint_type\":\"runtime\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"p99_available\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"duration_p99_available\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"total\":1"));
+    free(resp);
+
+    sqlite3_stmt *resolution_stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(store),
+                  "SELECT resolution_status, resolver_version FROM runtime_resolutions "
+                  "WHERE project='runtime-overlay' AND runtime_generation=?1 "
+                  "AND endpoint_identity=?2;",
+                  -1, &resolution_stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(resolution_stmt, 1, first.runtime_generation, -1,
+                                SQLITE_TRANSIENT),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(resolution_stmt, 2, "handler", -1, SQLITE_TRANSIENT),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(resolution_stmt), SQLITE_ROW);
+    ASSERT_STR_EQ((const char *)sqlite3_column_text(resolution_stmt, 0), "resolved");
+    ASSERT_STR_EQ((const char *)sqlite3_column_text(resolution_stmt, 1), "qualified-name-v1");
+    sqlite3_finalize(resolution_stmt);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-overlay\",\"source_batch_id\":\"batch-2\","
+        "\"traces\":[{\"caller\":\"other\",\"callee\":\"missing\"}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    free(resp);
+
+    cbm_runtime_publication_t second = {0};
+    ASSERT_EQ(cbm_store_get_runtime_publication_head(store, project, &second), CBM_STORE_OK);
+    ASSERT_TRUE(strcmp(first.runtime_generation, second.runtime_generation) != 0);
+
+    char pinned[512];
+    snprintf(pinned, sizeof(pinned),
+             "{\"project\":\"runtime-overlay\",\"include_overlay\":true,"
+             "\"runtime_generation\":\"%s\"}", first.runtime_generation);
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces", pinned);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"runtime_generation\":\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"total\":1"));
+    ASSERT_NOT_NULL(strstr(resp, "\"callee\":\"https://api.example/v1\""));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "get_runtime_traces",
+        "{\"project\":\"runtime-overlay\",\"include_overlay\":true,"
+        "\"runtime_generation\":\"stale-generation\"}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "runtime publication generation is stale"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+TEST(tool_get_runtime_traces_overlay_cursor_is_pinned) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-cursor", "/tmp/runtime-cursor"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "runtime-cursor");
+
+    char *resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-cursor\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"duration_ns\":2},"
+        "{\"caller\":\"c\",\"callee\":\"d\",\"duration_ns\":8}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "get_runtime_traces",
+        "{\"project\":\"runtime-cursor\",\"include_overlay\":true,\"limit\":1}");
+    ASSERT_NOT_NULL(resp);
+    const char *cursor_marker = strstr(resp, "\"next_cursor\":\"");
+    ASSERT_NOT_NULL(cursor_marker);
+    cursor_marker += strlen("\"next_cursor\":\"");
+    const char *cursor_end = strchr(cursor_marker, '"');
+    ASSERT_NOT_NULL(cursor_end);
+    size_t cursor_len = (size_t)(cursor_end - cursor_marker);
+    ASSERT_TRUE(cursor_len > 0 && cursor_len < 256U);
+    char cursor[256];
+    memcpy(cursor, cursor_marker, cursor_len);
+    cursor[cursor_len] = '\0';
+    free(resp);
+
+    char next_request[512];
+    snprintf(next_request, sizeof(next_request),
+             "{\"project\":\"runtime-cursor\",\"include_overlay\":true,"
+             "\"limit\":1,\"cursor\":\"%s\"}", cursor);
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces", next_request);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"ok\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"returned\":1"));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-cursor\",\"source_batch_id\":\"batch-2\","
+        "\"traces\":[{\"caller\":\"e\",\"callee\":\"f\"}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces", next_request);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "stale_cursor"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -14061,10 +14279,13 @@ SUITE(mcp) {
     RUN_TEST(detect_changes_node_in_hunks_overlap_issue1363);
     RUN_TEST(detect_changes_seeds_only_touched_symbol_issue1363);
     RUN_TEST(detect_changes_zero_overlap_falls_back_issue1363);
+    RUN_TEST(tool_ingest_traces_authorization_and_privacy_policy);
     RUN_TEST(tool_ingest_traces_basic);
     RUN_TEST(tool_ingest_traces_canonical_array_order);
     RUN_TEST(tool_ingest_traces_canonical_v2_deduplicates_spans);
     RUN_TEST(tool_get_runtime_traces_returns_sorted_pages);
+    RUN_TEST(tool_get_runtime_traces_pinned_overlay_publication);
+    RUN_TEST(tool_get_runtime_traces_overlay_cursor_is_pinned);
     RUN_TEST(tool_ingest_traces_empty);
 
     /* Query store generation freshness */

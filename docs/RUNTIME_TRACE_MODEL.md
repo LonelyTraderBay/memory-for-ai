@@ -4,12 +4,10 @@
 
 This document is an architecture contract for a durable, versioned runtime-observation
 sidecar whose publications can be read alongside a pinned static index generation. The
-current branch implements the first bounded compact-pair ingestion slice and the
-producer-scoped canonical contribution slice of that model: validated observations are
-persisted in sidecar tables with retry idempotency, payload conflict detection, and exact
-span deduplication for the opt-in canonical wire version. Runtime observations MUST NOT
-patch static `CALLS` edges, fabricate static nodes, or appear as persistent edges in the
-default graph.
+current branch implements compact-pair ingestion, producer-scoped canonical contributions,
+immutable publications, generation-scoped resolution records, a fixed mergeable duration
+histogram, and stale-safe overlay cursors. Runtime observations MUST NOT patch static
+`CALLS` edges, fabricate static nodes, or appear as persistent edges in the default graph.
 
 The model intentionally separates facts observed at runtime from facts derived from
 source. A caller may explicitly request a `RUNTIME_CALL` overlay; existing static
@@ -67,9 +65,10 @@ The current compact endpoint normalizes the allowlisted edge fields, sorts the r
 and hashes a versioned canonical representation of those rows. JSON object key order
 and trace-array order therefore do not create a false payload conflict. It is intentionally
 smaller than the full canonical contribution map described below; canonical span identity
-is available only in the opt-in `canonical-v2` surface. Endpoint resolution, runtime
-generations, and the opt-in overlay remain follow-up packages. No raw request payload is
-stored.
+is available only in the opt-in `canonical-v2` surface. Endpoint tagging, runtime
+generation publication, immutable snapshots, and the opt-in overlay are available through
+the bounded publication slice described below. Full endpoint resolution caches and no raw
+request payload storage remain separate guarantees.
 
 For `canonical-v2`, the request MUST also provide non-empty `producer_id`,
 `producer_epoch`, and `source_batch_id`. Every trace MUST provide lowercase,
@@ -80,14 +79,21 @@ same contribution with the same canonical payload is idempotent. Replaying a con
 or span identity with different canonical content is a conflict. Replaying a span in a
 different contribution is accepted but does not increment the compact aggregate twice.
 Duplicate identical span records inside one contribution are collapsed before hashing.
-This version does not yet resolve endpoints to static symbols or publish runtime
-generations.
+This version classifies exactly one static qualified-name match as `symbol`, allowlisted
+protocol identities as `runtime`, and all other identities as `unknown`; ambiguous qualified
+names are fail-closed. It publishes a content-addressed runtime generation without
+fabricating static nodes and stores a resolver-versioned record for every endpoint in that
+generation.
 
 The explicit `get_runtime_traces` read surface returns only these persisted compact
-aggregates. It supports caller/callee filters and deterministic limit/offset pagination,
-and reports the runtime semantic version of the persisted surface (`compact-v1` for the
-legacy aggregate query; canonical contributions currently fold into the same compact
-aggregate). Static graph search, architecture, and `trace_path` remain runtime-free.
+aggregates by default. It supports caller/callee filters and deterministic limit/offset
+pagination, and reports the runtime semantic version of the persisted surface
+(`compact-v1` for the legacy aggregate query; canonical contributions currently fold into
+the same compact aggregate). With `include_overlay=true`, it reads the immutable
+publication snapshot selected by the current head or an explicit `runtime_generation`,
+adds `RUNTIME_CALL` and generation-pinned endpoint types, emits per-edge p99 values when a
+histogram is available, and returns an opaque `next_cursor` when more rows exist. Static
+graph search, architecture, and `trace_path` remain runtime-free.
 
 The existing trace helper surface can extract `service.name`, HTTP method, HTTP path,
 HTTP status, span kind, duration, URL path, and p99. Verified span-kind values are:
@@ -298,13 +304,16 @@ checks.
 No table above is a static graph node or edge table. The implementation MUST NOT reuse
 generic `json_patch` edge upsert for contribution merging.
 
-The current bounded implementation materializes the compact compatibility pair as
-`runtime_trace_batches` and `runtime_trace_edges`, and the canonical-v2 ingest slice as
-`runtime_trace_contributions` and `runtime_trace_spans`. The latter stores immutable
-producer-scoped contribution/span facts and folds newly accepted spans into the compact
-aggregate transactionally. Endpoint records, observation-contribution maps, runtime
-generations, and publication heads from the full logical model are not present yet;
-canonical-v2 therefore remains an ingestion foundation, not a published runtime overlay.
+The current implementation materializes the compact compatibility pair as
+`runtime_trace_batches`, immutable `runtime_trace_batch_edges`, and `runtime_trace_edges`, and the canonical-v2 ingest slice as
+`runtime_trace_contributions` and `runtime_trace_spans`. Accepted contributions also create
+immutable `runtime_publications` snapshots, a per-project
+`runtime_publication_heads` composite head, stable `runtime_endpoints`,
+`runtime_observation_contributions` mappings, fixed duration histograms,
+`runtime_resolutions`, and bounded publication retention. The optional
+`get_runtime_traces` overlay reads a pinned publication snapshot and never changes the
+static graph. The existing graph artifact carries these runtime tables and now declares an
+independent `runtime_artifact_version` in its metadata.
 
 ## Deterministic aggregation
 
@@ -343,10 +352,11 @@ encoding is pinned by `runtime_semantic_version`. Aggregate totals are exact int
 sums over the contribution map. Derived display values are computed after the fold.
 
 Percentiles are not additive. A batch p99 MUST NOT be averaged, weighted-averaged, or
-selected as the aggregate p99. The existing p99 helper may summarize a single raw batch
-for diagnostics, but a published cross-contribution p99 requires a versioned mergeable
-distribution (for example fixed histogram boundaries). Without such a distribution,
-the aggregate p99 is unavailable.
+selected as the aggregate p99. A published cross-contribution p99 therefore uses the
+versioned fixed distribution persisted with each aggregate row. This implementation uses
+16 fixed buckets (0..1 ns, exponentially widened buckets, and an overflow bucket) and
+returns a conservative bucket upper bound; the overflow bucket uses the persisted maximum.
+Without a valid distribution, the aggregate p99 is unavailable.
 
 Canonical aggregate JSON MUST be byte-identical for every permutation and
 parenthesization of the same finalized contribution set.
@@ -466,7 +476,7 @@ behavior.
 | Failure while staging or aggregating | `ROLLBACK` | No partial state |
 | Crash before commit | Database recovery rolls back the transaction | Prior head remains |
 | Commit succeeds but response is lost | Producer retry resolves idempotently | One finalized contribution |
-| Derived aggregate missing or corrupt | Rebuild from finalized contribution map before publish | Prior valid head remains |
+| Derived aggregate missing or corrupt | Explicitly rebuild from the latest validated immutable publication snapshot before a later publish | Prior valid head remains; historical snapshots are unchanged |
 | Cursor references a different or removed head | Return stale/missing cursor error | No mixed-generation read |
 | Unsupported span kind | Retain only normalized, allowlisted non-call observation metadata; discard unsupported fields and raw payload bytes | No guessed call overlay |
 | No mergeable duration distribution | Publish counts/sums; report p99 unavailable | No averaged p99 |
@@ -521,37 +531,40 @@ and compatibility testable rather than implicit.
 ## Bounded implementation packages
 
 The implementation is intentionally ordered and bounded; each package requires its own
-reproduce-first tests and review. The current branch has completed the compact-v1 route
-and a bounded canonical-v2 foundation: versioned producer/contribution identity,
-allowlisted span normalization, exact span deduplication, conflict rejection, additive
-sidecar tables, idempotent retry, and transactional aggregate updates. It does not claim
-the full contribution/publication model below.
+reproduce-first tests and review. The current branch has completed the compact-v1 route,
+the canonical-v2 identity/normalization foundation, and the first publishable runtime
+overlay slice. It deliberately reports unsupported pieces as unavailable instead of
+guessing them.
 
-1. **Versioned wire validation and canonicalization — bounded slice implemented.** The
-   canonical-v2 route adds producer identity and epoch, contribution ID, exact
-   span-identity deduplication, conflicting duplicate rejection, and canonical payload
-   hashes. Allowlisted HTTP/span mapping, dry-run validation, and endpoint derivation
-   remain follow-up work.
-2. **Sidecar schema and immutable contributions — bounded slice implemented.** Additive
-   runtime contribution/span tables provide immutable records, idempotent retry,
-   conflict rejection, and transactional rollback. Endpoint records,
-   observation-contribution maps, finalization state, and publication heads remain
-   follow-up work; there is no overlay publication yet.
-3. **Deterministic aggregation.** Add canonical intra-contribution grouping, keyed
-   exact-span idempotent set union/deduplication, associative and commutative exact
-   integer/status/histogram addition, cross-contribution map-union folds, fixed
-   mergeable duration distributions, input/worker/merge-order permutation tests,
-   rebuild verification, and explicit unavailable p99 behavior.
-4. **Generation-scoped resolution and publication.** Add the shared per-project lock,
-   independent runtime generation allocation, durable finalization, pair-and-version
-   resolution records, atomic composite head updates that preserve the other half, and
-   crash/retry recovery tests.
-5. **Pinned read and `RUNTIME_CALL` overlay.** Add opt-in queries, tagged endpoints,
-   request-scoped composite pins, stale cursors, historical-head handling, and proofs
-   that default static tools remain byte-for-byte unchanged.
-6. **Artifact, retention, and operational hardening.** Add versioned runtime artifact
-   import/export, quota/retention policy, authorization audits, corruption rebuild,
-   migration/rollback tests, metrics, and multi-producer concurrency tests.
+1. **Versioned wire validation and canonicalization — implemented.** The canonical-v2
+   route adds producer identity and epoch, contribution ID, exact span-identity
+   deduplication, conflicting duplicate rejection, canonical payload hashes, and bounded
+   validation. Unsupported mappings remain explicitly unavailable rather than guessed.
+2. **Sidecar schema and immutable contributions — implemented.** Additive runtime
+   contribution/span tables, endpoint records, observation-contribution maps, immutable
+   publication snapshots, resolution records, and a composite head provide transactional
+   retry/conflict semantics with bounded publication retention.
+3. **Deterministic aggregation — implemented.** Exact integer counters, max duration,
+   duplicate-span set union, rollback, deterministic ordering, a mergeable fixed
+   histogram, and conservative published p99 are persisted.
+4. **Generation-scoped resolution and publication — implemented.** Runtime generation
+   IDs are content-addressed, snapshots finalize atomically, resolution is qualified-name
+   based and fail-closed on ambiguity, resolver versions are stored, and static
+   reindexing re-pins only the static half of the head.
+5. **Pinned read and `RUNTIME_CALL` overlay — implemented.** Opt-in queries, endpoint tags,
+   historical immutable snapshot reads, explicit generation pinning, default static-read
+   isolation, opaque parameter-bound cursors, and stale-generation errors are implemented.
+6. **Artifact, retention, and operational hardening — implemented.** Runtime artifact
+   metadata is versioned independently and publication retention is bounded. Runtime
+   ingestion now has a host-installable authorization callback, deny-by-default privacy
+   checks for control/query/fragment/userinfo-bearing endpoint text, a bounded request
+   size, per-project durable quotas, and an explicit `quota_exceeded` result. The existing
+   immutable publication snapshot is the recovery source for the mutable live aggregate:
+   `cbm_store_rebuild_runtime_aggregates()` validates the snapshot, restores live edges and
+   endpoint tags transactionally, and never rewrites history. `get_runtime_traces` exposes
+   exact durable runtime gauges and the test suite exercises independent SQLite handles
+   ingesting concurrently for multiple producers. Rejections, rebuild failures, and quota
+   failures remain all-or-nothing.
 
 No package may silently absorb a later package's public surface or persistence model.
 

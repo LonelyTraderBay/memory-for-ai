@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "foundation/sha256.h"
+
 /* ── Opaque handle ──────────────────────────────────────────────── */
 
 typedef struct cbm_store cbm_store_t;
@@ -28,6 +30,7 @@ typedef struct cbm_store cbm_store_t;
 #define CBM_STORE_SCAN_LIMIT (-4)
 #define CBM_STORE_CALLBACK_ERR (-5)
 #define CBM_STORE_CONFLICT (-6)
+#define CBM_STORE_QUOTA_EXCEEDED (-7)
 
 /* ── Data structures ────────────────────────────────────────────── */
 
@@ -63,7 +66,13 @@ typedef struct {
  * callers can aggregate high-volume observations without changing the
  * statically indexed graph. `observations` is the number of source records
  * represented by this row (normally 1 for a compact pair event). */
+#define CBM_RUNTIME_DURATION_BUCKETS 16
+
 typedef struct {
+    /* Fixed, mergeable duration histogram. Bucket 0 is 0..1 ns, buckets 1..14
+     * are exponentially widened, and bucket 15 is the overflow bucket. The
+     * store derives p99 from this distribution; producer-side percentiles are
+     * never accepted or averaged. */
     const char *caller;
     const char *callee;
     int64_t call_count;
@@ -71,6 +80,8 @@ typedef struct {
     int64_t duration_ns_total;
     int64_t duration_ns_max;
     int64_t observations;
+    int64_t duration_p99_ns; /* derived on read; 0 when unavailable */
+    bool duration_p99_available;
 } cbm_runtime_trace_edge_t;
 
 /* One canonical-v2 span contribution. Identity fields are producer-scoped;
@@ -90,6 +101,44 @@ typedef struct {
     int64_t duration_ns_total;
     int64_t duration_ns_max;
 } cbm_runtime_trace_span_t;
+
+/* Immutable runtime publication metadata. Runtime generations are independent
+ * from static index generations; readers may pin the runtime half of the
+ * composite publication head when requesting an overlay. */
+typedef struct {
+    char static_generation[CBM_SHA256_HEX_LEN + 1];
+    char runtime_generation[CBM_SHA256_HEX_LEN + 1];
+    char semantic_version[33];
+    bool available;
+} cbm_runtime_publication_t;
+
+/* Per-project runtime durability quotas. Quotas are enforced inside the
+ * ingest transaction after idempotence/conflict checks and before COMMIT, so
+ * a rejected request cannot leave partial runtime data behind. Values must be
+ * positive; callers can use the defaults below for a generous local policy. */
+#define CBM_RUNTIME_DEFAULT_MAX_LEGACY_BATCHES 10000LL
+#define CBM_RUNTIME_DEFAULT_MAX_CANONICAL_CONTRIBUTIONS 10000LL
+#define CBM_RUNTIME_DEFAULT_MAX_CANONICAL_SPANS 1000000LL
+
+typedef struct {
+    int64_t max_legacy_batches;
+    int64_t max_canonical_contributions;
+    int64_t max_canonical_spans;
+} cbm_runtime_quota_t;
+
+/* Exact durable runtime gauges. These describe accepted data currently in the
+ * sidecar and are safe to expose after process restart; rejected-event
+ * counters deliberately are not inferred from the database. */
+typedef struct {
+    int64_t legacy_batches;
+    int64_t canonical_contributions;
+    int64_t canonical_spans;
+    int64_t runtime_edges;
+    int64_t runtime_publications;
+    int64_t runtime_endpoints;
+    int64_t runtime_resolutions;
+    cbm_runtime_quota_t quota;
+} cbm_runtime_metrics_t;
 
 typedef struct {
     const char *project;
@@ -498,10 +547,9 @@ int cbm_store_delete_project(cbm_store_t *s, const char *name);
  * same (project, batch_id, payload_hash) is submitted again. Reusing a batch
  * id with a different payload returns CBM_STORE_CONFLICT and writes nothing.
  * `idempotent` and `observations_out` are optional output pointers. */
-int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
-                                    const char *batch_id, const char *payload_hash,
-                                    const cbm_runtime_trace_edge_t *edges, int count,
-                                    bool *idempotent, int64_t *observations_out);
+int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project, const char *batch_id,
+                                    const char *payload_hash, const cbm_runtime_trace_edge_t *edges,
+                                    int count, bool *idempotent, int64_t *observations_out);
 
 /* Persist a producer-scoped canonical contribution. The contribution and
  * every unique span are immutable: retrying the same contribution/hash is
@@ -509,9 +557,67 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
  * and spans already accepted in another contribution are not counted twice. */
 int cbm_store_ingest_runtime_trace_contribution(
     cbm_store_t *s, const char *project, const char *producer_id, const char *producer_epoch,
-    const char *contribution_id, const char *payload_hash,
-    const cbm_runtime_trace_span_t *spans, int count, bool *idempotent,
-    int64_t *observations_out, int *new_spans_out);
+    const char *contribution_id, const char *payload_hash, const cbm_runtime_trace_span_t *spans,
+    int count, bool *idempotent, int64_t *observations_out, int *new_spans_out);
+
+/* Configure/read the in-process durability policy. The policy is not stored
+ * in the graph database: hosts set it on every writable/query handle, which
+ * avoids silently changing an existing project's security posture on disk. */
+int cbm_store_set_runtime_quota(cbm_store_t *s, const cbm_runtime_quota_t *quota);
+int cbm_store_get_runtime_quota(cbm_store_t *s, cbm_runtime_quota_t *out);
+
+/* Return exact durable runtime gauges for one project. */
+int cbm_store_get_runtime_metrics(cbm_store_t *s, const char *project, cbm_runtime_metrics_t *out);
+
+/* Repair the mutable live runtime aggregate from the latest immutable
+ * publication snapshot. Historical publications are never rewritten. This
+ * is an explicit recovery operation for a confirmed runtime aggregate
+ * corruption; it does not attempt to hide whole-database corruption. */
+int cbm_store_rebuild_runtime_aggregates(cbm_store_t *s, const char *project);
+
+/* Return the current composite publication head for a project. A missing
+ * head is CBM_STORE_NOT_FOUND, which is distinct from an empty publication. */
+int cbm_store_get_runtime_publication_head(cbm_store_t *s, const char *project,
+                                           cbm_runtime_publication_t *out);
+
+/* Resolve an immutable publication by generation for historical, pinned
+ * reads. Missing generations return CBM_STORE_NOT_FOUND. */
+int cbm_store_get_runtime_publication(cbm_store_t *s, const char *project,
+                                      const char *runtime_generation,
+                                      cbm_runtime_publication_t *out);
+
+/* Classify an endpoint for an explicit runtime overlay. The result is one of
+ * "symbol", "runtime", or "unknown" and is fail-closed when static lookup is
+ * ambiguous or unavailable. */
+int cbm_store_runtime_endpoint_tag(cbm_store_t *s, const char *project, const char *endpoint,
+                                   char *out, size_t out_size);
+/* Read endpoint classification pinned to one immutable {static,runtime}
+ * publication pair. This never re-resolves a historical overlay against the
+ * current static generation. Returns CBM_STORE_NOT_FOUND when the pair
+ * predates the resolution sidecar. */
+int cbm_store_runtime_publication_endpoint_tag(cbm_store_t *s, const char *project,
+                                               const char *static_generation,
+                                               const char *runtime_generation, const char *endpoint,
+                                               char *out, size_t out_size);
+
+/* Preserve the runtime sidecar while a full static generation is rebuilt into
+ * a fresh staging database. Missing source databases or pre-runtime schemas
+ * are treated as empty sidecars; copy failures are fatal and leave the target
+ * unchanged. */
+int cbm_store_preserve_runtime_sidecar(cbm_store_t *s, const char *source_db_path,
+                                       const char *project);
+
+/* Advance the static publication generation after a static graph has been
+ * materialized, update the composite head, and rebuild pinned endpoint
+ * resolutions for the current runtime publication. */
+int cbm_store_refresh_runtime_static_generation(cbm_store_t *s, const char *project);
+
+/* Read one immutable publication snapshot using the same deterministic
+ * filtering and pagination contract as cbm_store_get_runtime_traces(). */
+int cbm_store_get_runtime_publication_edges(cbm_store_t *s, const char *project,
+                                            const char *runtime_generation, const char *caller,
+                                            const char *callee, int limit, int offset,
+                                            cbm_runtime_trace_edge_t **out, int *count, int *total);
 
 /* Read the explicit runtime sidecar without changing the static graph. Rows
  * are ordered by call_count DESC, caller ASC, callee ASC and are bounded by

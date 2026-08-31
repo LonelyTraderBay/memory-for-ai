@@ -44,6 +44,7 @@ enum {
     MCP_RUNTIME_TRACE_BATCH_MAX = 10000,
     MCP_RUNTIME_TRACE_STRING_MAX = 1024,
     MCP_RUNTIME_TRACE_BATCH_ID_MAX = 256,
+    MCP_RUNTIME_TRACE_REQUEST_MAX_BYTES = 16 * 1024 * 1024,
 };
 #define MCP_MS_TO_US 1000LL
 #define MCP_S_TO_US 1000000LL
@@ -743,7 +744,8 @@ static const tool_def_t TOOLS[] = {
 
     {"ingest_traces", "Ingest traces", "Ingest runtime traces to enhance the knowledge graph",
      "{\"type\":\"object\",\"properties\":{\"runtime_semantic_version\":{\"type\":\"string\","
-     "\"enum\":[\"compact-v1\",\"canonical-v2\"],\"default\":\"compact-v1\"},\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"enum\":[\"compact-v1\",\"canonical-v2\"],\"default\":\"compact-v1\"},\"traces\":{\"type\":"
+     "\"array\",\"items\":{\"type\":"
      "\"object\",\"properties\":{\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
      "\"trace_id\":{\"type\":\"string\"},\"span_id\":{\"type\":\"string\"},"
      "\"count\":{\"type\":\"integer\",\"minimum\":1},\"duration_ns\":{\"type\":\"integer\","
@@ -756,11 +758,19 @@ static const tool_def_t TOOLS[] = {
     {"get_runtime_traces", "Get runtime traces",
      "Read explicit runtime trace aggregates from the sidecar. Results are ordered "
      "deterministically by call count, caller, and callee; runtime data is never merged into "
-     "static graph search or trace_path responses.",
+     "static graph search or trace_path responses. Set include_overlay=true to read a pinned "
+     "RUNTIME_CALL publication with pinned endpoint resolution and mergeable duration p99. "
+     "Pass next_cursor unchanged to continue an overlay page; cursors fail explicitly when "
+     "the static/runtime publication pair changes.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
      "\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000,\"default\":100},"
-     "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"default\":0}},"
+     "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"default\":0},"
+     "\"include_overlay\":{\"type\":\"boolean\",\"default\":false},"
+     "\"runtime_generation\":{\"type\":\"string\",\"description\":\"Optional "
+     "runtime publication generation to pin; requires include_overlay=true\"},"
+     "\"cursor\":{\"type\":\"string\",\"description\":\"Opaque next_cursor from a "
+     "previous overlay response; all other arguments must remain identical\"}},"
      "\"additionalProperties\":false,\"required\":[\"project\"]}"},
 };
 
@@ -847,9 +857,9 @@ static void mcp_add_tool_def(yyjson_mut_doc *doc, yyjson_mut_val *tools, int i) 
 
 static bool mcp_tool_allowed(cbm_mcp_tool_profile_t profile, const char *name) {
     static const char *const analysis_tools[] = {
-        "search_graph",     "query_graph",    "trace_path",           "get_code_snippet",
-        "get_graph_schema", "compare_graphs", "get_architecture",     "search_code",
-        "get_code_actions", "list_projects",   "index_status",          "check_index_coverage",
+        "search_graph",     "query_graph",        "trace_path",       "get_code_snippet",
+        "get_graph_schema", "compare_graphs",     "get_architecture", "search_code",
+        "get_code_actions", "list_projects",      "index_status",     "check_index_coverage",
         "detect_changes",   "get_runtime_traces",
     };
     static const char *const scout_tools[] = {
@@ -1349,7 +1359,8 @@ static const char MCP_ANALYSIS_SERVER_INSTRUCTIONS[] =
     "list_projects and index_status to select a current graph project, then use search_graph, "
     "trace_path, get_code_snippet, query_graph, get_architecture, and search_code for read-only "
     "analysis. Use get_runtime_traces only for explicit runtime aggregate observations; it never "
-    "changes static graph search or trace_path results. Call check_index_coverage for every cited path and for scopes behind negative or "
+    "changes static graph search or trace_path results. Call check_index_coverage for every cited "
+    "path and for scopes behind negative or "
     "exhaustive claims; read flagged ranges or skipped files directly. Coverage is best-effort, "
     "never proof of completeness. Check has_more or nextCursor and paginate when present. If the "
     "project is missing or stale, ask the parent agent to index or refresh it.";
@@ -1668,6 +1679,8 @@ struct cbm_mcp_server {
     cbm_mcp_project_mutation_try_begin_fn mutation_try_begin;
     cbm_mcp_project_mutation_end_fn mutation_end;
     void *mutation_context;
+    cbm_mcp_runtime_authorize_fn runtime_authorize;
+    void *runtime_authorize_context;
     cbm_mcp_quarantine_test_hook_fn quarantine_test_hook;
     void *quarantine_test_context;
     cbm_mcp_command_test_hook_fn command_test_hook;
@@ -4713,6 +4726,15 @@ static void add_coverage_report(yyjson_mut_doc *doc, yyjson_mut_val *root, cbm_s
     }
 }
 
+void cbm_mcp_server_set_runtime_authorizer(cbm_mcp_server_t *srv,
+                                           cbm_mcp_runtime_authorize_fn authorize, void *context) {
+    if (!srv) {
+        return;
+    }
+    srv->runtime_authorize = authorize;
+    srv->runtime_authorize_context = authorize ? context : NULL;
+}
+
 /* Add quantitative coverage and confidence signals beside the detailed
  * per-file report. The ratio intentionally measures authoritative file-hash
  * coverage, not parser correctness: parse_partial files remain in the hash
@@ -4756,13 +4778,12 @@ static void add_coverage_quality_summary(yyjson_mut_doc *doc, yyjson_mut_val *ro
     bool recording_complete =
         have_meta && meta.recording_status && strcmp(meta.recording_status, "complete") == 0;
     bool hash_records_complete = have_meta && meta.hash_records_complete;
-    bool denominator_known =
-        rows_ok && hashes_ok && have_meta && generation_matches && recording_complete &&
-        hash_records_complete && excluded_dirs == 0;
+    bool denominator_known = rows_ok && hashes_ok && have_meta && generation_matches &&
+                             recording_complete && hash_records_complete && excluded_dirs == 0;
     int known_files = 0;
     if (denominator_known) {
-        int64_t total = (int64_t)indexed_hashes + (int64_t)skipped +
-                        (int64_t)meta.ignored_files_total;
+        int64_t total =
+            (int64_t)indexed_hashes + (int64_t)skipped + (int64_t)meta.ignored_files_total;
         if (total > 0 && total <= INT_MAX) {
             known_files = (int)total;
         } else if (total == 0) {
@@ -9491,30 +9512,30 @@ static char *handle_get_code_actions(cbm_mcp_server_t *srv, const char *args) {
     bool audit_action_added = false;
     for (int i = 0; i < coverage_count; i++) {
         const char *kind = coverage[i].kind ? coverage[i].kind : "unknown";
-        if (!coverage_action_added && (strcmp(kind, "parse_partial") == 0 ||
-                                       strcmp(kind, "read") == 0 || strcmp(kind, "extract") == 0 ||
-                                       strcmp(kind, "oversized") == 0 ||
-                                       strcmp(kind, "not_indexed_dir") == 0 ||
-                                       strcmp(kind, "not_indexed_file") == 0)) {
-            add_code_action(doc, actions, "quickfix.memory-for-ai.coverage",
-                            "Inspect indexed coverage before editing",
-                            "The selected file or range has a recorded indexing gap; source is the authority.",
-                            "check_index_coverage", project, "paths", path);
+        if (!coverage_action_added &&
+            (strcmp(kind, "parse_partial") == 0 || strcmp(kind, "read") == 0 ||
+             strcmp(kind, "extract") == 0 || strcmp(kind, "oversized") == 0 ||
+             strcmp(kind, "not_indexed_dir") == 0 || strcmp(kind, "not_indexed_file") == 0)) {
+            add_code_action(
+                doc, actions, "quickfix.memory-for-ai.coverage",
+                "Inspect indexed coverage before editing",
+                "The selected file or range has a recorded indexing gap; source is the authority.",
+                "check_index_coverage", project, "paths", path);
             coverage_action_added = true;
         }
     }
 
     for (int i = 0; i < node_count; i++) {
         cbm_node_t *node = &nodes[i];
-        bool callable = node->label &&
-                        (strcmp(node->label, "Function") == 0 || strcmp(node->label, "Method") == 0);
+        bool callable = node->label && (strcmp(node->label, "Function") == 0 ||
+                                        strcmp(node->label, "Method") == 0);
         int complexity = code_action_property_int(node->properties_json, "complexity");
         if (callable && complexity >= 10) {
-            add_code_action(doc, actions, "refactor.rewrite",
-                            "Review high-complexity symbol",
-                            "Cyclomatic complexity is high enough to justify a focused refactor review.",
-                            "get_code_snippet", project, "qualified_name",
-                            node->qualified_name ? node->qualified_name : node->name);
+            add_code_action(
+                doc, actions, "refactor.rewrite", "Review high-complexity symbol",
+                "Cyclomatic complexity is high enough to justify a focused refactor review.",
+                "get_code_snippet", project, "qualified_name",
+                node->qualified_name ? node->qualified_name : node->name);
         }
         if (callable) {
             cbm_edge_t *test_edges = NULL;
@@ -9523,7 +9544,8 @@ static char *handle_get_code_actions(cbm_mcp_server_t *srv, const char *args) {
                                                       &test_count);
             cbm_store_free_edges(test_edges, test_count);
             if (test_count == 0) {
-                add_code_action(doc, actions, "source.addTest", "Add or locate a test for this symbol",
+                add_code_action(doc, actions, "source.addTest",
+                                "Add or locate a test for this symbol",
                                 "No TESTS edge currently reaches this callable in the index.",
                                 "trace_path", project, "function_name",
                                 node->qualified_name ? node->qualified_name : node->name);
@@ -9532,25 +9554,28 @@ static char *handle_get_code_actions(cbm_mcp_server_t *srv, const char *args) {
         if (node->label && strcmp(node->label, "Package") == 0 && node->properties_json &&
             strstr(node->properties_json, "\"external\":true")) {
             audit_action_added = true;
-            add_code_action(doc, actions, "source.auditDependency",
-                            "Review dependency security evidence",
-                            "This is an external package; inspect local SecurityAudit/SecurityReport evidence.",
-                            "query_graph", project, "query",
-                            "MATCH (s:SecurityAudit) RETURN s.name, s.properties_json LIMIT 100");
+            add_code_action(
+                doc, actions, "source.auditDependency", "Review dependency security evidence",
+                "This is an external package; inspect local SecurityAudit/SecurityReport evidence.",
+                "query_graph", project, "query",
+                "MATCH (s:SecurityAudit) RETURN s.name, s.properties_json LIMIT 100");
         }
         if (!audit_action_added && node->label && strcmp(node->label, "SecurityAudit") == 0) {
             audit_action_added = true;
             add_code_action(doc, actions, "source.auditDependency",
                             "Review dependency security evidence",
-                            "The selected manifest has a deterministic audit record; inspect its local evidence before changing dependencies.",
+                            "The selected manifest has a deterministic audit record; inspect its "
+                            "local evidence before changing dependencies.",
                             "query_graph", project, "query",
-                            "MATCH (s:SecurityAudit)-[:AUDITS]->(p:Package) RETURN s.name, p.name, s.properties_json LIMIT 100");
+                            "MATCH (s:SecurityAudit)-[:AUDITS]->(p:Package) RETURN s.name, p.name, "
+                            "s.properties_json LIMIT 100");
         }
     }
     if (node_count == 0 && !coverage_action_added) {
         add_code_action(doc, actions, "quickfix.memory-for-ai.coverage",
                         "Check file coverage before relying on graph results",
-                        "No indexed symbol overlaps the requested range; the file may be skipped or outside the graph.",
+                        "No indexed symbol overlaps the requested range; the file may be skipped "
+                        "or outside the graph.",
                         "check_index_coverage", project, "paths", path);
     }
     yyjson_mut_obj_add_val(doc, root, "actions", actions);
@@ -12693,6 +12718,39 @@ static bool runtime_trace_valid_string(yyjson_val *value, size_t max_len) {
            yyjson_get_len(value) <= max_len && yyjson_get_str(value) != NULL;
 }
 
+/* Runtime endpoints and producer metadata can originate outside the local
+ * repository. Reject control characters, URL query/fragment material, and
+ * URL userinfo before the value is hashed or persisted. This is a deliberate
+ * deny policy: it prevents common credential/token leakage without rewriting
+ * a caller's symbol identity behind its back. */
+static bool runtime_trace_privacy_safe_text(const char *text) {
+    if (!text || !text[0]) {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (*p < 0x20U || *p == 0x7fU || *p == '?' || *p == '#') {
+            return false;
+        }
+    }
+    const char *scheme = strstr(text, "://");
+    if (scheme) {
+        const char *authority = scheme + 3;
+        const char *authority_end = strpbrk(authority, "/\\");
+        const char *userinfo =
+            memchr(authority, '@',
+                   authority_end ? (size_t)(authority_end - authority) : strlen(authority));
+        if (userinfo) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool runtime_trace_privacy_safe_string(yyjson_val *value, size_t max_len) {
+    return runtime_trace_valid_string(value, max_len) &&
+           runtime_trace_privacy_safe_text(yyjson_get_str(value));
+}
+
 static int runtime_trace_compare_int64(int64_t left, int64_t right) {
     return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -12746,8 +12804,7 @@ static void runtime_trace_hash_string(cbm_sha256_ctx *hash, const char *value) {
     }
 }
 
-static void runtime_trace_hash_edge(cbm_sha256_ctx *hash,
-                                     const cbm_runtime_trace_edge_t *edge) {
+static void runtime_trace_hash_edge(cbm_sha256_ctx *hash, const cbm_runtime_trace_edge_t *edge) {
     runtime_trace_hash_string(hash, edge->caller);
     runtime_trace_hash_string(hash, edge->callee);
     runtime_trace_hash_u64(hash, (uint64_t)edge->call_count);
@@ -12877,9 +12934,8 @@ static void runtime_trace_contribution_id(const char *producer_id, const char *p
     cbm_secure_zero(digest, sizeof(digest));
 }
 
-static void runtime_trace_canonical_contribution_hash(
-    const cbm_runtime_trace_span_t *spans, int count,
-    char out[CBM_SHA256_HEX_LEN + 1]) {
+static void runtime_trace_canonical_contribution_hash(const cbm_runtime_trace_span_t *spans,
+                                                      int count, char out[CBM_SHA256_HEX_LEN + 1]) {
     static const char format_version[] = "memory-for-ai-runtime-contribution-payload-canonical-v2";
     cbm_sha256_ctx hash;
     uint8_t digest[CBM_SHA256_DIGEST_LEN];
@@ -12920,8 +12976,7 @@ static char *runtime_trace_make_batch_id(const char *producer_id, const char *pr
     size_t producer_len = strlen(producer_id);
     size_t epoch_len = strlen(producer_epoch);
     size_t base_len = strlen(base);
-    if (producer_len > MCP_RUNTIME_TRACE_STRING_MAX ||
-        epoch_len > MCP_RUNTIME_TRACE_STRING_MAX ||
+    if (producer_len > MCP_RUNTIME_TRACE_STRING_MAX || epoch_len > MCP_RUNTIME_TRACE_STRING_MAX ||
         base_len > MCP_RUNTIME_TRACE_BATCH_ID_MAX ||
         producer_len + epoch_len + base_len + 3 > MCP_RUNTIME_TRACE_BATCH_ID_MAX) {
         return NULL;
@@ -12939,6 +12994,10 @@ static char *runtime_trace_make_batch_id(const char *producer_id, const char *pr
 static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     if (!srv || !args) {
         return cbm_mcp_text_result("ingest_traces requires a JSON object", true);
+    }
+
+    if (strlen(args) > MCP_RUNTIME_TRACE_REQUEST_MAX_BYTES) {
+        return cbm_mcp_text_result("runtime trace request exceeds the 16 MiB safety limit", true);
     }
 
     yyjson_doc *adoc = yyjson_read(args, strlen(args), 0);
@@ -12985,18 +13044,21 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     yyjson_val *producer = yyjson_obj_get(aroot, "producer_id");
     yyjson_val *epoch = yyjson_obj_get(aroot, "producer_epoch");
     yyjson_val *semantic = yyjson_obj_get(aroot, "runtime_semantic_version");
-    if ((source_batch && !runtime_trace_valid_string(source_batch, MCP_RUNTIME_TRACE_BATCH_ID_MAX)) ||
-        (producer && !runtime_trace_valid_string(producer, MCP_RUNTIME_TRACE_STRING_MAX)) ||
-        (epoch && !runtime_trace_valid_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX)) ||
+    if ((source_batch &&
+         !runtime_trace_privacy_safe_string(source_batch, MCP_RUNTIME_TRACE_BATCH_ID_MAX)) ||
+        (producer && !runtime_trace_privacy_safe_string(producer, MCP_RUNTIME_TRACE_STRING_MAX)) ||
+        (epoch && !runtime_trace_privacy_safe_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX)) ||
         (semantic && !runtime_trace_valid_string(semantic, 32U))) {
         free(project);
         yyjson_doc_free(adoc);
-        return cbm_mcp_text_result("source_batch_id, producer_id and producer_epoch must be non-empty strings within the size limit", true);
+        return cbm_mcp_text_result("source_batch_id, producer_id and producer_epoch must be "
+                                   "non-empty strings within the size limit",
+                                   true);
     }
 
     const char *semantic_version = semantic ? yyjson_get_str(semantic) : NULL;
-    bool canonical_v2 = semantic_version &&
-                        strcmp(semantic_version, MCP_RUNTIME_TRACE_CANONICAL_VERSION) == 0;
+    bool canonical_v2 =
+        semantic_version && strcmp(semantic_version, MCP_RUNTIME_TRACE_CANONICAL_VERSION) == 0;
     if (semantic_version && !canonical_v2 &&
         strcmp(semantic_version, MCP_RUNTIME_TRACE_SEMANTIC_VERSION) != 0) {
         free(project);
@@ -13005,8 +13067,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
                                    true);
     }
     if (canonical_v2 &&
-        (!source_batch || !producer || !epoch || !runtime_trace_valid_string(source_batch,
-                                                                                MCP_RUNTIME_TRACE_BATCH_ID_MAX) ||
+        (!source_batch || !producer || !epoch ||
+         !runtime_trace_valid_string(source_batch, MCP_RUNTIME_TRACE_BATCH_ID_MAX) ||
          !runtime_trace_valid_string(producer, MCP_RUNTIME_TRACE_STRING_MAX) ||
          !runtime_trace_valid_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX))) {
         free(project);
@@ -13039,10 +13101,10 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
         yyjson_val *item = yyjson_arr_get(traces, (size_t)i);
         yyjson_val *caller = item && yyjson_is_obj(item) ? yyjson_obj_get(item, "caller") : NULL;
         yyjson_val *callee = item && yyjson_is_obj(item) ? yyjson_obj_get(item, "callee") : NULL;
-        if (!runtime_trace_valid_string(caller, MCP_RUNTIME_TRACE_STRING_MAX) ||
-            !runtime_trace_valid_string(callee, MCP_RUNTIME_TRACE_STRING_MAX)) {
+        if (!runtime_trace_privacy_safe_string(caller, MCP_RUNTIME_TRACE_STRING_MAX) ||
+            !runtime_trace_privacy_safe_string(callee, MCP_RUNTIME_TRACE_STRING_MAX)) {
             valid = false;
-            validation_error = "each runtime trace requires non-empty caller and callee strings";
+            validation_error = "caller/callee contain invalid or privacy-sensitive text";
             break;
         }
 
@@ -13089,8 +13151,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
             yyjson_val *span_id = yyjson_obj_get(item, "span_id");
             if (!runtime_trace_valid_hex_id(trace_id) || !runtime_trace_valid_hex_id(span_id)) {
                 valid = false;
-                validation_error =
-                    "canonical-v2 traces require lowercase even-length hexadecimal trace_id and span_id";
+                validation_error = "canonical-v2 traces require lowercase even-length hexadecimal "
+                                   "trace_id and span_id";
                 break;
             }
             span_rows[i].producer_id = yyjson_get_str(producer);
@@ -13166,8 +13228,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
             qsort(edge_rows, (size_t)trace_count, sizeof(*edge_rows), runtime_trace_edge_compare);
         }
         runtime_trace_canonical_hash(edge_rows, trace_count, payload_hash);
-        batch_id = runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id,
-                                               payload_hash);
+        batch_id =
+            runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id, payload_hash);
     }
     if (!canonical_v2 && !batch_id) {
         free(span_hashes);
@@ -13175,6 +13237,21 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
         free(project);
         yyjson_doc_free(adoc);
         return cbm_mcp_text_result("invalid or oversized runtime trace batch identity", true);
+    }
+
+    if (srv->runtime_authorize &&
+        !srv->runtime_authorize(srv->runtime_authorize_context, project, producer_id,
+                                producer_epoch,
+                                canonical_v2 ? MCP_RUNTIME_TRACE_CANONICAL_VERSION
+                                             : MCP_RUNTIME_TRACE_SEMANTIC_VERSION)) {
+        free(span_hashes);
+        free(span_rows);
+        free(edge_rows);
+        free(batch_id);
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("runtime trace ingestion is not authorized for this session",
+                                   true);
     }
 
     if (!mcp_project_mutation_begin(srv, project)) {
@@ -13219,14 +13296,13 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     bool is_idempotent = false;
     int64_t observations = 0;
     int new_spans = 0;
-    int store_rc = canonical_v2
-                       ? cbm_store_ingest_runtime_trace_contribution(
-                             store, project, producer_id, producer_epoch, contribution_id,
-                             payload_hash, span_rows, trace_count, &is_idempotent, &observations,
-                             &new_spans)
-                       : cbm_store_ingest_runtime_traces(store, project, batch_id, payload_hash,
-                                                         edge_rows, trace_count, &is_idempotent,
-                                                         &observations);
+    int store_rc =
+        canonical_v2
+            ? cbm_store_ingest_runtime_trace_contribution(
+                  store, project, producer_id, producer_epoch, contribution_id, payload_hash,
+                  span_rows, trace_count, &is_idempotent, &observations, &new_spans)
+            : cbm_store_ingest_runtime_traces(store, project, batch_id, payload_hash, edge_rows,
+                                              trace_count, &is_idempotent, &observations);
     char store_error[CBM_SZ_512] = {0};
     if (store_rc != CBM_STORE_OK) {
         snprintf(store_error, sizeof(store_error), "%s", cbm_store_error(store));
@@ -13242,6 +13318,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     bool is_error = store_rc != CBM_STORE_OK;
     if (store_rc == CBM_STORE_CONFLICT) {
         yyjson_mut_obj_add_str(doc, root, "status", "conflict");
+    } else if (store_rc == CBM_STORE_QUOTA_EXCEEDED) {
+        yyjson_mut_obj_add_str(doc, root, "status", "quota_exceeded");
     } else if (is_error) {
         yyjson_mut_obj_add_str(doc, root, "status", "error");
     } else {
@@ -13284,6 +13362,100 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     return result;
 }
 
+typedef struct {
+    int offset;
+    char static_generation[CBM_SHA256_HEX_LEN + 1];
+    char runtime_generation[CBM_SHA256_HEX_LEN + 1];
+    uint64_t query_hash;
+} runtime_trace_cursor_t;
+
+static uint64_t runtime_trace_params_hash(const char *project, const char *caller,
+                                          const char *callee, const char *generation) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    hash = cursor_fnv1a64(project ? project : "", hash);
+    hash = cursor_fnv1a64("|", hash);
+    hash = cursor_fnv1a64(caller ? caller : "", hash);
+    hash = cursor_fnv1a64("|", hash);
+    hash = cursor_fnv1a64(callee ? callee : "", hash);
+    hash = cursor_fnv1a64("|", hash);
+    hash = cursor_fnv1a64(generation ? generation : "", hash);
+    return hash;
+}
+
+static bool runtime_trace_hex_generation(const char *text) {
+    if (!text || strlen(text) != CBM_SHA256_HEX_LEN) {
+        return false;
+    }
+    for (size_t i = 0; i < CBM_SHA256_HEX_LEN; i++) {
+        if (!((text[i] >= '0' && text[i] <= '9') || (text[i] >= 'a' && text[i] <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool runtime_trace_static_generation(const char *text) {
+    if (!text || !text[0] || strlen(text) >= CBM_SHA256_HEX_LEN + 1U) {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') || *p == '-' || *p == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool runtime_trace_cursor_decode(const char *token, runtime_trace_cursor_t *out) {
+    if (!token || !out || strlen(token) >= 256U) {
+        return false;
+    }
+    char copy[256];
+    snprintf(copy, sizeof(copy), "%s", token);
+    char *parts[5] = {0};
+    char *cursor = copy;
+    for (int i = 0; i < 5; i++) {
+        parts[i] = cursor;
+        char *separator = strchr(cursor, ':');
+        if (i < 4) {
+            if (!separator) {
+                return false;
+            }
+            *separator = '\0';
+            cursor = separator + 1;
+        } else if (separator) {
+            return false;
+        }
+    }
+    if (strcmp(parts[0], "r1") != 0 || !runtime_trace_static_generation(parts[2]) ||
+        !runtime_trace_hex_generation(parts[3]) || strlen(parts[4]) != 16U) {
+        return false;
+    }
+    errno = 0;
+    char *end = NULL;
+    long parsed_offset = strtol(parts[1], &end, 10);
+    if (errno == ERANGE || end == parts[1] || *end != '\0' || parsed_offset < 0 ||
+        parsed_offset > INT_MAX) {
+        return false;
+    }
+    errno = 0;
+    unsigned long long parsed_hash = strtoull(parts[4], &end, 16);
+    if (errno == ERANGE || end == parts[4] || *end != '\0') {
+        return false;
+    }
+    out->offset = (int)parsed_offset;
+    snprintf(out->static_generation, sizeof(out->static_generation), "%s", parts[2]);
+    snprintf(out->runtime_generation, sizeof(out->runtime_generation), "%s", parts[3]);
+    out->query_hash = (uint64_t)parsed_hash;
+    return true;
+}
+
+static void runtime_trace_cursor_encode(const runtime_trace_cursor_t *cursor, char *out,
+                                        size_t out_size) {
+    snprintf(out, out_size, "r1:%d:%s:%s:%016llx", cursor->offset, cursor->static_generation,
+             cursor->runtime_generation, (unsigned long long)cursor->query_hash);
+}
+
 static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) {
     char *project = get_project_arg(args);
     if (!project || !project[0] || !cbm_validate_project_name(project)) {
@@ -13293,10 +13465,39 @@ static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) 
 
     int limit = cbm_mcp_get_int_arg(args, "limit", 100);
     int offset = cbm_mcp_get_int_arg(args, "offset", 0);
+    bool include_overlay = cbm_mcp_get_bool_arg(args, "include_overlay");
+    char *requested_generation = cbm_mcp_get_string_arg(args, "runtime_generation");
+    char *requested_cursor = cbm_mcp_get_string_arg(args, "cursor");
     if (limit < 1 || limit > 1000 || offset < 0) {
+        free(requested_generation);
+        free(requested_cursor);
         free(project);
-        return cbm_mcp_text_result("limit must be between 1 and 1000 and offset must be non-negative",
-                                   true);
+        return cbm_mcp_text_result(
+            "limit must be between 1 and 1000 and offset must be non-negative", true);
+    }
+    if (requested_generation && strlen(requested_generation) > CBM_SHA256_HEX_LEN) {
+        free(requested_generation);
+        free(requested_cursor);
+        free(project);
+        return cbm_mcp_text_result("runtime_generation is too long", true);
+    }
+    if (requested_generation && requested_generation[0] && !include_overlay) {
+        free(requested_generation);
+        free(requested_cursor);
+        free(project);
+        return cbm_mcp_text_result("runtime_generation requires include_overlay=true", true);
+    }
+    if (requested_cursor && strlen(requested_cursor) >= 256U) {
+        free(requested_generation);
+        free(requested_cursor);
+        free(project);
+        return cbm_mcp_text_result("cursor is too long", true);
+    }
+    if (requested_cursor && requested_cursor[0] && !include_overlay) {
+        free(requested_generation);
+        free(requested_cursor);
+        free(project);
+        return cbm_mcp_text_result("cursor requires include_overlay=true", true);
     }
 
     cbm_store_t *store = resolve_store(srv, project);
@@ -13304,6 +13505,8 @@ static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) 
         char *error = build_no_store_error(project);
         char *result = cbm_mcp_text_result(error, true);
         free(error);
+        free(requested_generation);
+        free(requested_cursor);
         free(project);
         return result;
     }
@@ -13313,17 +13516,85 @@ static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) 
     cbm_runtime_trace_edge_t *rows = NULL;
     int row_count = 0;
     int total = 0;
-    int store_rc = cbm_store_get_runtime_traces(store, project, caller, callee, limit, offset,
+    cbm_runtime_publication_t publication;
+    memset(&publication, 0, sizeof(publication));
+    bool overlay_available = false;
+    bool overlay_stale = false;
+    const char *cursor_error = NULL;
+    int store_rc;
+    if (include_overlay) {
+        int publication_rc =
+            (requested_generation && requested_generation[0])
+                ? cbm_store_get_runtime_publication(store, project, requested_generation,
+                                                    &publication)
+                : cbm_store_get_runtime_publication_head(store, project, &publication);
+        if (publication_rc == CBM_STORE_OK) {
+            overlay_available = true;
+            if (requested_cursor && requested_cursor[0]) {
+                runtime_trace_cursor_t decoded;
+                uint64_t expected_hash =
+                    runtime_trace_params_hash(project, caller, callee, requested_generation);
+                if (!runtime_trace_cursor_decode(requested_cursor, &decoded)) {
+                    cursor_error = "invalid_cursor: unrecognized token — re-run the original "
+                                   "query without 'cursor'";
+                } else if (decoded.query_hash != expected_hash) {
+                    cursor_error = "cursor_params_mismatch: this cursor was issued for different "
+                                   "arguments — pass the cursor back with all other arguments "
+                                   "identical";
+                } else if (strcmp(decoded.static_generation, publication.static_generation) != 0 ||
+                           strcmp(decoded.runtime_generation, publication.runtime_generation) !=
+                               0) {
+                    cursor_error = "stale_cursor: the static/runtime publication changed since "
+                                   "this cursor was issued — re-run without 'cursor'";
+                } else {
+                    offset = decoded.offset;
+                }
+            }
+            if (cursor_error) {
+                store_rc = CBM_STORE_CONFLICT;
+            } else {
+                store_rc = cbm_store_get_runtime_publication_edges(
+                    store, project, publication.runtime_generation, caller, callee, limit, offset,
+                    &rows, &row_count, &total);
+            }
+        } else if (publication_rc == CBM_STORE_NOT_FOUND) {
+            /* A legacy database can contain compact traces from before
+             * publication metadata existed. Do not expose those rows as a
+             * falsely pinned overlay. */
+            overlay_stale = (requested_generation && requested_generation[0]) ||
+                            (requested_cursor && requested_cursor[0]);
+            store_rc = overlay_stale ? CBM_STORE_CONFLICT : CBM_STORE_OK;
+        } else {
+            store_rc = publication_rc;
+        }
+    } else {
+        store_rc = cbm_store_get_runtime_traces(store, project, caller, callee, limit, offset,
                                                 &rows, &row_count, &total);
+    }
     if (store_rc != CBM_STORE_OK) {
-        const char *error_text = cbm_store_error(store);
+        const char *error_text = cursor_error    ? cursor_error
+                                 : overlay_stale ? "runtime publication generation is stale"
+                                                 : cbm_store_error(store);
         char message[CBM_SZ_256];
         snprintf(message, sizeof(message), "%s",
                  error_text && error_text[0] ? error_text : "runtime trace query failed");
         free(caller);
         free(callee);
+        free(requested_generation);
+        free(requested_cursor);
         free(project);
         return cbm_mcp_text_result(message, true);
+    }
+
+    cbm_runtime_metrics_t metrics;
+    if (cbm_store_get_runtime_metrics(store, project, &metrics) != CBM_STORE_OK) {
+        cbm_store_free_runtime_traces(rows, row_count);
+        free(caller);
+        free(callee);
+        free(requested_generation);
+        free(requested_cursor);
+        free(project);
+        return cbm_mcp_text_result("runtime metrics query failed", true);
     }
 
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
@@ -13340,6 +13611,59 @@ static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) 
     yyjson_mut_obj_add_int(doc, root, "returned", row_count);
     yyjson_mut_obj_add_bool(doc, root, "has_more",
                             (int64_t)offset + (int64_t)row_count < (int64_t)total);
+    yyjson_mut_val *metrics_obj = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "legacy_batches", metrics.legacy_batches);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "canonical_contributions",
+                            metrics.canonical_contributions);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "canonical_spans", metrics.canonical_spans);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "runtime_edges", metrics.runtime_edges);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "runtime_publications", metrics.runtime_publications);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "runtime_endpoints", metrics.runtime_endpoints);
+    yyjson_mut_obj_add_sint(doc, metrics_obj, "runtime_resolutions", metrics.runtime_resolutions);
+    yyjson_mut_val *quota_obj = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_sint(doc, quota_obj, "max_legacy_batches", metrics.quota.max_legacy_batches);
+    yyjson_mut_obj_add_sint(doc, quota_obj, "max_canonical_contributions",
+                            metrics.quota.max_canonical_contributions);
+    yyjson_mut_obj_add_sint(doc, quota_obj, "max_canonical_spans",
+                            metrics.quota.max_canonical_spans);
+    yyjson_mut_obj_add_val(doc, metrics_obj, "quota", quota_obj);
+    yyjson_mut_obj_add_val(doc, root, "runtime_metrics", metrics_obj);
+    if (include_overlay) {
+        yyjson_mut_obj_add_bool(doc, root, "overlay_requested", true);
+        yyjson_mut_obj_add_str(doc, root, "overlay_edge_type", "RUNTIME_CALL");
+        yyjson_mut_obj_add_bool(doc, root, "overlay_available", overlay_available);
+        bool any_p99 = false;
+        for (int i = 0; i < row_count; i++) {
+            any_p99 = any_p99 || rows[i].duration_p99_available;
+        }
+        yyjson_mut_obj_add_bool(doc, root, "p99_available", any_p99);
+        if (!any_p99) {
+            yyjson_mut_obj_add_str(doc, root, "p99_unavailable_reason",
+                                   "the selected publication rows have no duration distribution");
+        }
+        if (overlay_available) {
+            yyjson_mut_obj_add_strcpy(doc, root, "static_generation",
+                                      publication.static_generation);
+            yyjson_mut_obj_add_strcpy(doc, root, "runtime_generation",
+                                      publication.runtime_generation);
+        } else {
+            yyjson_mut_obj_add_str(doc, root, "overlay_reason",
+                                   "no finalized runtime publication is available");
+        }
+    }
+    if (include_overlay && overlay_available &&
+        (int64_t)offset + (int64_t)row_count < (int64_t)total) {
+        runtime_trace_cursor_t next = {0};
+        next.offset = offset + row_count;
+        snprintf(next.static_generation, sizeof(next.static_generation), "%s",
+                 publication.static_generation);
+        snprintf(next.runtime_generation, sizeof(next.runtime_generation), "%s",
+                 publication.runtime_generation);
+        next.query_hash = runtime_trace_params_hash(project, caller, callee, requested_generation);
+        char next_cursor[256];
+        runtime_trace_cursor_encode(&next, next_cursor, sizeof(next_cursor));
+        yyjson_mut_obj_add_strcpy(doc, root, "next_cursor", next_cursor);
+    }
     if (caller && caller[0]) {
         yyjson_mut_obj_add_strcpy(doc, root, "caller", caller);
     }
@@ -13355,6 +13679,44 @@ static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) 
         yyjson_mut_obj_add_sint(doc, edge, "duration_ns_total", rows[i].duration_ns_total);
         yyjson_mut_obj_add_sint(doc, edge, "duration_ns_max", rows[i].duration_ns_max);
         yyjson_mut_obj_add_sint(doc, edge, "observations", rows[i].observations);
+        yyjson_mut_obj_add_bool(doc, edge, "duration_p99_available",
+                                rows[i].duration_p99_available);
+        if (rows[i].duration_p99_available) {
+            yyjson_mut_obj_add_sint(doc, edge, "duration_p99_ns", rows[i].duration_p99_ns);
+        }
+        if (include_overlay && overlay_available) {
+            char caller_tag[16] = {0};
+            char callee_tag[16] = {0};
+            int caller_rc = cbm_store_runtime_publication_endpoint_tag(
+                store, project, publication.static_generation, publication.runtime_generation,
+                rows[i].caller, caller_tag, sizeof(caller_tag));
+            int callee_rc = cbm_store_runtime_publication_endpoint_tag(
+                store, project, publication.static_generation, publication.runtime_generation,
+                rows[i].callee, callee_tag, sizeof(callee_tag));
+            if ((caller_rc != CBM_STORE_OK && caller_rc != CBM_STORE_NOT_FOUND) ||
+                (callee_rc != CBM_STORE_OK && callee_rc != CBM_STORE_NOT_FOUND)) {
+                yyjson_mut_doc_free(doc);
+                cbm_store_free_runtime_traces(rows, row_count);
+                free(caller);
+                free(callee);
+                free(requested_generation);
+                free(requested_cursor);
+                free(project);
+                return cbm_mcp_text_result("runtime endpoint classification failed", true);
+            }
+            /* Old publications created before pinned resolution records are
+             * still readable when explicitly selected. Their endpoints must
+             * remain fail-closed instead of becoming empty JSON tags. */
+            if (caller_rc == CBM_STORE_NOT_FOUND) {
+                snprintf(caller_tag, sizeof(caller_tag), "%s", "unknown");
+            }
+            if (callee_rc == CBM_STORE_NOT_FOUND) {
+                snprintf(callee_tag, sizeof(callee_tag), "%s", "unknown");
+            }
+            yyjson_mut_obj_add_str(doc, edge, "edge_type", "RUNTIME_CALL");
+            yyjson_mut_obj_add_strcpy(doc, edge, "caller_endpoint_type", caller_tag);
+            yyjson_mut_obj_add_strcpy(doc, edge, "callee_endpoint_type", callee_tag);
+        }
         yyjson_mut_arr_add_val(edge_array, edge);
     }
     yyjson_mut_obj_add_val(doc, root, "edges", edge_array);
@@ -13364,6 +13726,8 @@ static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) 
     cbm_store_free_runtime_traces(rows, row_count);
     free(caller);
     free(callee);
+    free(requested_generation);
+    free(requested_cursor);
     free(project);
 
     char *result = cbm_mcp_text_result(json, false);

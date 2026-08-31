@@ -4520,8 +4520,12 @@ TEST(daemon_runtime_process_fingerprint_never_hashes_replacement_path) {
               : -1;
     setup = setup && image_written > 0 && image_written < (int)sizeof(image_path) &&
             replacement_written > 0 && replacement_written < (int)sizeof(replacement_path) &&
-            runtime_test_copy_executable("/bin/cat", image_path) &&
-            runtime_test_copy_executable("/bin/echo", replacement_path);
+            /* Use standalone shell binaries rather than /bin/cat and
+             * /bin/echo: some Linux distributions provide those names through
+             * a multi-call coreutils binary, which rejects the copied argv[0]
+             * "image" before the fingerprint fixture can observe it. */
+            runtime_test_copy_executable("/bin/sh", image_path) &&
+            runtime_test_copy_executable("/bin/bash", replacement_path);
 
     char original[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};
     char replacement[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};

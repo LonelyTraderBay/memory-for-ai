@@ -699,6 +699,29 @@ static int read_metadata_version(const char *repo_path) {
     return version;
 }
 
+/* Runtime sidecar artifacts are carried by the same SQLite snapshot but have
+ * an independent compatibility boundary. Old metadata has no field and is
+ * therefore runtime version 0. */
+static int read_metadata_runtime_version(const char *repo_path) {
+    char meta_path[CBM_SZ_4K];
+    artifact_path(meta_path, sizeof(meta_path), repo_path, CBM_ARTIFACT_META);
+    size_t len = 0;
+    char *json = read_file_alloc(meta_path, &len);
+    if (!json) {
+        return CBM_NOT_FOUND;
+    }
+    yyjson_doc *doc = yyjson_read(json, len, 0);
+    free(json);
+    if (!doc) {
+        return CBM_NOT_FOUND;
+    }
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *ver = root ? yyjson_obj_get(root, "runtime_artifact_version") : NULL;
+    int version = ver ? yyjson_get_int(ver) : 0;
+    yyjson_doc_free(doc);
+    return version;
+}
+
 /* Read original_size from artifact.json. Returns 0 on error. */
 static size_t read_metadata_original_size(const char *repo_path) {
     char meta_path[CBM_SZ_4K];
@@ -735,6 +758,7 @@ static int write_metadata(const char *repo_path, const char *project_name, const
     yyjson_mut_doc_set_root(doc, root);
 
     yyjson_mut_obj_add_int(doc, root, "schema_version", CBM_ARTIFACT_SCHEMA_VERSION);
+    yyjson_mut_obj_add_int(doc, root, "runtime_artifact_version", CBM_RUNTIME_ARTIFACT_VERSION);
     yyjson_mut_obj_add_str(doc, root, "commit", commit);
     yyjson_mut_obj_add_str(doc, root, "indexed_at", ts);
     yyjson_mut_obj_add_str(doc, root, "project", project_name);
@@ -1078,9 +1102,13 @@ int cbm_artifact_import(const char *repo_path, const char *cache_db_path) {
 
     /* Check schema version compatibility */
     int version = read_metadata_version(repo_path);
-    if (version < 0 || version > CBM_ARTIFACT_SCHEMA_VERSION) {
+    int runtime_version = read_metadata_runtime_version(repo_path);
+    if (version < 0 || version > CBM_ARTIFACT_SCHEMA_VERSION || runtime_version < 0 ||
+        runtime_version > CBM_RUNTIME_ARTIFACT_VERSION) {
         cbm_log_info("artifact.import", "skip", "schema_version_mismatch", "artifact_ver",
-                     itoa_buf(version), "current_ver", itoa_buf(CBM_ARTIFACT_SCHEMA_VERSION));
+                     itoa_buf(version), "current_ver", itoa_buf(CBM_ARTIFACT_SCHEMA_VERSION),
+                     "runtime_artifact_ver", itoa_buf(runtime_version), "runtime_current_ver",
+                     itoa_buf(CBM_RUNTIME_ARTIFACT_VERSION));
         return CBM_NOT_FOUND;
     }
 
@@ -1221,7 +1249,9 @@ bool cbm_artifact_exists(const char *repo_path) {
 
     /* Check schema version is compatible */
     int version = read_metadata_version(repo_path);
-    return version >= 0 && version <= CBM_ARTIFACT_SCHEMA_VERSION;
+    int runtime_version = read_metadata_runtime_version(repo_path);
+    return version >= 0 && version <= CBM_ARTIFACT_SCHEMA_VERSION && runtime_version >= 0 &&
+           runtime_version <= CBM_RUNTIME_ARTIFACT_VERSION;
 }
 
 /* ── Commit hash extraction ──────────────────────────────────────── */
