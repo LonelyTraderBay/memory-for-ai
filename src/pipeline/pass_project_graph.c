@@ -18,6 +18,7 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,9 +94,9 @@ static void pg_copy_token(char *out, size_t out_sz, const char *src) {
         quote = *src++;
     }
     size_t n = 0;
-    while (src[n] && !isspace((unsigned char)src[n]) && src[n] != ',' &&
-           src[n] != ')' && src[n] != ']' && src[n] != '}' && src[n] != '=' &&
-           src[n] != '\r' && src[n] != '\n' && n + SKIP_ONE < out_sz) {
+    while (src[n] && !isspace((unsigned char)src[n]) && src[n] != ',' && src[n] != ')' &&
+           src[n] != ']' && src[n] != '}' && src[n] != '=' && src[n] != '\r' && src[n] != '\n' &&
+           n + SKIP_ONE < out_sz) {
         if (quote != '\0' && src[n] == quote) {
             break;
         }
@@ -135,8 +136,7 @@ static char *pg_read_file(const char *path, int *out_len) {
         return NULL;
     }
     long size = ftell(f);
-    if (size <= 0 || size > PG_MAX_SOURCE || size > cbm_max_file_bytes() ||
-        size > (long)INT_MAX) {
+    if (size <= 0 || size > PG_MAX_SOURCE || size > cbm_max_file_bytes() || size > (long)INT_MAX) {
         fclose(f);
         return NULL;
     }
@@ -160,6 +160,80 @@ static const cbm_gbuf_node_t *pg_file_node(cbm_pipeline_ctx_t *ctx, const char *
     return node;
 }
 
+/* Discovery deliberately keeps selected JSON files out of source extraction.
+ * Project-graph evidence still needs a File node and a bounded path back to the
+ * manifest, so validate the relative path before joining it to repo_path. */
+static bool pg_safe_relative_path(const char *rel) {
+    if (!rel || !rel[0] || rel[0] == '/' || rel[0] == '\\') {
+        return false;
+    }
+    const char *component = rel;
+    for (const char *p = rel;; p++) {
+        if (*p == '\\') {
+            return false;
+        }
+        if (*p == '/' || *p == '\0') {
+            size_t length = (size_t)(p - component);
+            if (length == 2 && component[0] == '.' && component[1] == '.') {
+                return false;
+            }
+            if (*p == '\0') {
+                break;
+            }
+            component = p + SKIP_ONE;
+        }
+    }
+    return true;
+}
+
+static bool pg_ensure_file_node(cbm_pipeline_ctx_t *ctx, const char *rel) {
+    if (!ctx || !ctx->gbuf || !pg_safe_relative_path(rel)) {
+        return false;
+    }
+    if (pg_file_node(ctx, rel)) {
+        return true;
+    }
+    char *file_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel, "__file__");
+    if (!file_qn) {
+        return false;
+    }
+    const char *basename = pg_basename(rel);
+    const char *ext = strrchr(basename, '.');
+    char props[CBM_SZ_256];
+    snprintf(props, sizeof(props), "{\"extension\":\"%s\",\"source\":\"ignored-manifest\"}",
+             ext ? ext : "");
+    int64_t id = cbm_gbuf_upsert_node(ctx->gbuf, "File", basename, file_qn, rel, 0, 0, props);
+    free(file_qn);
+    return id > 0;
+}
+
+static char *pg_absolute_path(const char *repo_path, const char *rel) {
+    if (!repo_path || !repo_path[0] || !pg_safe_relative_path(rel)) {
+        return NULL;
+    }
+    size_t repo_len = strlen(repo_path);
+    size_t rel_len = strlen(rel);
+    bool trailing_separator =
+        repo_path[repo_len - SKIP_ONE] == '/' || repo_path[repo_len - SKIP_ONE] == '\\';
+    size_t separator_len = trailing_separator ? 0 : SKIP_ONE;
+    if (repo_len > SIZE_MAX - rel_len - separator_len - SKIP_ONE) {
+        return NULL;
+    }
+    size_t total = repo_len + separator_len + rel_len + SKIP_ONE;
+    char *path = (char *)malloc(total);
+    if (!path) {
+        return NULL;
+    }
+    memcpy(path, repo_path, repo_len);
+    size_t offset = repo_len;
+    if (!trailing_separator) {
+        path[offset++] = '/';
+    }
+    memcpy(path + offset, rel, rel_len);
+    path[offset + rel_len] = '\0';
+    return path;
+}
+
 static void pg_json_props(char *out, size_t out_sz, const char *kind, const char *scope,
                           const char *version) {
     char e_kind[PG_MAX_TOKEN];
@@ -168,14 +242,15 @@ static void pg_json_props(char *out, size_t out_sz, const char *kind, const char
     cbm_json_escape(e_kind, sizeof(e_kind), kind ? kind : "unknown");
     cbm_json_escape(e_scope, sizeof(e_scope), scope ? scope : "runtime");
     cbm_json_escape(e_version, sizeof(e_version), version ? version : "");
-    snprintf(out, out_sz, "{\"source\":\"manifest\",\"ecosystem\":\"%s\","
+    snprintf(out, out_sz,
+             "{\"source\":\"manifest\",\"ecosystem\":\"%s\","
              "\"scope\":\"%s\",\"version\":\"%s\",\"direct\":true}",
              e_kind, e_scope, e_version);
 }
 
-static int pg_emit_dependency(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
-                              const char *rel, const char *ecosystem, const char *name,
-                              const char *version, const char *scope) {
+static int pg_emit_dependency(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                              const char *ecosystem, const char *name, const char *version,
+                              const char *scope) {
     if (!src || !name || !name[0]) {
         return 0;
     }
@@ -196,11 +271,12 @@ static int pg_emit_dependency(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *sr
     char node_props[CBM_SZ_1K];
     char e_version[PG_MAX_TOKEN];
     cbm_json_escape(e_version, sizeof(e_version), version ? version : "");
-    snprintf(node_props, sizeof(node_props), "{\"external\":true,\"ecosystem\":\"%s\","
-             "\"package\":\"%s\",\"declared_version\":\"%s\"}", e_ecosystem, e_name,
-             e_version);
-    int64_t dep_id = cbm_gbuf_upsert_node(ctx->gbuf, "Package", safe_name, dep_qn, "", 0, 0,
-                                          node_props);
+    snprintf(node_props, sizeof(node_props),
+             "{\"external\":true,\"ecosystem\":\"%s\","
+             "\"package\":\"%s\",\"declared_version\":\"%s\"}",
+             e_ecosystem, e_name, e_version);
+    int64_t dep_id =
+        cbm_gbuf_upsert_node(ctx->gbuf, "Package", safe_name, dep_qn, "", 0, 0, node_props);
     if (dep_id <= 0 || dep_id == src->id) {
         return 0;
     }
@@ -211,7 +287,8 @@ static int pg_emit_dependency(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *sr
 static bool pg_is_dependency_section(const char *section) {
     return pg_contains(section, "dependencies") || pg_contains(section, "dev-dependencies") ||
            pg_contains(section, "devDependencies") || pg_contains(section, "peerDependencies") ||
-           pg_contains(section, "optionalDependencies") || pg_contains(section, "build-dependencies") ||
+           pg_contains(section, "optionalDependencies") ||
+           pg_contains(section, "build-dependencies") ||
            pg_contains(section, "workspace.dependencies");
 }
 
@@ -257,11 +334,11 @@ static int pg_parse_key_value_sections(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_n
                 key[klen] = '\0';
                 pg_trim(key);
                 pg_copy_token(value, sizeof(value), eq + SKIP_ONE);
-                bool is_list = strcmp(key, "dependencies") == 0 &&
-                               strchr(eq + SKIP_ONE, '[') != NULL;
+                bool is_list =
+                    strcmp(key, "dependencies") == 0 && strchr(eq + SKIP_ONE, '[') != NULL;
                 if (pg_is_dependency_section(section) && !is_list) {
-                    count += pg_emit_dependency(ctx, src, rel, ecosystem, key, value,
-                                                pg_scope(section));
+                    count +=
+                        pg_emit_dependency(ctx, src, rel, ecosystem, key, value, pg_scope(section));
                 }
                 if (is_list) {
                     const char *item = strchr(eq + SKIP_ONE, '[');
@@ -321,7 +398,9 @@ static int pg_parse_python_setup(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t 
         }
         if (in_install_requires) {
             const char *item = line;
-            const char *requires = strstr(line, "install_requires");
+            const char *
+                requires
+            = strstr(line, "install_requires");
             if (requires) {
                 const char *open = strchr(requires, '[');
                 item = open ? open + SKIP_ONE : line;
@@ -350,6 +429,180 @@ static int pg_parse_python_setup(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t 
     return count;
 }
 
+/* Parse the dependency maps in Dart's pubspec.yaml.  YAML values may be
+ * scalars or nested maps (sdk/path/git); the dependency key itself is the
+ * stable package identity, so emit it once at the first two-space entry and
+ * deliberately ignore nested option keys. */
+static int pg_parse_pubspec(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                            const char *source) {
+    int count = 0;
+    char section[PG_MAX_TOKEN] = "";
+    const char *p = source;
+    while (p && *p) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char line[CBM_SZ_1K];
+        size_t cp = len < sizeof(line) - SKIP_ONE ? len : sizeof(line) - SKIP_ONE;
+        memcpy(line, p, cp);
+        line[cp] = '\0';
+        size_t indent = 0;
+        while (line[indent] == ' ' || line[indent] == '\t') {
+            indent++;
+        }
+        pg_trim(line);
+        if (line[0] == '#' || line[0] == '\0') {
+            /* no-op */
+        } else if (indent == 0 && line[strlen(line) - SKIP_ONE] == ':') {
+            line[strlen(line) - SKIP_ONE] = '\0';
+            snprintf(section, sizeof(section), "%s", line);
+        } else if (indent == 2 &&
+                   (pg_eq(section, "dependencies") || pg_eq(section, "dev_dependencies") ||
+                    pg_eq(section, "dependency_overrides"))) {
+            char *colon = strchr(line, ':');
+            if (colon) {
+                *colon = '\0';
+                pg_trim(line);
+                if (line[0] && !pg_eq(line, "sdk") && !pg_eq(line, "path") && !pg_eq(line, "git") &&
+                    !pg_eq(line, "hosted")) {
+                    char version[PG_MAX_TOKEN];
+                    pg_copy_token(version, sizeof(version), colon + SKIP_ONE);
+                    count += pg_emit_dependency(ctx, src, rel, "pub", line, version,
+                                                pg_eq(section, "dependencies") ? "runtime" : "dev");
+                }
+            }
+        }
+        if (!eol) {
+            break;
+        }
+        p = eol + SKIP_ONE;
+    }
+    return count;
+}
+
+/* Parse Hex dependencies from mix.exs without evaluating Elixir.  Only literal
+ * atoms inside deps: [...] are accepted; computed expressions are ignored. */
+static int pg_parse_mix(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                        const char *source) {
+    int count = 0;
+    bool in_deps = false;
+    const char *p = source;
+    while (p && *p) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char line[CBM_SZ_1K];
+        size_t cp = len < sizeof(line) - SKIP_ONE ? len : sizeof(line) - SKIP_ONE;
+        memcpy(line, p, cp);
+        line[cp] = '\0';
+        if (strstr(line, "defp deps") || strstr(line, "def deps")) {
+            in_deps = true;
+        }
+        if (in_deps) {
+            const char *item = line;
+            while ((item = strchr(item, '{')) != NULL) {
+                if (item[SKIP_ONE] == ':') {
+                    char name[PG_MAX_TOKEN];
+                    pg_copy_token(name, sizeof(name), item + 2);
+                    if (name[0]) {
+                        count += pg_emit_dependency(ctx, src, rel, "hex", name, "", "runtime");
+                    }
+                }
+                item += SKIP_ONE;
+            }
+            if (strchr(line, ']')) {
+                in_deps = false;
+            }
+        }
+        if (!eol) {
+            break;
+        }
+        p = eol + SKIP_ONE;
+    }
+    return count;
+}
+
+/* Parse literal SwiftPM package URLs without executing Package.swift. The
+ * package identity is the final URL component (with the conventional .git
+ * suffix removed); path-only packages are intentionally not external
+ * dependencies. */
+static int pg_parse_swiftpm(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                            const char *source) {
+    int count = 0;
+    const char *p = source;
+    while (p && *p) {
+        const char *package = strstr(p, ".package(");
+        if (!package) {
+            break;
+        }
+        const char *url_key = strstr(package, "url:");
+        const char *next = strchr(package, ')');
+        if (!url_key || (next && url_key > next)) {
+            p = package + SLEN(".package(");
+            continue;
+        }
+        const char *quote = strpbrk(url_key + SLEN("url:"), "\"'");
+        if (!quote || (next && quote > next)) {
+            p = package + SLEN(".package(");
+            continue;
+        }
+        char url[PG_MAX_TOKEN];
+        pg_copy_token(url, sizeof(url), quote);
+        char *name = strrchr(url, '/');
+        name = name ? name + SKIP_ONE : url;
+        char *query = strpbrk(name, "?#");
+        if (query) {
+            *query = '\0';
+        }
+        size_t name_len = strlen(name);
+        if (name_len > SLEN(".git") && strcmp(name + name_len - SLEN(".git"), ".git") == 0) {
+            name[name_len - SLEN(".git")] = '\0';
+        }
+        char version[PG_MAX_TOKEN] = "";
+        const char *from = strstr(url_key, "from:");
+        if (from && (!next || from < next)) {
+            pg_copy_token(version, sizeof(version), from + SLEN("from:"));
+        }
+        if (name[0]) {
+            count += pg_emit_dependency(ctx, src, rel, "swiftpm", name, version, "runtime");
+        }
+        p = next ? next + SKIP_ONE : package + SLEN(".package(");
+    }
+    return count;
+}
+
+/* Parse literal Ruby gem declarations from a .gemspec. */
+static int pg_parse_gemspec(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                            const char *source) {
+    int count = 0;
+    const char *p = source;
+    while (p && *p) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char line[CBM_SZ_1K];
+        size_t cp = len < sizeof(line) - SKIP_ONE ? len : sizeof(line) - SKIP_ONE;
+        memcpy(line, p, cp);
+        line[cp] = '\0';
+        bool development = strstr(line, "add_development_dependency") != NULL;
+        if (strstr(line, "add_dependency") || strstr(line, "add_runtime_dependency") ||
+            development) {
+            const char *quote = strchr(line, '\'');
+            if (!quote) {
+                quote = strchr(line, '"');
+            }
+            if (quote) {
+                char name[PG_MAX_TOKEN];
+                pg_copy_token(name, sizeof(name), quote + SKIP_ONE);
+                count += pg_emit_dependency(ctx, src, rel, "rubygems", name, "",
+                                            development ? "dev" : "runtime");
+            }
+        }
+        if (!eol) {
+            break;
+        }
+        p = eol + SKIP_ONE;
+    }
+    return count;
+}
+
 /* Parse JSON dependency sections without treating the package's own `name`
  * field as a dependency. Using the vendored parser handles both pretty and
  * minified manifests, comments, and trailing commas without guessing from
@@ -365,10 +618,9 @@ static int pg_parse_json_sections(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t
         return 0;
     }
 
-    static const char *const sections[] = {"dependencies", "devDependencies",
-                                            "peerDependencies", "optionalDependencies",
-                                            "bundledDependencies", "require", "require-dev",
-                                            NULL};
+    static const char *const sections[] = {
+        "dependencies",        "devDependencies", "peerDependencies", "optionalDependencies",
+        "bundledDependencies", "require",         "require-dev",      NULL};
     for (int i = 0; sections[i]; i++) {
         yyjson_val *section = yyjson_obj_get(root, sections[i]);
         if (!section) {
@@ -431,7 +683,8 @@ static int pg_parse_requirements(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t 
             name[name_len] = '\0';
             const char *version_src = split;
             while (*version_src == '=' || *version_src == '<' || *version_src == '>' ||
-                   *version_src == '!' || *version_src == '~' || isspace((unsigned char)*version_src)) {
+                   *version_src == '!' || *version_src == '~' ||
+                   isspace((unsigned char)*version_src)) {
                 version_src++;
             }
             pg_copy_token(version, sizeof(version), version_src);
@@ -445,8 +698,8 @@ static int pg_parse_requirements(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t 
     return count;
 }
 
-static int pg_parse_go_mod(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
-                           const char *rel, const char *source) {
+static int pg_parse_go_mod(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                           const char *source) {
     int count = 0;
     bool in_require = false;
     const char *p = source;
@@ -495,8 +748,8 @@ static int pg_parse_go_mod(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
     return count;
 }
 
-static int pg_parse_gradle(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
-                           const char *rel, const char *source) {
+static int pg_parse_gradle(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                           const char *source) {
     int count = 0;
     const char *p = source;
     while (p && *p) {
@@ -527,8 +780,8 @@ static int pg_parse_gradle(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
     return count;
 }
 
-static int pg_parse_gemfile(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
-                            const char *rel, const char *source) {
+static int pg_parse_gemfile(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                            const char *source) {
     int count = 0;
     const char *p = source;
     while (p && *p) {
@@ -556,8 +809,8 @@ static int pg_parse_gemfile(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
     return count;
 }
 
-static int pg_parse_pom(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
-                        const char *rel, const char *source) {
+static int pg_parse_pom(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, const char *rel,
+                        const char *source) {
     int count = 0;
     const char *p = source;
     bool in_dependency = false;
@@ -626,6 +879,10 @@ static bool pg_build_manifest(const char *rel, const char *base, const char **ki
         *kind = "cargo";
         return true;
     }
+    if (pg_eq(base, "pubspec.yaml")) {
+        *kind = "pub";
+        return true;
+    }
     if (pg_eq(base, "pyproject.toml") || pg_eq(base, "setup.py") || pg_eq(base, "tox.ini") ||
         pg_eq(base, "pytest.ini") || pg_eq(base, "requirements.txt") ||
         (strncmp(base, "requirements-", SLEN("requirements-")) == 0 &&
@@ -645,12 +902,26 @@ static bool pg_build_manifest(const char *rel, const char *base, const char **ki
         *kind = "rubygems";
         return true;
     }
+    if (pg_eq(base, "mix.exs")) {
+        *kind = "hex";
+        return true;
+    }
+    size_t base_len = strlen(base);
+    if (base_len >= SLEN(".gemspec") &&
+        strcmp(base + base_len - SLEN(".gemspec"), ".gemspec") == 0) {
+        *kind = "rubygems";
+        return true;
+    }
+    if (pg_eq(base, "Package.swift")) {
+        *kind = "swiftpm";
+        return true;
+    }
     if (pg_eq(base, "go.mod")) {
         *kind = "gomod";
         return true;
     }
     if (rel && (strncmp(rel, ".github/workflows/", SLEN(".github/workflows/")) == 0 ||
-               strncmp(rel, ".github\\workflows\\", SLEN(".github\\workflows\\")) == 0)) {
+                strncmp(rel, ".github\\workflows\\", SLEN(".github\\workflows\\")) == 0)) {
         *kind = "github-actions";
         return true;
     }
@@ -686,8 +957,8 @@ static int pg_add_target(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src, co
     char props[CBM_SZ_1K];
     snprintf(props, sizeof(props), "{\"kind\":\"%s\",\"test_target\":%s,\"source\":\"manifest\"}",
              e_kind, pg_is_test_target(target_name) ? "true" : "false");
-    int64_t id = cbm_gbuf_upsert_node(ctx->gbuf, "BuildTarget", target_name, qn, rel, line, line,
-                                      props);
+    int64_t id =
+        cbm_gbuf_upsert_node(ctx->gbuf, "BuildTarget", target_name, qn, rel, line, line, props);
     if (id <= 0) {
         return 0;
     }
@@ -768,8 +1039,9 @@ static void pg_make_targets(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src,
                         pg_copy_token(dep_name, sizeof(dep_name), dep);
                         for (int i = 0; i < *target_count; i++) {
                             if (strcmp(targets[i].name, dep_name) == 0 && i != target_index) {
-                                cbm_gbuf_insert_edge(ctx->gbuf, targets[target_index].id, targets[i].id,
-                                                     "DEPENDS_ON", "{\"source\":\"build-target\"}");
+                                cbm_gbuf_insert_edge(ctx->gbuf, targets[target_index].id,
+                                                     targets[i].id, "DEPENDS_ON",
+                                                     "{\"source\":\"build-target\"}");
                             }
                         }
                         while (*dep && !isspace((unsigned char)*dep)) {
@@ -790,10 +1062,10 @@ static void pg_cmake_targets(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *src
                              const char *source, const char *kind, pg_target_t *targets,
                              int *target_count) {
     static const char *const cmake_calls[] = {"add_executable(", "add_library(",
-                                               "add_custom_target(", NULL};
-    static const char *const meson_calls[] = {"executable(", "library(", "shared_library(",
-                                               "static_library(", "custom_target(", "test(",
-                                               NULL};
+                                              "add_custom_target(", NULL};
+    static const char *const meson_calls[] = {
+        "executable(", "library(", "shared_library(", "static_library(", "custom_target(",
+        "test(",       NULL};
     const char *const *calls = strcmp(kind, "meson") == 0 ? meson_calls : cmake_calls;
     const char *p = source;
     int line_no = 1;
@@ -981,9 +1253,9 @@ static int pg_process_audit_report(cbm_pipeline_ctx_t *ctx, const cbm_file_info_
     char report_qn[CBM_SZ_1K];
     snprintf(report_qn, sizeof(report_qn), "%s.__security_report__.%s", ctx->project_name,
              file->rel_path);
-    int64_t report = cbm_gbuf_upsert_node(ctx->gbuf, "SecurityReport", pg_basename(file->rel_path),
-                                          report_qn, file->rel_path, 1, 0,
-                                          "{\"source\":\"local-audit-report\"}");
+    int64_t report =
+        cbm_gbuf_upsert_node(ctx->gbuf, "SecurityReport", pg_basename(file->rel_path), report_qn,
+                             file->rel_path, 1, 0, "{\"source\":\"local-audit-report\"}");
     if (report > 0 && report != src->id) {
         cbm_gbuf_insert_edge(ctx->gbuf, src->id, report, "DEFINES", "{}");
     }
@@ -1016,7 +1288,8 @@ static int pg_process_audit_report(cbm_pipeline_ctx_t *ctx, const cbm_file_info_
         char qn[CBM_SZ_1K];
         snprintf(qn, sizeof(qn), "%s.__security_advisory__.%s", ctx->project_name, ids[i]);
         char props[CBM_SZ_512];
-        snprintf(props, sizeof(props), "{\"advisory_id\":\"%s\",\"severity\":\"unknown\","
+        snprintf(props, sizeof(props),
+                 "{\"advisory_id\":\"%s\",\"severity\":\"unknown\","
                  "\"source\":\"local-audit-report\",\"verified\":false}",
                  e_id);
         int64_t advisory = cbm_gbuf_upsert_node(ctx->gbuf, "SecurityAdvisory", ids[i], qn,
@@ -1029,7 +1302,8 @@ static int pg_process_audit_report(cbm_pipeline_ctx_t *ctx, const cbm_file_info_
     return id_count;
 }
 
-static int pg_add_test_suites(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, int file_count) {
+static int pg_add_test_suites(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files,
+                              int file_count) {
     int count = 0;
     for (int i = 0; i < file_count && count < PG_MAX_TEST_SUITES; i++) {
         const char *rel = files[i].rel_path;
@@ -1044,12 +1318,12 @@ static int pg_add_test_suites(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *fi
         snprintf(qn, sizeof(qn), "%s.__test_suite__.%s", ctx->project_name, rel);
         char props[CBM_SZ_512];
         const char *framework = strstr(rel, ".test.") || strstr(rel, ".spec.") ? "jest-like"
-                                : strstr(rel, "_test.go")                    ? "go-test"
-                                : strstr(rel, ".py")                         ? "pytest-like"
-                                                                                 : "path-inferred";
+                                : strstr(rel, "_test.go")                      ? "go-test"
+                                : strstr(rel, ".py")                           ? "pytest-like"
+                                                                               : "path-inferred";
         snprintf(props, sizeof(props), "{\"is_test\":true,\"framework\":\"%s\"}", framework);
-        int64_t suite = cbm_gbuf_upsert_node(ctx->gbuf, "TestSuite", pg_basename(rel), qn, rel, 1,
-                                             0, props);
+        int64_t suite =
+            cbm_gbuf_upsert_node(ctx->gbuf, "TestSuite", pg_basename(rel), qn, rel, 1, 0, props);
         if (suite > 0 && suite != file->id) {
             cbm_gbuf_insert_edge(ctx->gbuf, suite, file->id, "CONTAINS_TEST", "{}");
             count++;
@@ -1068,7 +1342,8 @@ static void pg_link_build_test_targets(cbm_pipeline_ctx_t *ctx) {
         return;
     }
     for (int i = 0; i < target_count; i++) {
-        if (!targets[i]->properties_json || !strstr(targets[i]->properties_json, "\"test_target\":true")) {
+        if (!targets[i]->properties_json ||
+            !strstr(targets[i]->properties_json, "\"test_target\":true")) {
             continue;
         }
         for (int j = 0; j < suite_count && j < PG_MAX_TEST_SUITES; j++) {
@@ -1107,28 +1382,41 @@ static int pg_process_manifest(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
     } else if (strcmp(kind, "cargo") == 0 || strcmp(kind, "python") == 0) {
         deps = pg_parse_key_value_sections(ctx, src, file->rel_path, source,
                                            strcmp(kind, "cargo") == 0 ? "cargo" : "pypi");
-        if (strcmp(kind, "python") == 0 && (pg_eq(pg_basename(file->rel_path), "requirements.txt") ||
-                                             strstr(pg_basename(file->rel_path), "requirements-") == pg_basename(file->rel_path))) {
+        if (strcmp(kind, "python") == 0 &&
+            (pg_eq(pg_basename(file->rel_path), "requirements.txt") ||
+             strstr(pg_basename(file->rel_path), "requirements-") == pg_basename(file->rel_path))) {
             deps += pg_parse_requirements(ctx, src, file->rel_path, source);
         }
         if (strcmp(kind, "python") == 0 && pg_eq(pg_basename(file->rel_path), "setup.py")) {
             deps += pg_parse_python_setup(ctx, src, file->rel_path, source);
         }
+    } else if (strcmp(kind, "pub") == 0) {
+        deps = pg_parse_pubspec(ctx, src, file->rel_path, source);
+    } else if (strcmp(kind, "hex") == 0) {
+        deps = pg_parse_mix(ctx, src, file->rel_path, source);
+    } else if (strcmp(kind, "swiftpm") == 0) {
+        deps = pg_parse_swiftpm(ctx, src, file->rel_path, source);
     } else if (strcmp(kind, "gomod") == 0) {
         deps = pg_parse_go_mod(ctx, src, file->rel_path, source);
     } else if (strcmp(kind, "gradle") == 0) {
         deps = pg_parse_gradle(ctx, src, file->rel_path, source);
     } else if (strcmp(kind, "rubygems") == 0) {
-        deps = pg_parse_gemfile(ctx, src, file->rel_path, source);
+        size_t base_len = strlen(pg_basename(file->rel_path));
+        if (base_len >= SLEN(".gemspec") &&
+            strcmp(pg_basename(file->rel_path) + base_len - SLEN(".gemspec"), ".gemspec") == 0) {
+            deps = pg_parse_gemspec(ctx, src, file->rel_path, source);
+        } else {
+            deps = pg_parse_gemfile(ctx, src, file->rel_path, source);
+        }
     } else if (strcmp(kind, "maven") == 0) {
         deps = pg_parse_pom(ctx, src, file->rel_path, source);
     }
 
-    bool dependency_manifest = strcmp(kind, "npm") == 0 || strcmp(kind, "composer") == 0 ||
-                               strcmp(kind, "cargo") == 0 || strcmp(kind, "python") == 0 ||
-                               strcmp(kind, "gomod") == 0 || strcmp(kind, "gradle") == 0 ||
-                               strcmp(kind, "rubygems") == 0 || strcmp(kind, "maven") == 0 ||
-                               strcmp(kind, "docker") == 0;
+    bool dependency_manifest =
+        strcmp(kind, "npm") == 0 || strcmp(kind, "composer") == 0 || strcmp(kind, "cargo") == 0 ||
+        strcmp(kind, "python") == 0 || strcmp(kind, "gomod") == 0 || strcmp(kind, "gradle") == 0 ||
+        strcmp(kind, "rubygems") == 0 || strcmp(kind, "maven") == 0 || strcmp(kind, "pub") == 0 ||
+        strcmp(kind, "hex") == 0 || strcmp(kind, "swiftpm") == 0 || strcmp(kind, "docker") == 0;
     if (!dependency_manifest) {
         return target_count + deps;
     }
@@ -1137,16 +1425,19 @@ static int pg_process_manifest(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
     snprintf(audit_qn, sizeof(audit_qn), "%s.__security_audit__.%s", ctx->project_name,
              file->rel_path);
     char audit_props[CBM_SZ_512];
-    snprintf(audit_props, sizeof(audit_props), "{\"status\":\"not_run\",\"evidence\":\"%s\","
-             "\"dependency_count\":%d}", kind, deps);
+    snprintf(audit_props, sizeof(audit_props),
+             "{\"status\":\"not_run\",\"evidence\":\"%s\","
+             "\"dependency_count\":%d}",
+             kind, deps);
     int64_t audit = cbm_gbuf_upsert_node(ctx->gbuf, "SecurityAudit", pg_basename(file->rel_path),
                                          audit_qn, file->rel_path, 1, 0, audit_props);
     if (audit > 0 && audit != src->id) {
-        cbm_gbuf_insert_edge(ctx->gbuf, src->id, audit, "SECURITY_SCANS", "{\"status\":\"not_run\"}");
+        cbm_gbuf_insert_edge(ctx->gbuf, src->id, audit, "SECURITY_SCANS",
+                             "{\"status\":\"not_run\"}");
         const cbm_gbuf_edge_t **dep_edges = NULL;
         int dep_edge_count = 0;
         if (cbm_gbuf_find_edges_by_source_type(ctx->gbuf, src->id, "DEPENDS_ON", &dep_edges,
-                                                &dep_edge_count) == 0) {
+                                               &dep_edge_count) == 0) {
             for (int i = 0; i < dep_edge_count; i++) {
                 if (dep_edges[i]->target_id > 0) {
                     cbm_gbuf_insert_edge(ctx->gbuf, audit, dep_edges[i]->target_id, "AUDITS",
@@ -1158,9 +1449,42 @@ static int pg_process_manifest(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *f
     return target_count + deps;
 }
 
+static int pg_process_candidate(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file,
+                                bool *processed) {
+    if (processed) {
+        *processed = false;
+    }
+    if (!ctx || !file || !file->rel_path) {
+        return 0;
+    }
+    const char *base = pg_basename(file->rel_path);
+    const char *kind = NULL;
+    bool audit = pg_is_audit_report(base);
+    if (!audit && !pg_build_manifest(file->rel_path, base, &kind)) {
+        return 0;
+    }
+    if (!pg_ensure_file_node(ctx, file->rel_path)) {
+        return 0;
+    }
+    int source_len = 0;
+    char *source = pg_read_file(file->path, &source_len);
+    if (!source) {
+        return 0;
+    }
+    (void)source_len;
+    int items = audit ? pg_process_audit_report(ctx, file, source)
+                      : pg_process_manifest(ctx, file, kind, source);
+    free(source);
+    if (processed) {
+        *processed = true;
+    }
+    return items;
+}
+
 int cbm_pipeline_pass_project_graph(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files,
                                     int file_count) {
-    if (!ctx || !ctx->gbuf || !files || file_count <= 0) {
+    if (!ctx || !ctx->gbuf || file_count < 0 || (file_count > 0 && !files) ||
+        (file_count == 0 && (!ctx->ignored_files || ctx->ignored_count <= 0))) {
         return 0;
     }
     int manifests = 0;
@@ -1169,25 +1493,45 @@ int cbm_pipeline_pass_project_graph(cbm_pipeline_ctx_t *ctx, const cbm_file_info
         if (cbm_pipeline_check_cancel(ctx)) {
             return CBM_NOT_FOUND;
         }
-        int source_len = 0;
-        const char *base = pg_basename(files[i].rel_path);
+        bool processed = false;
+        graph_items += pg_process_candidate(ctx, &files[i], &processed);
+        if (processed) {
+            manifests++;
+        }
+    }
+
+    /* package.json and composer.json are intentionally classified as ignored
+     * JSON during discovery. Re-introduce only graph-relevant manifests as
+     * synthetic File evidence; explicit gitignore/cbmignore decisions remain
+     * respected because they carry a different reason. */
+    for (int i = 0; i < ctx->ignored_count; i++) {
+        if (cbm_pipeline_check_cancel(ctx)) {
+            return CBM_NOT_FOUND;
+        }
+        const cbm_ignored_file_t *ignored = &ctx->ignored_files[i];
+        if (!ignored->rel_path || !pg_eq(ignored->reason, "ignored-json")) {
+            continue;
+        }
         const char *kind = NULL;
-        bool audit = pg_is_audit_report(base);
-        if (!audit && !pg_build_manifest(files[i].rel_path, base, &kind)) {
+        if (!pg_build_manifest(ignored->rel_path, pg_basename(ignored->rel_path), &kind)) {
             continue;
         }
-        char *source = pg_read_file(files[i].path, &source_len);
-        if (!source) {
+        char *path = pg_absolute_path(ctx->repo_path, ignored->rel_path);
+        if (!path) {
             continue;
         }
-        (void)source_len;
-        if (audit) {
-            graph_items += pg_process_audit_report(ctx, &files[i], source);
-        } else {
-            graph_items += pg_process_manifest(ctx, &files[i], kind, source);
+        cbm_file_info_t manifest = {
+            .path = path,
+            .rel_path = ignored->rel_path,
+            .language = CBM_LANG_JSON,
+            .size = 0,
+        };
+        bool processed = false;
+        graph_items += pg_process_candidate(ctx, &manifest, &processed);
+        if (processed) {
+            manifests++;
         }
-        free(source);
-        manifests++;
+        free(path);
     }
     int suites = pg_add_test_suites(ctx, files, file_count);
     pg_link_build_test_targets(ctx);

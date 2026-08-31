@@ -184,7 +184,7 @@ typedef struct {
     char *rel_path; /* heap-allocated, relative to repo root */
     char *reason;   /* heap-allocated: "gitignore" | "cbmignore" |
                      * "skip-list" | "ignored-suffix" | "fast-pattern" |
-                     * "size-cap" */
+                     * "size-cap" | "ignored-json" */
 } cbm_ignored_file_t;
 
 /* Stored per-file ignore entries are capped (the walk still counts ALL of

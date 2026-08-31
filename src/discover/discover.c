@@ -799,6 +799,13 @@ static void walk_dir_process_file(const char *abs_path, const char *rel_path, co
     }
     CBMLanguage lang = detect_file_language(name, abs_path);
     if (lang == CBM_LANG_COUNT) {
+        /* JSON project/config files are deliberately excluded from source
+         * extraction, but selected manifests still feed the project-graph
+         * pass. Keep an explicit coverage record so downstream passes can
+         * consume the same file without pretending it was source-indexed. */
+        if (str_in_list(name, IGNORED_JSON_FILES)) {
+            file_list_add_ignored(out, rel_path, "ignored-json");
+        }
         return;
     }
     fl_add(out, abs_path, rel_path, lang, size);

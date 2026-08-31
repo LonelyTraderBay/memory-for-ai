@@ -751,6 +751,141 @@ TEST(store_bfs_multi_reports_truncation_at_ceiling) {
     PASS();
 }
 
+TEST(integ_project_graph_evidence) {
+    /* Add a real manifest after the baseline index, then exercise the same
+     * re-index route used by clients. This guards the post-extraction project
+     * graph instead of only testing its parser helpers in isolation. */
+    char runtime_ingest[1024];
+    snprintf(runtime_ingest, sizeof(runtime_ingest),
+             "{\"project\":\"%s\",\"source_batch_id\":\"integration-runtime-before-reindex\","
+             "\"traces\":[{\"caller\":\"main\",\"callee\":\"https://api.example/v1\","
+             "\"duration_ns\":1200}]}",
+             g_project);
+    char *runtime_resp = call_tool("ingest_traces", runtime_ingest);
+    ASSERT_NOT_NULL(runtime_resp);
+    ASSERT_NOT_NULL(strstr(runtime_resp, "\"status\":\"accepted\""));
+    free(runtime_resp);
+
+    char runtime_before_query[512];
+    snprintf(runtime_before_query, sizeof(runtime_before_query),
+             "{\"project\":\"%s\",\"include_overlay\":true}", g_project);
+    runtime_resp = call_tool("get_runtime_traces", runtime_before_query);
+    ASSERT_NOT_NULL(runtime_resp);
+    ASSERT_NOT_NULL(strstr(runtime_resp, "\"overlay_available\":true"));
+    free(runtime_resp);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/package.json", g_tmpdir);
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("{\n"
+          "  \"name\": \"integration-fixture\",\n"
+          "  \"scripts\": {\"build\": \"vite build\", \"test\": \"vitest run\"},\n"
+          "  \"dependencies\": {\"express\": \"^4.18.0\"}\n"
+          "}\n",
+          f);
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/pubspec.yaml", g_tmpdir);
+    f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("name: integration_fixture\n"
+          "dependencies:\n"
+          "  http: ^1.0.0\n"
+          "  flutter:\n"
+          "    sdk: flutter\n"
+          "dev_dependencies:\n"
+          "  test: ^1.0.0\n",
+          f);
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/mix.exs", g_tmpdir);
+    f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("defmodule Fixture.MixProject do\n"
+          "  defp deps do\n"
+          "    [{:plug, \"~> 1.0\"}, {:jason}]\n"
+          "  end\n"
+          "end\n",
+          f);
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/fixture.gemspec", g_tmpdir);
+    f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("Gem::Specification.new do |spec|\n"
+          "  spec.add_dependency \"rack\"\n"
+          "  spec.add_development_dependency \"rspec\"\n"
+          "end\n",
+          f);
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/Package.swift", g_tmpdir);
+    f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("// swift-tools-version:5.9\n"
+          "let package = Package(\n"
+          "  dependencies: [\n"
+          "    .package(url: \"https://github.com/example/logging.git\", from: \"1.0.0\")\n"
+          "  ]\n"
+          ")\n",
+          f);
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/tests", g_tmpdir);
+    ASSERT_TRUE(cbm_mkdir_p(path, 0755));
+    snprintf(path, sizeof(path), "%s/tests/app.test.js", g_tmpdir);
+    f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("test('fixture', () => {});\n", f);
+    fclose(f);
+
+    char args[512];
+    snprintf(args, sizeof(args), "{\"repo_path\":\"%s\"}", g_tmpdir);
+    char *resp = call_tool("index_repository", args);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "indexed") || strstr(resp, "success"));
+    free(resp);
+
+    char runtime_query[512];
+    snprintf(runtime_query, sizeof(runtime_query),
+             "{\"project\":\"%s\",\"include_overlay\":true}", g_project);
+    resp = call_tool("get_runtime_traces", runtime_query);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"overlay_available\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"total\":1"));
+    ASSERT_NOT_NULL(strstr(resp, "\"p99_available\":true"));
+    free(resp);
+
+    cbm_store_t *store = cbm_store_open_path_existing(g_dbpath);
+    ASSERT_NOT_NULL(store);
+    cbm_node_t *nodes = NULL;
+    int count = 0;
+
+    ASSERT_EQ(cbm_store_find_nodes_by_label(store, g_project, "Package", &nodes, &count),
+              CBM_STORE_OK);
+    ASSERT_TRUE(count >= 8);
+    cbm_store_free_nodes(nodes, count);
+    ASSERT_TRUE(cbm_store_count_edges_by_type(store, g_project, "DEPENDS_ON") >= 8);
+
+    ASSERT_EQ(cbm_store_find_nodes_by_label(store, g_project, "BuildTarget", &nodes, &count),
+              CBM_STORE_OK);
+    ASSERT_TRUE(count >= 2);
+    cbm_store_free_nodes(nodes, count);
+
+    ASSERT_EQ(cbm_store_find_nodes_by_label(store, g_project, "TestSuite", &nodes, &count),
+              CBM_STORE_OK);
+    ASSERT_TRUE(count >= 1);
+    cbm_store_free_nodes(nodes, count);
+
+    ASSERT_EQ(cbm_store_find_nodes_by_label(store, g_project, "SecurityAudit", &nodes, &count),
+              CBM_STORE_OK);
+    ASSERT_TRUE(count >= 1);
+    cbm_store_free_nodes(nodes, count);
+    cbm_store_close(store);
+    PASS();
+}
+
 /* #411: index_repository silently drops entire subtrees with no record.
  * Moderate/fast mode applies FAST_SKIP_DIRS (tools/scripts/bin/docs/...) and ALL
  * modes apply ALWAYS_SKIP_DIRS (node_modules/...), so files are excluded from the
@@ -841,6 +976,7 @@ SUITE(integration) {
     RUN_TEST(store_bfs_edges_survive_large_visited_set);
     RUN_TEST(store_bfs_multi_excludes_seeds_and_takes_min_hop);
     RUN_TEST(store_bfs_multi_reports_truncation_at_ceiling);
+    RUN_TEST(integ_project_graph_evidence);
 
     /* Pipeline API tests (no db needed) */
     RUN_TEST(integ_pipeline_fqn_compute);

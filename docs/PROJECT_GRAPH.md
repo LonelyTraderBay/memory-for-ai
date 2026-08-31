@@ -29,8 +29,9 @@ RETURN b.name, s.file_path
 Dependency manifests produce external `Package` nodes and `DEPENDS_ON` edges.
 The edge properties include `ecosystem`, `scope`, `version`, `direct`, and
 `source`. The graph covers the existing Go/Python/Kubernetes/Helm paths and
-adds npm, Composer, Cargo, Maven, Gradle, RubyGems, and Python requirements
-variants.
+adds npm, Composer, Cargo, Maven, Gradle, RubyGems, Dart pub, Elixir Hex,
+SwiftPM, and Python requirements variants. Parsers are bounded and literal:
+they never execute a manifest or invoke a package manager.
 
 ```cypher
 MATCH (f:File)-[d:DEPENDS_ON]->(p:Package)
