@@ -485,6 +485,15 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
                                     const cbm_runtime_trace_edge_t *edges, int count,
                                     bool *idempotent, int64_t *observations_out);
 
+/* Read the explicit runtime sidecar without changing the static graph. Rows
+ * are ordered by call_count DESC, caller ASC, callee ASC and are bounded by
+ * limit/offset. `total` is the exact filtered row count when non-NULL. The
+ * returned caller/callee strings are owned by the row array. */
+int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char *caller,
+                                 const char *callee, int limit, int offset,
+                                 cbm_runtime_trace_edge_t **out, int *count, int *total);
+void cbm_store_free_runtime_traces(cbm_runtime_trace_edge_t *rows, int count);
+
 /* ── Node CRUD ──────────────────────────────────────────────────── */
 
 /* Upsert a single node. Returns node ID (>0) or CBM_STORE_ERR. */

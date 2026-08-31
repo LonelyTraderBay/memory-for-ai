@@ -53,15 +53,23 @@ requires non-empty `caller` and `callee` strings and accepts `count` (default `1
 `duration_ns` (default `0`), and `error` (default `false`). The request may also carry
 `source_batch_id`; `producer_id` and `producer_epoch` must be supplied together when
 used. The handler validates a maximum of 10,000 items, computes `payload_sha256`, and
-persists a compact aggregate in the runtime sidecar. A repeated `(project, batch_id)`
+returns the explicit `runtime_semantic_version: "compact-v1"` while persisting a compact
+aggregate in the runtime sidecar. A repeated `(project, batch_id)`
 with the same payload is an idempotent success; a different payload is a no-mutation
 conflict. An empty trace array without a project remains an accepted, non-persisting
 daemon health probe for compatibility.
 
-The current compact endpoint hashes the raw JSON request bytes. It is intentionally
-smaller than the full canonical contribution map described below; canonical span
-identity, endpoint resolution, runtime generations, and the opt-in overlay remain
-follow-up packages. No raw request payload is stored.
+The current compact endpoint normalizes the allowlisted edge fields, sorts the rows,
+and hashes a versioned canonical representation of those rows. JSON object key order
+and trace-array order therefore do not create a false payload conflict. It is
+intentionally smaller than the full canonical contribution map described below;
+canonical span identity, endpoint resolution, runtime generations, and the opt-in
+overlay remain follow-up packages. No raw request payload is stored.
+
+The explicit `get_runtime_traces` read surface returns only these persisted compact
+aggregates. It supports caller/callee filters and deterministic limit/offset pagination,
+and reports `runtime_semantic_version: "compact-v1"`. Static graph search, architecture,
+and `trace_path` remain runtime-free.
 
 The existing trace helper surface can extract `service.name`, HTTP method, HTTP path,
 HTTP status, span kind, duration, URL path, and p99. Verified span-kind values are:
@@ -488,14 +496,15 @@ and compatibility testable rather than implicit.
 
 The remaining implementation is intentionally ordered and bounded; each package
 requires its own reproduce-first tests and review. The current compact ingestion slice
-covers validation, a raw payload hash, durable aggregate rows, idempotent retry, and
-conflict rejection. It does not claim the full contribution/publication model below.
+covers validation, a versioned canonical payload hash, durable aggregate rows,
+idempotent retry, and conflict rejection. It does not claim the full
+contribution/publication model below.
 
-1. **Versioned wire validation and canonicalization.** Replace the compact route's raw
-   request hash with authenticated producer
-   identity and epoch, contribution ID, exact span-identity deduplication, conflicting
-   duplicate rejection, canonical contribution maps and payload hashes, allowlisted
-   HTTP/span mapping, limits, and dry-run validation. No store mutation.
+1. **Versioned wire validation and canonicalization.** Extend the compact route's
+   versioned normalized edge hash with authenticated producer identity and epoch,
+   contribution ID, exact span-identity deduplication, conflicting duplicate rejection,
+   canonical contribution maps and payload hashes, allowlisted HTTP/span mapping,
+   limits, and dry-run validation. No store mutation.
 2. **Sidecar schema and immutable contributions.** Add runtime schema migrations,
    endpoints, contribution records, observation-contribution maps, idempotent retry,
    conflict rejection, and transactional rollback. No publication head or overlay.

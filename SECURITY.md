@@ -319,9 +319,10 @@ anything that explains or contradicts the assessment above:
   the private process in [Reporting a Vulnerability](#reporting-a-vulnerability)
   instead.
 
-A concrete finding changes our position. Signing is on the roadmap and will help
-on Windows, but note that no code-signing scheme exists that AV engines honour
-for Linux ELF binaries, so it is not a complete answer either.
+A concrete finding changes our position. Sigstore signing is part of the release
+pipeline already. Native platform code signing remains a separate future
+hardening item that may help on Windows; no code-signing scheme exists that AV
+engines honour for Linux ELF binaries, so it is not a complete answer either.
 
 ## Supported Versions
 

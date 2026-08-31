@@ -293,7 +293,7 @@ build_mcpb_bundle() {
   "name": "memory-for-ai",
   "display_name": "Memory for AI",
   "version": "$mcpb_version",
-  "description": "Codebase knowledge graph for AI agents — 164 languages, sub-ms queries, 99% fewer tokens.",
+  "description": "Codebase knowledge graph for AI agents — 162 languages, sub-ms queries, 99% fewer tokens.",
   "author": { "name": "LonelyTraderBay", "url": "https://github.com/LonelyTraderBay" },
   "repository": { "type": "git", "url": "https://github.com/LonelyTraderBay/memory-for-ai" },
   "homepage": "https://github.com/LonelyTraderBay/memory-for-ai/",

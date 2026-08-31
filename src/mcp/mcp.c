@@ -47,6 +47,7 @@ enum {
 };
 #define MCP_MS_TO_US 1000LL
 #define MCP_S_TO_US 1000000LL
+#define MCP_RUNTIME_TRACE_SEMANTIC_VERSION "compact-v1"
 
 #define SLEN(s) (sizeof(s) - 1)
 #include "mcp/mcp.h"
@@ -71,6 +72,7 @@ enum {
 #include "foundation/limits.h"
 #include "foundation/subprocess.h"
 #include "foundation/sha256.h"
+#include "foundation/secure_random.h"
 #include "mcp/index_supervisor.h"
 #include "mcp/compact_out.h"
 #include "foundation/str_util.h"
@@ -646,7 +648,7 @@ static const tool_def_t TOOLS[] = {
      "\"minimum\":0,\"default\":0},"
      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":100,\"default\":50},"
      "\"include_details\":{\"type\":\"boolean\",\"default\":false,"
-     "\"description\":\"Include branch, node/edge counts, database size, and \"
+     "\"description\":\"Include branch, node/edge counts, database size, and "
      "label/type counts. Slower.\"},"
      "\"metadata_only\":{\"type\":\"boolean\",\"description\":\"Deprecated compatibility "
      "alias for include_details=false.\"}}}"},
@@ -743,10 +745,20 @@ static const tool_def_t TOOLS[] = {
      "\"object\",\"properties\":{\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
      "\"count\":{\"type\":\"integer\",\"minimum\":1},\"duration_ns\":{\"type\":\"integer\","
      "\"minimum\":0},\"error\":{\"type\":\"boolean\"}},\"required\":[\"caller\",\"callee\"],"
-     "\"additionalProperties\":false}},\"maxItems\":10000},\"project\":{\"type\":\"string\"},"
+     "\"additionalProperties\":false},\"maxItems\":10000},\"project\":{\"type\":\"string\"},"
      "\"source_batch_id\":{\"type\":\"string\"},\"producer_id\":{\"type\":\"string\"},"
      "\"producer_epoch\":{\"type\":\"string\"}},\"additionalProperties\":false,"
      "\"required\":[\"traces\",\"project\"]}"},
+
+    {"get_runtime_traces", "Get runtime traces",
+     "Read explicit runtime trace aggregates from the sidecar. Results are ordered "
+     "deterministically by call count, caller, and callee; runtime data is never merged into "
+     "static graph search or trace_path responses.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
+     "\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
+     "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000,\"default\":100},"
+     "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"default\":0}},"
+     "\"additionalProperties\":false,\"required\":[\"project\"]}"},
 };
 
 static const int TOOL_COUNT = sizeof(TOOLS) / sizeof(TOOLS[0]);
@@ -779,6 +791,7 @@ static const tool_annotation_def_t TOOL_ANNOTATIONS[] = {
     {"detect_changes", false, true, true, false},
     {"manage_adr", false, true, false, false},
     {"ingest_traces", false, false, true, false},
+    {"get_runtime_traces", false, true, true, false},
 };
 
 static const tool_annotation_def_t *mcp_tool_annotations(const char *name) {
@@ -834,11 +847,11 @@ static bool mcp_tool_allowed(cbm_mcp_tool_profile_t profile, const char *name) {
         "search_graph",     "query_graph",    "trace_path",           "get_code_snippet",
         "get_graph_schema", "compare_graphs", "get_architecture",     "search_code",
         "get_code_actions", "list_projects",   "index_status",          "check_index_coverage",
-        "detect_changes",
+        "detect_changes",   "get_runtime_traces",
     };
     static const char *const scout_tools[] = {
         "search_graph",  "trace_path",   "get_code_snippet",     "get_architecture",
-        "list_projects", "index_status", "check_index_coverage",
+        "list_projects", "index_status", "check_index_coverage", "get_runtime_traces",
     };
     if (!name) {
         return false;
@@ -1325,21 +1338,25 @@ static const char MCP_SERVER_INSTRUCTIONS[] =
     "watched projects auto-refresh in the background; use index_status for project health and "
     "check_index_coverage for every cited path and for scopes behind negative or exhaustive "
     "claims. Coverage is best-effort, never proof of completeness. Check has_more or nextCursor "
-    "and paginate when present.";
+    "and paginate when present. Use get_runtime_traces only for explicit runtime aggregate "
+    "observations; runtime data is never merged into static graph search or trace_path results.";
 
 static const char MCP_ANALYSIS_SERVER_INSTRUCTIONS[] =
     "This is the analysis tool profile; graph and index mutation tools are unavailable. Use "
     "list_projects and index_status to select a current graph project, then use search_graph, "
     "trace_path, get_code_snippet, query_graph, get_architecture, and search_code for read-only "
-    "analysis. Call check_index_coverage for every cited path and for scopes behind negative or "
+    "analysis. Use get_runtime_traces only for explicit runtime aggregate observations; it never "
+    "changes static graph search or trace_path results. Call check_index_coverage for every cited path and for scopes behind negative or "
     "exhaustive claims; read flagged ranges or skipped files directly. Coverage is best-effort, "
     "never proof of completeness. Check has_more or nextCursor and paginate when present. If the "
     "project is missing or stale, ask the parent agent to index or refresh it.";
 
 static const char MCP_SCOUT_SERVER_INSTRUCTIONS[] =
-    "This is the scout tool profile; only the fast positive-discovery graph tools are available. "
+    "This is the scout tool profile; only the fast positive-discovery graph and explicit runtime "
+    "aggregate tools are available. "
     "Use list_projects and index_status to select a current graph project, then use search_graph, "
     "trace_path, get_code_snippet, and get_architecture with narrow limits. Call "
+    "get_runtime_traces only when runtime observations are explicitly requested. Call "
     "check_index_coverage once for every cited path and read flagged ranges directly. Findings "
     "are provisional: do not make absence, exhaustive-impact, or dead-code claims. If the project "
     "is missing or stale, ask the parent agent to index or refresh it.";
@@ -12673,6 +12690,95 @@ static bool runtime_trace_valid_string(yyjson_val *value, size_t max_len) {
            yyjson_get_len(value) <= max_len && yyjson_get_str(value) != NULL;
 }
 
+static int runtime_trace_compare_int64(int64_t left, int64_t right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/* The wire object and array order are not semantic for compact trace rows.
+ * Keep the comparison total so qsort produces the same order on every retry,
+ * including duplicate rows. */
+static int runtime_trace_edge_compare(const void *left_ptr, const void *right_ptr) {
+    const cbm_runtime_trace_edge_t *left = (const cbm_runtime_trace_edge_t *)left_ptr;
+    const cbm_runtime_trace_edge_t *right = (const cbm_runtime_trace_edge_t *)right_ptr;
+    int result = strcmp(left->caller, right->caller);
+    if (result != 0) {
+        return result;
+    }
+    result = strcmp(left->callee, right->callee);
+    if (result != 0) {
+        return result;
+    }
+    result = runtime_trace_compare_int64(left->call_count, right->call_count);
+    if (result != 0) {
+        return result;
+    }
+    result = runtime_trace_compare_int64(left->error_count, right->error_count);
+    if (result != 0) {
+        return result;
+    }
+    result = runtime_trace_compare_int64(left->duration_ns_total, right->duration_ns_total);
+    if (result != 0) {
+        return result;
+    }
+    result = runtime_trace_compare_int64(left->duration_ns_max, right->duration_ns_max);
+    if (result != 0) {
+        return result;
+    }
+    return runtime_trace_compare_int64(left->observations, right->observations);
+}
+
+static void runtime_trace_hash_u64(cbm_sha256_ctx *hash, uint64_t value) {
+    uint8_t encoded[sizeof(value)];
+    for (size_t i = 0; i < sizeof(encoded); i++) {
+        encoded[sizeof(encoded) - i - 1] = (uint8_t)(value >> (i * 8));
+    }
+    cbm_sha256_update(hash, encoded, sizeof(encoded));
+}
+
+static void runtime_trace_hash_string(cbm_sha256_ctx *hash, const char *value) {
+    size_t length = value ? strlen(value) : 0;
+    runtime_trace_hash_u64(hash, (uint64_t)length);
+    if (length > 0) {
+        cbm_sha256_update(hash, value, length);
+    }
+}
+
+static void runtime_trace_hash_edge(cbm_sha256_ctx *hash,
+                                     const cbm_runtime_trace_edge_t *edge) {
+    runtime_trace_hash_string(hash, edge->caller);
+    runtime_trace_hash_string(hash, edge->callee);
+    runtime_trace_hash_u64(hash, (uint64_t)edge->call_count);
+    runtime_trace_hash_u64(hash, (uint64_t)edge->error_count);
+    runtime_trace_hash_u64(hash, (uint64_t)edge->duration_ns_total);
+    runtime_trace_hash_u64(hash, (uint64_t)edge->duration_ns_max);
+    runtime_trace_hash_u64(hash, (uint64_t)edge->observations);
+}
+
+static void runtime_trace_canonical_hash(const cbm_runtime_trace_edge_t *edges, int count,
+                                         char out[CBM_SHA256_HEX_LEN + 1]) {
+    static const char format_version[] =
+        "memory-for-ai-runtime-trace-" MCP_RUNTIME_TRACE_SEMANTIC_VERSION;
+    cbm_sha256_ctx hash;
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+
+    cbm_sha256_init(&hash);
+    cbm_sha256_update(&hash, format_version, sizeof(format_version) - 1U);
+    runtime_trace_hash_u64(&hash, (uint64_t)count);
+    for (int i = 0; i < count; i++) {
+        runtime_trace_hash_edge(&hash, &edges[i]);
+    }
+    cbm_sha256_final(&hash, digest);
+
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+    cbm_secure_zero(&hash, sizeof(hash));
+    cbm_secure_zero(digest, sizeof(digest));
+}
+
 static char *runtime_trace_make_batch_id(const char *producer_id, const char *producer_epoch,
                                          const char *source_batch_id, const char *payload_hash) {
     const char *base = source_batch_id && source_batch_id[0] ? source_batch_id : payload_hash;
@@ -12750,9 +12856,6 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("project is required and must be a valid project name", true);
     }
 
-    char payload_hash[CBM_SHA256_HEX_LEN + 1];
-    cbm_sha256_hex(args, strlen(args), payload_hash);
-
     yyjson_val *source_batch = yyjson_obj_get(aroot, "source_batch_id");
     yyjson_val *producer = yyjson_obj_get(aroot, "producer_id");
     yyjson_val *epoch = yyjson_obj_get(aroot, "producer_epoch");
@@ -12764,21 +12867,9 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("source_batch_id, producer_id and producer_epoch must be non-empty strings within the size limit", true);
     }
 
-    const char *producer_id = producer ? yyjson_get_str(producer) : NULL;
-    const char *producer_epoch = epoch ? yyjson_get_str(epoch) : NULL;
-    const char *source_batch_id = source_batch ? yyjson_get_str(source_batch) : NULL;
-    char *batch_id = runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id,
-                                                 payload_hash);
-    if (!batch_id) {
-        free(project);
-        yyjson_doc_free(adoc);
-        return cbm_mcp_text_result("invalid or oversized runtime trace batch identity", true);
-    }
-
     cbm_runtime_trace_edge_t *edge_rows =
         calloc(trace_count > 0 ? (size_t)trace_count : 1U, sizeof(*edge_rows));
     if (!edge_rows) {
-        free(batch_id);
         free(project);
         yyjson_doc_free(adoc);
         return cbm_mcp_text_result("out of memory while preparing runtime traces", true);
@@ -12838,11 +12929,31 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
 
     if (!valid) {
         free(edge_rows);
-        free(batch_id);
         free(project);
         yyjson_doc_free(adoc);
         return cbm_mcp_text_result(validation_error ? validation_error : "invalid runtime trace",
                                    true);
+    }
+
+    /* Hash only the normalized allowlisted rows. This makes retries stable
+     * across JSON object/array ordering and prevents ignored envelope fields
+     * from turning the same contribution into a false conflict. */
+    if (trace_count > 1) {
+        qsort(edge_rows, (size_t)trace_count, sizeof(*edge_rows), runtime_trace_edge_compare);
+    }
+    char payload_hash[CBM_SHA256_HEX_LEN + 1];
+    runtime_trace_canonical_hash(edge_rows, trace_count, payload_hash);
+
+    const char *producer_id = producer ? yyjson_get_str(producer) : NULL;
+    const char *producer_epoch = epoch ? yyjson_get_str(epoch) : NULL;
+    const char *source_batch_id = source_batch ? yyjson_get_str(source_batch) : NULL;
+    char *batch_id = runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id,
+                                                 payload_hash);
+    if (!batch_id) {
+        free(edge_rows);
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("invalid or oversized runtime trace batch identity", true);
     }
 
     if (!mcp_project_mutation_begin(srv, project)) {
@@ -12909,6 +13020,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     yyjson_mut_obj_add_bool(doc, root, "idempotent", is_idempotent);
     yyjson_mut_obj_add_bool(doc, root, "persisted", !is_error);
     yyjson_mut_obj_add_str(doc, root, "project", project);
+    yyjson_mut_obj_add_str(doc, root, "runtime_semantic_version",
+                           MCP_RUNTIME_TRACE_SEMANTIC_VERSION);
     yyjson_mut_obj_add_str(doc, root, "batch_id", batch_id);
     yyjson_mut_obj_add_str(doc, root, "payload_sha256", payload_hash);
     if (is_error) {
@@ -12924,6 +13037,93 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     yyjson_doc_free(adoc);
 
     char *result = cbm_mcp_text_result(json, is_error);
+    free(json);
+    return result;
+}
+
+static char *handle_get_runtime_traces(cbm_mcp_server_t *srv, const char *args) {
+    char *project = get_project_arg(args);
+    if (!project || !project[0] || !cbm_validate_project_name(project)) {
+        free(project);
+        return cbm_mcp_text_result("project is required and must be a valid project name", true);
+    }
+
+    int limit = cbm_mcp_get_int_arg(args, "limit", 100);
+    int offset = cbm_mcp_get_int_arg(args, "offset", 0);
+    if (limit < 1 || limit > 1000 || offset < 0) {
+        free(project);
+        return cbm_mcp_text_result("limit must be between 1 and 1000 and offset must be non-negative",
+                                   true);
+    }
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *error = build_no_store_error(project);
+        char *result = cbm_mcp_text_result(error, true);
+        free(error);
+        free(project);
+        return result;
+    }
+
+    char *caller = cbm_mcp_get_string_arg(args, "caller");
+    char *callee = cbm_mcp_get_string_arg(args, "callee");
+    cbm_runtime_trace_edge_t *rows = NULL;
+    int row_count = 0;
+    int total = 0;
+    int store_rc = cbm_store_get_runtime_traces(store, project, caller, callee, limit, offset,
+                                                &rows, &row_count, &total);
+    if (store_rc != CBM_STORE_OK) {
+        const char *error_text = cbm_store_error(store);
+        char message[CBM_SZ_256];
+        snprintf(message, sizeof(message), "%s",
+                 error_text && error_text[0] ? error_text : "runtime trace query failed");
+        free(caller);
+        free(callee);
+        free(project);
+        return cbm_mcp_text_result(message, true);
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_val *edge_array = yyjson_mut_arr(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "status", "ok");
+    yyjson_mut_obj_add_strcpy(doc, root, "project", project);
+    yyjson_mut_obj_add_str(doc, root, "runtime_semantic_version",
+                           MCP_RUNTIME_TRACE_SEMANTIC_VERSION);
+    yyjson_mut_obj_add_int(doc, root, "total", total);
+    yyjson_mut_obj_add_int(doc, root, "offset", offset);
+    yyjson_mut_obj_add_int(doc, root, "limit", limit);
+    yyjson_mut_obj_add_int(doc, root, "returned", row_count);
+    yyjson_mut_obj_add_bool(doc, root, "has_more",
+                            (int64_t)offset + (int64_t)row_count < (int64_t)total);
+    if (caller && caller[0]) {
+        yyjson_mut_obj_add_strcpy(doc, root, "caller", caller);
+    }
+    if (callee && callee[0]) {
+        yyjson_mut_obj_add_strcpy(doc, root, "callee", callee);
+    }
+    for (int i = 0; i < row_count; i++) {
+        yyjson_mut_val *edge = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc, edge, "caller", rows[i].caller);
+        yyjson_mut_obj_add_strcpy(doc, edge, "callee", rows[i].callee);
+        yyjson_mut_obj_add_sint(doc, edge, "call_count", rows[i].call_count);
+        yyjson_mut_obj_add_sint(doc, edge, "error_count", rows[i].error_count);
+        yyjson_mut_obj_add_sint(doc, edge, "duration_ns_total", rows[i].duration_ns_total);
+        yyjson_mut_obj_add_sint(doc, edge, "duration_ns_max", rows[i].duration_ns_max);
+        yyjson_mut_obj_add_sint(doc, edge, "observations", rows[i].observations);
+        yyjson_mut_arr_add_val(edge_array, edge);
+    }
+    yyjson_mut_obj_add_val(doc, root, "edges", edge_array);
+
+    char *json = yy_doc_to_str(doc);
+    yyjson_mut_doc_free(doc);
+    cbm_store_free_runtime_traces(rows, row_count);
+    free(caller);
+    free(callee);
+    free(project);
+
+    char *result = cbm_mcp_text_result(json, false);
     free(json);
     return result;
 }
@@ -12993,6 +13193,9 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
     }
     if (strcmp(tool_name, "ingest_traces") == 0) {
         return handle_ingest_traces(srv, args_json);
+    }
+    if (strcmp(tool_name, "get_runtime_traces") == 0) {
+        return handle_get_runtime_traces(srv, args_json);
     }
     char msg[CBM_SZ_256];
     snprintf(msg, sizeof(msg), "unknown tool: %s", tool_name);

@@ -2,7 +2,7 @@
  * mcp.h — MCP (Model Context Protocol) server for memory-for-ai.
  *
  * Implements JSON-RPC 2.0 over stdio with the MCP tool calling protocol.
- * Provides 14 graph analysis tools (search, trace, query, index, etc.)
+ * Provides 18 graph analysis tools (search, trace, query, index, etc.)
  */
 #ifndef CBM_MCP_H
 #define CBM_MCP_H

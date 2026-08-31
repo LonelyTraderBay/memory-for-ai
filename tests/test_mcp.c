@@ -862,6 +862,7 @@ TEST(mcp_tools_list) {
     ASSERT_NOT_NULL(strstr(json, "detect_changes"));
     ASSERT_NOT_NULL(strstr(json, "manage_adr"));
     ASSERT_NOT_NULL(strstr(json, "ingest_traces"));
+    ASSERT_NOT_NULL(strstr(json, "get_runtime_traces"));
     free(json);
     PASS();
 }
@@ -952,6 +953,7 @@ TEST(mcp_tools_have_behavior_annotations) {
         {"detect_changes", false, true, true, false},
         {"manage_adr", false, true, false, false},
         {"ingest_traces", false, false, true, false},
+        {"get_runtime_traces", false, true, true, false},
     };
 
     char *json = cbm_mcp_tools_list();
@@ -1438,11 +1440,12 @@ TEST(server_handle_tools_list_defaults_to_all_tools_and_accepts_cursor) {
 
     resp = cbm_mcp_server_handle(
         srv,
-        "{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/list\",\"params\":{\"cursor\":\"8\"}}");
+        "{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/list\",\"params\":{\"cursor\":\"14\"}}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"id\":201"));
     ASSERT_NULL(strstr(resp, "\"nextCursor\""));
     ASSERT_NOT_NULL(strstr(resp, "manage_adr"));
+    ASSERT_NOT_NULL(strstr(resp, "get_runtime_traces"));
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -1468,7 +1471,7 @@ TEST(server_handle_analysis_profile_filters_and_rejects_mutators) {
         "search_graph",     "query_graph",    "trace_path",           "get_code_snippet",
         "get_graph_schema", "compare_graphs", "get_architecture",     "search_code",
         "get_code_actions", "list_projects",  "index_status",          "check_index_coverage",
-        "detect_changes",
+        "detect_changes",   "get_runtime_traces",
     };
     ASSERT_EQ(mcp_response_tool_count(resp), sizeof(analysis_tools) / sizeof(analysis_tools[0]));
     for (size_t i = 0U; i < sizeof(analysis_tools) / sizeof(analysis_tools[0]); i++) {
@@ -1507,7 +1510,7 @@ TEST(server_handle_scout_profile_exposes_only_the_fast_tier) {
 
     resp = cbm_mcp_server_handle(srv, "{\"jsonrpc\":\"2.0\",\"id\":223,\"method\":\"tools/list\"}");
     ASSERT_NOT_NULL(resp);
-    ASSERT_EQ(mcp_response_tool_count(resp), 7U);
+    ASSERT_EQ(mcp_response_tool_count(resp), 8U);
     ASSERT_TRUE(mcp_response_has_exact_tool(resp, "search_graph"));
     ASSERT_TRUE(mcp_response_has_exact_tool(resp, "trace_path"));
     ASSERT_TRUE(mcp_response_has_exact_tool(resp, "get_code_snippet"));
@@ -1515,6 +1518,7 @@ TEST(server_handle_scout_profile_exposes_only_the_fast_tier) {
     ASSERT_TRUE(mcp_response_has_exact_tool(resp, "list_projects"));
     ASSERT_TRUE(mcp_response_has_exact_tool(resp, "index_status"));
     ASSERT_TRUE(mcp_response_has_exact_tool(resp, "check_index_coverage"));
+    ASSERT_TRUE(mcp_response_has_exact_tool(resp, "get_runtime_traces"));
     ASSERT_FALSE(mcp_response_has_exact_tool(resp, "query_graph"));
     ASSERT_FALSE(mcp_response_has_exact_tool(resp, "search_code"));
     ASSERT_FALSE(mcp_response_has_exact_tool(resp, "get_graph_schema"));
@@ -8598,6 +8602,7 @@ TEST(tool_ingest_traces_basic) {
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     ASSERT_NOT_NULL(strstr(resp, "\"persisted\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"runtime_semantic_version\":\"compact-v1\""));
     free(resp);
 
     sqlite3_stmt *stmt = NULL;
@@ -8622,6 +8627,16 @@ TEST(tool_ingest_traces_basic) {
     ASSERT_NOT_NULL(strstr(resp, "\"observations_persisted\":0"));
     free(resp);
 
+    /* Canonical retries tolerate JSON key-order changes. */
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"error\":true,\"callee\":\"b\",\"duration_ns\":5,"
+        "\"caller\":\"a\",\"count\":2}],\"project\":\"runtime-ingest\"}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"idempotent\":true"));
+    free(resp);
+
     /* Reusing the source batch identity with a changed payload is a conflict. */
     resp = cbm_mcp_handle_tool(
         srv, "ingest_traces",
@@ -8630,6 +8645,133 @@ TEST(tool_ingest_traces_basic) {
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"conflict\""));
     ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+
+    /* Aggregate counters fail closed instead of allowing SQLite to promote an
+     * overflowing INTEGER addition to REAL. The batch must be rolled back. */
+    ASSERT_EQ(sqlite3_exec(cbm_store_get_db(store),
+                           "UPDATE runtime_trace_edges SET call_count=9223372036854775807 "
+                           "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
+                           NULL, NULL, NULL),
+              SQLITE_OK);
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-3\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}" );
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"error\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"persisted\":false"));
+    free(resp);
+
+    /* Duplicate edges in one batch are checked after each preceding upsert,
+     * and a failure rolls the whole batch back. */
+    ASSERT_EQ(sqlite3_exec(cbm_store_get_db(store),
+                           "UPDATE runtime_trace_edges SET call_count=9223372036854775806 "
+                           "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
+                           NULL, NULL, NULL),
+              SQLITE_OK);
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-4\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
+        "{\"caller\":\"a\",\"callee\":\"b\",\"count\":1}]}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"error\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"persisted\":false"));
+    free(resp);
+
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(store),
+                  "SELECT call_count FROM runtime_trace_edges "
+                  "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
+                  -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_TRUE(sqlite3_column_int64(stmt, 0) == (sqlite3_int64)9223372036854775806LL);
+    sqlite3_finalize(stmt);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+TEST(tool_ingest_traces_canonical_array_order) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-canonical", "/tmp/runtime-canonical"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "runtime-canonical");
+
+    const char *first =
+        "{\"project\":\"runtime-canonical\",\"source_batch_id\":\"batch-2\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
+        "{\"caller\":\"c\",\"callee\":\"d\",\"count\":3}]}";
+    char *resp = cbm_mcp_handle_tool(srv, "ingest_traces", first);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    free(resp);
+
+    const char *reordered =
+        "{\"source_batch_id\":\"batch-2\",\"project\":\"runtime-canonical\","
+        "\"traces\":[{\"count\":3,\"callee\":\"d\",\"caller\":\"c\"},"
+        "{\"callee\":\"b\",\"caller\":\"a\",\"count\":1}]}";
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", reordered);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"idempotent\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"observations_persisted\":0"));
+    free(resp);
+
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(store),
+                  "SELECT COUNT(*) FROM runtime_trace_edges WHERE project='runtime-canonical';",
+                  -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int(stmt, 0), 2);
+    sqlite3_finalize(stmt);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+TEST(tool_get_runtime_traces_returns_sorted_pages) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-query", "/tmp/runtime-query"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "runtime-query");
+
+    char *resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"runtime-query\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
+        "{\"caller\":\"c\",\"callee\":\"d\",\"count\":3}]}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "get_runtime_traces",
+        "{\"project\":\"runtime-query\",\"limit\":1}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"ok\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"runtime_semantic_version\":\"compact-v1\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"total\":2"));
+    ASSERT_NOT_NULL(strstr(resp, "\"returned\":1"));
+    ASSERT_NOT_NULL(strstr(resp, "\"has_more\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"caller\":\"c\""));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "get_runtime_traces",
+        "{\"project\":\"runtime-query\",\"caller\":\"a\",\"limit\":10}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"total\":1"));
+    ASSERT_NOT_NULL(strstr(resp, "\"callee\":\"b\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"call_count\":1"));
+    ASSERT_NOT_NULL(strstr(resp, "\"has_more\":false"));
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -13638,6 +13780,7 @@ SUITE(mcp) {
     RUN_TEST(tool_trace_totals_respect_test_filter_tests_root_subtree_issue1294);
     RUN_TEST(tool_get_architecture_cycles_detects_scc);
     RUN_TEST(tool_get_code_snippet_clips_whole_file_node);
+    RUN_TEST(mcp_get_code_actions_returns_follow_up_commands);
     RUN_TEST(tool_search_graph_includes_node_properties);
     RUN_TEST(tool_search_graph_toon_never_leaks_internal_fields);
     RUN_TEST(tool_lean_defaults_schema_and_status);
@@ -13759,6 +13902,8 @@ SUITE(mcp) {
     RUN_TEST(detect_changes_seeds_only_touched_symbol_issue1363);
     RUN_TEST(detect_changes_zero_overlap_falls_back_issue1363);
     RUN_TEST(tool_ingest_traces_basic);
+    RUN_TEST(tool_ingest_traces_canonical_array_order);
+    RUN_TEST(tool_get_runtime_traces_returns_sorted_pages);
     RUN_TEST(tool_ingest_traces_empty);
 
     /* Query store generation freshness */

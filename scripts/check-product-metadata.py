@@ -29,6 +29,8 @@ PRODUCT_HEADER = ROOT / "src" / "foundation" / "product.h"
 MCP_SOURCE = ROOT / "src" / "mcp" / "mcp.c"
 LANGUAGE_HEADER = ROOT / "internal" / "cbm" / "cbm.h"
 LANGUAGE_SPECS = ROOT / "internal" / "cbm" / "lang_specs.c"
+GRAMMAR_DIR = ROOT / "internal" / "cbm" / "vendored" / "grammars"
+GRAMMAR_MANIFEST = GRAMMAR_DIR / "MANIFEST.md"
 SEMANTIC_HEADER = ROOT / "src" / "semantic" / "semantic.h"
 SERVER_JSON = ROOT / "server.json"
 METADATA_JSON = ROOT / "docs" / "product-metadata.json"
@@ -86,7 +88,7 @@ def tool_names() -> list[str]:
 
 
 def language_metadata() -> dict[str, int]:
-    """Derive language counts from the native registry instead of prose.
+    """Derive language counts from native source and vendored grammar evidence.
 
     The enum contains a few dialect/synthetic entries that do not have a
     Tree-sitter factory (for example ObjectScript export XML).  Keep those
@@ -105,19 +107,31 @@ def language_metadata() -> dict[str, int]:
         re.finditer(r"^\s*\[CBM_LANG_([A-Z0-9_]+)\]\s*=", specs_text, re.MULTILINE)
     )
     spec_names = [match.group(1) for match in spec_matches]
-    grammar_names: list[str] = []
-    for index, match in enumerate(spec_matches):
-        end = spec_matches[index + 1].start() if index + 1 < len(spec_matches) else len(specs_text)
-        block = specs_text[match.end() : end]
-        if re.search(r"tree_sitter_[A-Za-z0-9_]+\s*,", block):
-            grammar_names.append(match.group(1))
-    if not grammar_names:
-        fail("could not locate Tree-sitter language factories in internal/cbm/lang_specs.c")
+    # The published parser count is the auditable vendored surface, not the
+    # number of registry entries that happen to point at a Tree-sitter factory.
+    # Multiple language specs may share one grammar, and a registry entry may
+    # intentionally have no parser (for example ObjectScript export XML).
+    try:
+        grammar_count = sum(1 for path in GRAMMAR_DIR.iterdir() if path.is_dir())
+    except OSError as exc:
+        fail(f"cannot enumerate vendored grammars: {exc}")
+    if grammar_count < 100:
+        fail(f"vendored grammar directory count is unexpectedly low: {grammar_count}")
+
+    manifest = read_text(GRAMMAR_MANIFEST)
+    manifest_match = re.search(r"^- Grammars: \*\*(\d+)\*\*", manifest, re.MULTILINE)
+    if not manifest_match:
+        fail("grammar manifest does not declare its grammar count")
+    if int(manifest_match.group(1)) != grammar_count:
+        fail(
+            "grammar manifest count does not match vendored directories: "
+            f"{manifest_match.group(1)} != {grammar_count}"
+        )
 
     return {
         "language_enum_count": len(enum_names),
         "language_spec_count": len(spec_names),
-        "language_count": len(grammar_names),
+        "language_count": grammar_count,
     }
 
 
@@ -201,6 +215,7 @@ def write_generated_metadata(metadata: dict) -> None:
 def write_active_docs(metadata: dict) -> list[str]:
     count = str(metadata["mcp_tool_count"])
     languages = str(metadata["language_count"])
+    tool_list = " ".join(metadata["mcp_tools"])
     semantic_threshold = f"{metadata['semantic_edge_threshold']:.2f}"
     version = metadata["version"]
     changed: list[str] = []
@@ -208,6 +223,8 @@ def write_active_docs(metadata: dict) -> list[str]:
     replacements = {
         "README.md": [
             (r"\b\d+ MCP tools\b", f"{count} MCP tools"),
+            (r"(you should see `memory-for-ai` with )\d+ tools", rf"\g<1>{count} tools"),
+            (r"(mcp/\s+MCP server \()\d+( tools, JSON-RPC)", rf"\g<1>{count}\g<2>"),
             (r"languages-\d+", f"languages-{languages}"),
             (r"\b\d+ languages\b", f"{languages} languages"),
             (r"\b\d+ vendored tree-sitter grammars\b", f"{languages} vendored tree-sitter grammars"),
@@ -229,9 +246,12 @@ def write_active_docs(metadata: dict) -> list[str]:
         ],
         "docs/index.html": [
             (r'"softwareVersion": "[^"]+"', f'"softwareVersion": "{version}"'),
+            (r'(<div class="number">)\d+(</div><div class="label">languages)', rf"\g<1>{languages}\g<2>"),
+            (r'(<div class="number">)\d+(</div><div class="label">client surfaces)', rf"\g<1>{metadata['agent_surface_count']}\g<2>"),
             (r"\b\d+ languages\b", f"{languages} languages"),
             (r"Indexes \d+ programming languages", f"Indexes {languages} programming languages"),
             (r"\b\d+ MCP tools\b", f"{count} MCP tools"),
+            (r"(and )\d+ more", rf"\g<1>{metadata['mcp_tool_count'] - 8} more"),
             (r"scored ≥ \d+\.\d+", f"scored ≥ {semantic_threshold}"),
         ],
         "server.json": [
@@ -242,6 +262,10 @@ def write_active_docs(metadata: dict) -> list[str]:
         ],
         "scripts/package-release.sh": [
             (r"\b\d+ languages\b", f"{languages} languages"),
+        ],
+        "scripts/smoke-invariants.sh": [
+            (r"(?m)^EXPECTED_TOOL_COUNT=\d+[ \t]*$", f"EXPECTED_TOOL_COUNT={count}"),
+            (r'(?m)^EXPECTED_TOOLS="[^"]*"[ \t]*$', f'EXPECTED_TOOLS="{tool_list}"'),
         ],
         "CONTRIBUTING.md": [
             (r"\b\d+ tools\b", f"{count} tools"),
@@ -299,6 +323,25 @@ def check_docs(metadata: dict) -> list[str]:
         values = re.findall(r"\b(\d+) MCP tools\b", text)
         if any(value != expected_count for value in values):
             errors.append(f"{relative}: MCP tool count is not {expected_count}")
+        if relative == "README.md":
+            legacy_tool_values = re.findall(
+                r"(?:you should see `memory-for-ai` with|MCP server \()(\d+) tools\b",
+                text,
+            )
+            if any(value != expected_count for value in legacy_tool_values):
+                errors.append(f"{relative}: standalone tool count is not {expected_count}")
+        if relative == "docs/index.html":
+            stat_values = re.findall(
+                r'<div class="number">(\d+)</div><div class="label">(languages|client surfaces)',
+                text,
+            )
+            expected_stats = {
+                "languages": expected_languages,
+                "client surfaces": str(metadata["agent_surface_count"]),
+            }
+            for value, label in stat_values:
+                if value != expected_stats[label]:
+                    errors.append(f"{relative}: {label} stat is not {expected_stats[label]}")
         # The channel detector intentionally covers a smaller, documented
         # language subset than the complete parser registry.
         check_text = re.sub(r"(?im)^.*Channel detection.*$", "", text)

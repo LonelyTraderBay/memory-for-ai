@@ -14,6 +14,7 @@
 #include "foundation/sha256.h"
 
 #include <math.h>
+#include <limits.h>
 
 enum {
     ST_COL_1 = 1,
@@ -2291,6 +2292,7 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
 
     sqlite3_stmt *batch_lookup = NULL;
     sqlite3_stmt *batch_insert = NULL;
+    sqlite3_stmt *edge_lookup = NULL;
     sqlite3_stmt *edge_upsert = NULL;
     int result = CBM_STORE_ERR;
 
@@ -2348,6 +2350,20 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
     }
 
     if (count > 0) {
+        /* SQLite may promote an overflowing INTEGER addition to REAL. That
+         * would silently corrupt counters, so check the current aggregate
+         * immediately before every upsert. The lookup and upsert are kept in
+         * the same transaction, so duplicate edges within one batch see the
+         * aggregate produced by earlier rows. */
+        if (sqlite3_prepare_v2(
+                s->db,
+                "SELECT call_count, error_count, duration_ns_total, observations "
+                "FROM runtime_trace_edges "
+                "WHERE project = ?1 AND caller = ?2 AND callee = ?3;",
+                CBM_NOT_FOUND, &edge_lookup, NULL) != SQLITE_OK) {
+            store_set_error_sqlite(s, "runtime trace edge lookup prepare");
+            goto rollback;
+        }
         if (sqlite3_prepare_v2(
                 s->db,
                 "INSERT INTO runtime_trace_edges "
@@ -2368,6 +2384,34 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
 
         for (int i = 0; i < count; i++) {
             const cbm_runtime_trace_edge_t *edge = &edges[i];
+            sqlite3_reset(edge_lookup);
+            sqlite3_clear_bindings(edge_lookup);
+            if (bind_text(edge_lookup, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(edge_lookup, ST_COL_2, edge->caller) != SQLITE_OK ||
+                bind_text(edge_lookup, ST_COL_3, edge->callee) != SQLITE_OK) {
+                store_set_error(s, "runtime trace edge lookup bind failed");
+                goto rollback;
+            }
+            int edge_rc = sqlite3_step(edge_lookup);
+            if (edge_rc == SQLITE_ROW) {
+                int64_t current_call_count = sqlite3_column_int64(edge_lookup, 0);
+                int64_t current_error_count = sqlite3_column_int64(edge_lookup, 1);
+                int64_t current_duration_total = sqlite3_column_int64(edge_lookup, 2);
+                int64_t current_observations = sqlite3_column_int64(edge_lookup, 3);
+                if (current_call_count < 0 || current_error_count < 0 ||
+                    current_duration_total < 0 || current_observations < 0 ||
+                    INT64_MAX - current_call_count < edge->call_count ||
+                    INT64_MAX - current_error_count < edge->error_count ||
+                    INT64_MAX - current_duration_total < edge->duration_ns_total ||
+                    INT64_MAX - current_observations < edge->observations) {
+                    store_set_error(s, "runtime trace aggregate counter overflow");
+                    goto rollback;
+                }
+            } else if (edge_rc != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime trace edge lookup");
+                goto rollback;
+            }
+
             sqlite3_reset(edge_upsert);
             sqlite3_clear_bindings(edge_upsert);
             if (bind_text(edge_upsert, ST_COL_1, project) != SQLITE_OK ||
@@ -2402,8 +2446,159 @@ rollback:
 cleanup:
     sqlite3_finalize(batch_lookup);
     sqlite3_finalize(batch_insert);
+    sqlite3_finalize(edge_lookup);
     sqlite3_finalize(edge_upsert);
     return result;
+}
+
+int cbm_store_get_runtime_traces(cbm_store_t *s, const char *project, const char *caller,
+                                 const char *callee, int limit, int offset,
+                                 cbm_runtime_trace_edge_t **out, int *count, int *total) {
+    if (out) {
+        *out = NULL;
+    }
+    if (count) {
+        *count = 0;
+    }
+    if (total) {
+        *total = 0;
+    }
+    if (!s || !s->db || !project || !project[0] || limit < 1 || limit > 10000 || offset < 0 ||
+        !out || !count) {
+        if (s) {
+            store_set_error(s, "invalid runtime trace query");
+        }
+        return CBM_STORE_ERR;
+    }
+
+    const char *filter = "";
+    if (caller && caller[0] && callee && callee[0]) {
+        filter = " AND caller = ?2 AND callee = ?3";
+    } else if (caller && caller[0]) {
+        filter = " AND caller = ?2";
+    } else if (callee && callee[0]) {
+        filter = " AND callee = ?2";
+    }
+
+    char count_sql[ST_SQL_BUF];
+    int count_written = snprintf(count_sql, sizeof(count_sql),
+                                 "SELECT COUNT(*) FROM runtime_trace_edges WHERE project = ?1%s;",
+                                 filter);
+    if (count_written < 0 || (size_t)count_written >= sizeof(count_sql)) {
+        store_set_error(s, "runtime trace count query is too large");
+        return CBM_STORE_ERR;
+    }
+
+    sqlite3_stmt *count_stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, count_sql, CBM_NOT_FOUND, &count_stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime trace count query prepare");
+        return CBM_STORE_ERR;
+    }
+    int bind_index = ST_COL_1;
+    if (bind_text(count_stmt, bind_index++, project) != SQLITE_OK ||
+        ((caller && caller[0]) && bind_text(count_stmt, bind_index++, caller) != SQLITE_OK) ||
+        ((callee && callee[0] && caller && caller[0]) &&
+         bind_text(count_stmt, bind_index++, callee) != SQLITE_OK) ||
+        ((callee && callee[0] && (!caller || !caller[0])) &&
+         bind_text(count_stmt, bind_index++, callee) != SQLITE_OK)) {
+        sqlite3_finalize(count_stmt);
+        store_set_error(s, "runtime trace count query bind failed");
+        return CBM_STORE_ERR;
+    }
+    int count_rc = sqlite3_step(count_stmt);
+    if (count_rc != SQLITE_ROW) {
+        sqlite3_finalize(count_stmt);
+        store_set_error_sqlite(s, "runtime trace count query");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_int64 total_rows = sqlite3_column_int64(count_stmt, 0);
+    sqlite3_finalize(count_stmt);
+    if (total_rows < 0 || total_rows > INT_MAX) {
+        store_set_error(s, "runtime trace result count is out of range");
+        return CBM_STORE_ERR;
+    }
+    if (total) {
+        *total = (int)total_rows;
+    }
+
+    char rows_sql[ST_SQL_BUF];
+    int rows_written = snprintf(
+        rows_sql, sizeof(rows_sql),
+        "SELECT caller, callee, call_count, error_count, duration_ns_total, duration_ns_max, "
+        "observations FROM runtime_trace_edges WHERE project = ?1%s "
+        "ORDER BY call_count DESC, caller ASC, callee ASC LIMIT ?%d OFFSET ?%d;",
+        filter, bind_index, bind_index + 1);
+    if (rows_written < 0 || (size_t)rows_written >= sizeof(rows_sql)) {
+        store_set_error(s, "runtime trace row query is too large");
+        return CBM_STORE_ERR;
+    }
+
+    sqlite3_stmt *rows_stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, rows_sql, CBM_NOT_FOUND, &rows_stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime trace row query prepare");
+        return CBM_STORE_ERR;
+    }
+    bind_index = ST_COL_1;
+    if (bind_text(rows_stmt, bind_index++, project) != SQLITE_OK ||
+        ((caller && caller[0]) && bind_text(rows_stmt, bind_index++, caller) != SQLITE_OK) ||
+        ((callee && callee[0] && caller && caller[0]) &&
+         bind_text(rows_stmt, bind_index++, callee) != SQLITE_OK) ||
+        ((callee && callee[0] && (!caller || !caller[0])) &&
+         bind_text(rows_stmt, bind_index++, callee) != SQLITE_OK) ||
+        sqlite3_bind_int(rows_stmt, bind_index++, limit) != SQLITE_OK ||
+        sqlite3_bind_int(rows_stmt, bind_index, offset) != SQLITE_OK) {
+        sqlite3_finalize(rows_stmt);
+        store_set_error(s, "runtime trace row query bind failed");
+        return CBM_STORE_ERR;
+    }
+
+    cbm_runtime_trace_edge_t *rows =
+        calloc((size_t)limit, sizeof(*rows));
+    if (!rows) {
+        sqlite3_finalize(rows_stmt);
+        store_set_error(s, "out of memory while reading runtime traces");
+        return CBM_STORE_ERR;
+    }
+
+    int row_count = 0;
+    int row_rc;
+    while ((row_rc = sqlite3_step(rows_stmt)) == SQLITE_ROW) {
+        cbm_runtime_trace_edge_t *row = &rows[row_count];
+        row->caller = heap_strdup((const char *)sqlite3_column_text(rows_stmt, 0));
+        row->callee = heap_strdup((const char *)sqlite3_column_text(rows_stmt, 1));
+        if (!row->caller || !row->callee) {
+            sqlite3_finalize(rows_stmt);
+            cbm_store_free_runtime_traces(rows, row_count + 1);
+            store_set_error(s, "out of memory while copying runtime traces");
+            return CBM_STORE_ERR;
+        }
+        row->call_count = sqlite3_column_int64(rows_stmt, 2);
+        row->error_count = sqlite3_column_int64(rows_stmt, 3);
+        row->duration_ns_total = sqlite3_column_int64(rows_stmt, 4);
+        row->duration_ns_max = sqlite3_column_int64(rows_stmt, 5);
+        row->observations = sqlite3_column_int64(rows_stmt, 6);
+        row_count++;
+    }
+    sqlite3_finalize(rows_stmt);
+    if (row_rc != SQLITE_DONE) {
+        cbm_store_free_runtime_traces(rows, row_count);
+        store_set_error_sqlite(s, "runtime trace row query");
+        return CBM_STORE_ERR;
+    }
+    *out = rows;
+    *count = row_count;
+    return CBM_STORE_OK;
+}
+
+void cbm_store_free_runtime_traces(cbm_runtime_trace_edge_t *rows, int count) {
+    if (!rows) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        free((char *)rows[i].caller);
+        free((char *)rows[i].callee);
+    }
+    free(rows);
 }
 
 /* Opaque store generation for pagination cursors: "u<db_uid>g<mutation_gen>",

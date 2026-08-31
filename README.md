@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/LonelyTraderBay/memory-for-ai/dry-run.yml?label=CI)](https://github.com/LonelyTraderBay/memory-for-ai/actions/workflows/dry-run.yml)
 [![Tests](https://img.shields.io/badge/tests-6768_passing-brightgreen)](https://github.com/LonelyTraderBay/memory-for-ai)
-[![Languages](https://img.shields.io/badge/languages-164-orange)](https://github.com/LonelyTraderBay/memory-for-ai)
+[![Languages](https://img.shields.io/badge/languages-162-orange)](https://github.com/LonelyTraderBay/memory-for-ai)
 [![Hybrid LSP](https://img.shields.io/badge/Hybrid_LSP-10_languages-blue)](#hybrid-lsp)
 [![Agents](https://img.shields.io/badge/agent_surfaces-45-purple)](https://github.com/LonelyTraderBay/memory-for-ai)
 [![Pure C](https://img.shields.io/badge/pure_C-no_language_runtime-blue)](https://github.com/LonelyTraderBay/memory-for-ai)
@@ -16,7 +16,7 @@
 
 **The fastest and most efficient code intelligence engine for AI coding agents.** Full-indexes an average repository in milliseconds, the Linux kernel (28M LOC, 75K files) in 3 minutes. Answers structural queries in under 1ms. Ships as a native executable with a small verified runtime-asset set for macOS, Linux, and Windows — download, run `install`, done.
 
-High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-sitter/) AST analysis across all 164 languages, enhanced with [**Hybrid LSP** semantic type resolution](#hybrid-lsp) for Python, TypeScript / JavaScript / JSX / TSX, PHP, C#, Go, C, C++, Java, Kotlin, Rust, and Perl — producing a persistent knowledge graph of functions, classes, call chains, HTTP routes, and cross-service links. 17 MCP tools. No language runtime, hosted service, or API key. Plug and play across 45 supported automatic/conditional client surfaces.
+High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-sitter/) AST analysis across all 162 languages, enhanced with [**Hybrid LSP** semantic type resolution](#hybrid-lsp) for Python, TypeScript / JavaScript / JSX / TSX, PHP, C#, Go, C, C++, Java, Kotlin, Rust, and Perl — producing a persistent knowledge graph of functions, classes, call chains, HTTP routes, and cross-service links. 18 MCP tools. No language runtime, hosted service, or API key. Plug and play across 45 supported automatic/conditional client surfaces.
 
 > **Research** — The design and benchmarks behind this project are described in the preprint [*Codebase-Memory: Tree-Sitter-Based Knowledge Graphs for LLM Code Exploration via MCP*](https://arxiv.org/abs/2603.27277) (arXiv:2603.27277). Evaluated across 31 real-world repositories: 83% answer quality, 10× fewer tokens, 2.1× fewer tool calls vs. file-by-file exploration.
 
@@ -32,12 +32,12 @@ High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-si
 
 - **Extreme indexing speed** — Linux kernel (28M LOC, 75K files) in 3 minutes. RAM-first pipeline: LZ4 compression, in-memory SQLite, fused Aho-Corasick pattern matching. Memory released after indexing.
 - **Plug and play** — native executable plus authenticated release-owned assets for macOS (arm64/amd64), Linux (arm64/amd64), and Windows (amd64). The native install needs no Docker, language runtime, or API keys. Download → `install` → restart agent → done.
-- **164 languages** — vendored tree-sitter grammars compiled into the binary. Nothing to install, nothing that breaks.
+- **162 languages** — vendored tree-sitter grammars compiled into the binary. Nothing to install, nothing that breaks.
 - **120x fewer tokens** — 5 structural queries: ~3,400 tokens vs ~412,000 via file-by-file search. One graph query replaces dozens of grep/read cycles.
 - **45 supported automatic/conditional client surfaces** — `install` configures detected clients and safely activates conditional clients only when their documented platform, marker, or explicit existing config path is present. See [Multi-Agent Support](#multi-agent-support) for the complete matrix and manual/UI-only boundaries.
 - **Built-in graph visualization** — 3D interactive UI at `localhost:9749`, served from the binary itself.
 - **Infrastructure-as-code indexing** — Dockerfiles, Kubernetes manifests, and Kustomize overlays indexed as graph nodes with cross-references. `Resource` nodes for K8s kinds, `Module` nodes for Kustomize overlays with `IMPORTS` edges to referenced resources.
-- **17 MCP tools** — search, trace, architecture, impact analysis, targeted index-coverage checks, Cypher queries, dead code detection, cross-service HTTP linking, ADR management, and more.
+- **18 MCP tools** — search, trace, architecture, impact analysis, targeted index-coverage checks, Cypher queries, dead code detection, cross-service HTTP linking, ADR management, and more.
 - **Coverage confidence** — `index_status` and `check_index_coverage` report known gaps, a proven file-hash ratio when possible, and machine-readable confidence reasons. See [Coverage and confidence reporting](docs/COVERAGE_CONFIDENCE.md).
 
 ## Quick Start
@@ -227,7 +227,7 @@ The install script placed beside the binary is **reported, not deleted** — uni
 - `SEMANTICALLY_RELATED` (vocabulary-mismatch, same-language, score ≥ 0.75)
 
 ### Indexing pipeline
-- **164 vendored tree-sitter grammars** compiled into the binary
+- **162 vendored tree-sitter grammars** compiled into the binary
 - **Generic package / module resolution** — bare specifiers like `@myorg/pkg`, `github.com/foo/bar`, `use my_crate::foo` resolved via manifest scanning (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `composer.json`, `pubspec.yaml`, `pom.xml`, `build.gradle`, `mix.exs`, `*.gemspec`)
 - **Infrastructure-as-code indexing** — Dockerfiles, Kubernetes manifests, Kustomize overlays as graph nodes
 - **[Hybrid LSP semantic type resolution](#hybrid-lsp)** for Python, TypeScript / JavaScript / JSX / TSX, PHP, C#, Go, C, C++, Java, Kotlin, Rust, and Perl — a lightweight C implementation of language type-resolution algorithms, structurally inspired by and compatible with major language servers including tsserver / typescript-go, pyright, gopls, Roslyn, Eclipse JDT, and rust-analyzer (parameter binding, return-type inference, generic substitution, JSX component dispatch, JSDoc inference for plain JS files, namespace + trait + late-static-binding resolution for PHP, file-scoped namespaces + records + LINQ method syntax for C#, class-hierarchy + overload + lambda resolution for Java, extension-function + scope-function resolution for Kotlin, trait-method + UFCS resolution for Rust)
@@ -456,7 +456,7 @@ Add to `~/.claude.json` (user scope) or project `.mcp.json`:
 }
 ```
 
-Restart your agent. Verify with `/mcp` — you should see `memory-for-ai` with 17 tools.
+Restart your agent. Verify with `/mcp` — you should see `memory-for-ai` with 18 tools.
 
 </details>
 
@@ -565,7 +565,7 @@ Kiro embeds this MCP server with `--tool-profile scout` for Scout and
 `--tool-profile analysis` for Verify/Auditor. Junie registers equivalent named
 server aliases because its subagent schema filters by server rather than by
 individual tool. Both process profiles use positive allowlists: Scout exposes
-seven fast inspection tools, Analysis exposes eleven, and future or mutating
+eight fast inspection tools, Analysis exposes thirteen, and future or mutating
 tools remain unavailable until explicitly reviewed. If either Junie alias
 collides with user configuration, the installer preserves it and installs
 parent-handoff profiles instead. Qoder combines its documented named-server
@@ -669,7 +669,8 @@ JSON arguments can also be piped on stdin, for tools that take arguments. A tool
 | `search_code` | Grep-like text search within indexed project files. |
 | `get_code_actions` | Read-only code-action suggestions from coverage, complexity, tests, dependencies, and security evidence. |
 | `manage_adr` | CRUD for Architecture Decision Records (`get` reads, `update` replaces the whole document, `set_sections` rewrites only the named sections and leaves every other byte untouched, `sections` lists headings). Query modes do not wait behind a same-project reindex; writes remain serialized. |
-| `ingest_traces` | Ingest runtime traces to validate HTTP_CALLS edges. |
+| `ingest_traces` | Ingest runtime traces into the isolated runtime sidecar. |
+| `get_runtime_traces` | Read deterministic, paginated runtime edge aggregates from the sidecar. |
 
 `manage_adr(mode='set_sections')` writes one or more sections by name and splices them into the stored document, so text outside the named sections — including a preamble, code fences and section ordering — is preserved byte-for-byte. Any `## Heading` works, not just the conventional PURPOSE / STACK / ARCHITECTURE / PATTERNS / TRADEOFFS / PHILOSOPHY set; names match exactly, including case. Writing the same section twice is a no-op, so a retry after a lost response cannot duplicate content.
 
@@ -805,14 +806,14 @@ memory-for-ai ships a **lightweight C implementation of language type-resolution
 
 **Two-layer architecture:**
 
-1. **Tree-sitter pass** — fast, syntactic, runs for every one of the 164 languages. Extracts definitions, calls, imports.
+1. **Tree-sitter pass** — fast, syntactic, runs for every one of the 162 languages. Extracts definitions, calls, imports.
 2. **Hybrid LSP pass** — type-aware, runs above the tree-sitter pass per-language. Refines call edges using the import graph plus a per-file or pre-built cross-file definition registry. Languages without a Hybrid LSP pass yet fall back to textual resolution, so you always get *some* answer.
 
 The result is a knowledge graph accurate enough to drive `trace_path` across packages, inheritance hierarchies, and stdlib calls — without paying for a language server process per project.
 
 ## Language Support
 
-164 languages, all parsed via vendored tree-sitter grammars compiled into the binary. Benchmarked against 64 real open-source repositories (78 to 49K nodes):
+162 languages, all parsed via vendored tree-sitter grammars compiled into the binary. Benchmarked against 64 real open-source repositories (78 to 49K nodes):
 
 | Tier | Score | Languages |
 |------|-------|-----------|
@@ -828,7 +829,7 @@ Also supported (not yet benchmarked): Ada, Agda, Apex, Assembly (NASM), Astro, A
 src/
   main.c              Entry point (MCP stdio server + CLI + install/update/config)
   daemon/             Per-account session coordination, IPC, lifecycle, shared jobs/watchers
-  mcp/                MCP server (17 tools, JSON-RPC 2.0, session detection, auto-index)
+  mcp/                MCP server (18 tools, JSON-RPC 2.0, session detection, auto-index)
   cli/                Install/uninstall/update/config (45 client surfaces, hooks, instructions)
   store/              SQLite graph storage (nodes, edges, traversal, search, Louvain)
   pipeline/           Multi-pass indexing (structure → definitions → calls → HTTP links → config → tests)
@@ -838,7 +839,7 @@ src/
   traces/             Runtime trace ingestion
   ui/                 Local HTTP server + verified external 3D-UI asset pack
   foundation/         Platform abstractions (threads, filesystem, logging, memory)
-internal/cbm/         Vendored tree-sitter grammars (164 languages) + AST extraction engine
+internal/cbm/         Vendored tree-sitter grammars (162 languages) + AST extraction engine
 ```
 
 ## Security

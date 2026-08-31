@@ -60,7 +60,7 @@ src/
   foundation/       Arena allocator, hash table, string utils, platform compat
   store/            SQLite graph storage (WAL mode, FTS5)
   cypher/           Cypher query → SQL translation
-  mcp/              MCP server (JSON-RPC 2.0 over stdio, 17 tools)
+  mcp/              MCP server (JSON-RPC 2.0 over stdio, 18 tools)
   pipeline/         Multi-pass indexing pipeline
     pass_*.c        Individual pipeline passes (definitions, calls, usages, etc.)
     httplink.c      HTTP route extraction (Go/Express/Laravel/Ktor/Python)

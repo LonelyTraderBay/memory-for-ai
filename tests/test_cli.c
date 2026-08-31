@@ -2305,6 +2305,10 @@ TEST(cli_legacy_skill_cleanup_rejects_links_and_user_content) {
 
     char monolithic_link[640];
     snprintf(monolithic_link, sizeof(monolithic_link), "%s/memory-for-ai", skills_dir);
+    /* The current install owns this directory. Remove that fixture-owned
+     * directory before replacing it with a legacy symlink so the test checks
+     * link safety rather than an expected EEXIST from the new layout. */
+    test_rmdir_r(monolithic_link);
     ASSERT_EQ(symlink(target_dir, monolithic_link), 0);
     bool reported_removed = cbm_remove_old_monolithic_skill(skills_dir, false);
     char *after_remove = read_test_file_alloc(target_file);
@@ -2393,7 +2397,10 @@ TEST(cli_skill_files_content) {
     /* Reference capabilities */
     ASSERT(strstr(sk[0].content, "query_graph") != NULL);
     ASSERT(strstr(sk[0].content, "Cypher") != NULL);
-    ASSERT(strstr(sk[0].content, "15 MCP Tools") != NULL);
+    ASSERT(strstr(sk[0].content, "18 MCP Tools") != NULL);
+    ASSERT(strstr(sk[0].content, "compare_graphs") != NULL);
+    ASSERT(strstr(sk[0].content, "get_code_actions") != NULL);
+    ASSERT(strstr(sk[0].content, "get_runtime_traces") != NULL);
 
     /* Gotchas section */
     ASSERT(strstr(sk[0].content, "Gotchas") != NULL);
@@ -5170,7 +5177,7 @@ TEST(cli_existing_agents_install_durable_child_context) {
     free(plan);
 
     cbm_install_agent_configs(tmpdir, "/usr/local/bin/memory-for-ai", false, false);
-    const char *const durable[] = {"Codebase Memory", "search_graph", "trace_path", "grep"};
+    const char *const durable[] = {"Memory for AI", "search_graph", "trace_path", "grep"};
     bool files_ok = true;
     snprintf(path, sizeof(path), "%s/.openclaw/workspace/AGENTS.md", tmpdir);
     files_ok = files_ok && test_file_contains_all(path, durable, 4);
@@ -5392,7 +5399,8 @@ TEST(cli_durable_profiles_follow_current_vendor_paths) {
     files_ok = files_ok && test_file_contains_all(path, qwen_terms, 8U);
     profile = read_test_file_alloc(path);
     files_ok = files_ok && profile && !strstr(profile, "permissionMode:") &&
-               !strstr(profile, "mcp__memory-for-ai__");
+               !strstr(profile, "index_repository") && !strstr(profile, "delete_project") &&
+               !strstr(profile, "manage_adr") && !strstr(profile, "ingest_traces");
     free(profile);
     profile = read_test_file_alloc(qwen_settings);
     files_ok = files_ok && profile && strstr(profile, "\"disableAllHooks\":true") &&
@@ -5413,6 +5421,7 @@ TEST(cli_durable_profiles_follow_current_vendor_paths) {
                                       "\"tools\"",
                                       "\"read\"",
                                       "\"@memory-for-ai/search_graph\"",
+                                      "\"@memory-for-ai/get_runtime_traces\"",
                                       "\"includeMcpJson\": false",
                                       "\"mcpServers\"",
                                       "/opt/memory-for-ai",
@@ -5420,7 +5429,7 @@ TEST(cli_durable_profiles_follow_current_vendor_paths) {
                                       "--tool-profile",
                                       "analysis",
                                       "search_graph"};
-    files_ok = files_ok && test_file_contains_all(path, kiro_terms, 11U);
+    files_ok = files_ok && test_file_contains_all(path, kiro_terms, 12U);
     profile = read_test_file_alloc(path);
     yyjson_doc *kiro_doc = profile ? yyjson_read(profile, strlen(profile), 0) : NULL;
     yyjson_val *kiro_root = kiro_doc ? yyjson_doc_get_root(kiro_doc) : NULL;
@@ -5439,21 +5448,22 @@ TEST(cli_durable_profiles_follow_current_vendor_paths) {
         kiro_args && yyjson_is_arr(kiro_args) ? yyjson_arr_get(kiro_args, 0U) : NULL;
     yyjson_val *kiro_profile_name =
         kiro_args && yyjson_is_arr(kiro_args) ? yyjson_arr_get(kiro_args, 1U) : NULL;
-    files_ok = files_ok && profile && kiro_root && yyjson_is_obj(kiro_root) && kiro_tools &&
-               yyjson_arr_size(kiro_tools) == 14U && kiro_read && yyjson_is_str(kiro_read) &&
-               strcmp(yyjson_get_str(kiro_read), "read") == 0 && include_mcp &&
-               yyjson_is_bool(include_mcp) && !yyjson_get_bool(include_mcp) && kiro_server_tool &&
-               yyjson_is_str(kiro_server_tool) &&
-               strcmp(yyjson_get_str(kiro_server_tool), "@memory-for-ai/search_graph") == 0 &&
-               kiro_servers && yyjson_is_obj(kiro_servers) && kiro_server &&
-               yyjson_is_obj(kiro_server) && kiro_command && yyjson_is_str(kiro_command) &&
-               strcmp(yyjson_get_str(kiro_command), "/opt/memory-for-ai") == 0 && kiro_args &&
-               yyjson_is_arr(kiro_args) && yyjson_arr_size(kiro_args) == 2U && kiro_profile_flag &&
-               yyjson_is_str(kiro_profile_flag) &&
-               strcmp(yyjson_get_str(kiro_profile_flag), "--tool-profile") == 0 &&
-               kiro_profile_name && yyjson_is_str(kiro_profile_name) &&
-               strcmp(yyjson_get_str(kiro_profile_name), "analysis") == 0 &&
-               !yyjson_obj_get(kiro_root, "allowedTools");
+    files_ok = files_ok &&
+        profile && kiro_root && yyjson_is_obj(kiro_root) && kiro_tools && yyjson_is_arr(kiro_tools) &&
+        yyjson_arr_size(kiro_tools) == 16U && kiro_read && yyjson_is_str(kiro_read) &&
+        strcmp(yyjson_get_str(kiro_read), "read") == 0 && include_mcp &&
+        yyjson_is_bool(include_mcp) && !yyjson_get_bool(include_mcp) && kiro_server_tool &&
+        yyjson_is_str(kiro_server_tool) &&
+        strcmp(yyjson_get_str(kiro_server_tool), "@memory-for-ai/search_graph") == 0 &&
+        kiro_servers && yyjson_is_obj(kiro_servers) && kiro_server &&
+        yyjson_is_obj(kiro_server) && kiro_command && yyjson_is_str(kiro_command) &&
+        strcmp(yyjson_get_str(kiro_command), "/opt/memory-for-ai") == 0 && kiro_args &&
+        yyjson_is_arr(kiro_args) && yyjson_arr_size(kiro_args) == 2U && kiro_profile_flag &&
+        yyjson_is_str(kiro_profile_flag) &&
+        strcmp(yyjson_get_str(kiro_profile_flag), "--tool-profile") == 0 &&
+        kiro_profile_name && yyjson_is_str(kiro_profile_name) &&
+        strcmp(yyjson_get_str(kiro_profile_name), "analysis") == 0 &&
+        !yyjson_obj_get(kiro_root, "allowedTools");
     yyjson_doc_free(kiro_doc);
     free(profile);
 
@@ -7734,7 +7744,7 @@ TEST(cli_registry_installs_codebuddy_bob_and_pochi_durable_context) {
             4U) &&
         !test_file_contains_all(codebuddy_agent, (const char *const[]){"tools:\n"}, 1U) &&
         !test_file_contains_all(codebuddy_agent,
-                                (const char *const[]){"mcp__memory-for-ai__search_graph"}, 1U) &&
+                                (const char *const[]){"mcp__memory-for-ai__*"}, 1U) &&
         stat(codebuddy_settings, &state) != 0;
     bool bob_ide_mcp_installed = test_file_contains_all(
         bob_ide_mcp, (const char *const[]){"bob-ide", "memory-for-ai", binary_path}, 3U);
@@ -11746,7 +11756,7 @@ TEST(cli_agent_instructions_content) {
     ASSERT(strstr(instr, "check_index_coverage") != NULL);
     ASSERT(strstr(instr, "missed-coverage range") != NULL);
     ASSERT(strstr(instr, "must not call or claim MCP access") != NULL);
-    ASSERT(strstr(instr, "# Codebase Memory\n") != NULL);
+    ASSERT(strstr(instr, "# Memory for AI\n") != NULL);
     ASSERT(strstr(instr, "## Codebase Knowledge Graph (memory-for-ai)\n") != NULL);
     PASS();
 }

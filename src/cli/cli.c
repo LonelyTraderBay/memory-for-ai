@@ -795,7 +795,7 @@ static int cli_activation_guard(cbm_daemon_runtime_activation_action_t action,
 #define TAR_SIZE_LEN 13     /* octal size field: bytes 124-135 + NUL */
 #define TAR_TYPE_OFFSET 156 /* type flag byte */
 #define TAR_BINARY_NAME "memory-for-ai"
-#define TAR_BINARY_NAME_LEN 19
+#define TAR_BINARY_NAME_LEN (sizeof(TAR_BINARY_NAME) - 1U)
 #define TAR_BLOCK_SIZE CBM_SZ_512 /* tar record alignment */
 #define TAR_BLOCK_MASK 511        /* TAR_BLOCK_SIZE - 1 */
 
@@ -1358,11 +1358,12 @@ static const char skill_content[] =
     "- High fan-in: `search_graph(min_degree=10, relationship=\"CALLS\", "
     "direction=\"inbound\")`\n"
     "\n"
-    "## 15 MCP Tools\n"
+    "## 18 MCP Tools\n"
     "`index_repository`, `index_status`, `list_projects`, `delete_project`,\n"
     "`search_graph`, `search_code`, `trace_path`, `detect_changes`,\n"
     "`query_graph`, `get_graph_schema`, `get_code_snippet`, `get_architecture`,\n"
-    "`check_index_coverage`, `manage_adr`, `ingest_traces`\n"
+    "`compare_graphs`, `get_code_actions`,\n"
+    "`check_index_coverage`, `manage_adr`, `ingest_traces`, `get_runtime_traces`\n"
     "\n"
     "## Edge Types\n"
     "CALLS, HTTP_CALLS, ASYNC_CALLS, DATA_FLOWS, IMPORTS, DEFINES, DEFINES_METHOD,\n"

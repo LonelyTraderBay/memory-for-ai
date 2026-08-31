@@ -4,7 +4,7 @@
   "repository": "LonelyTraderBay/memory-for-ai",
   "repository_url": "https://github.com/LonelyTraderBay/memory-for-ai",
   "version": "0.10.8",
-  "mcp_tool_count": 17,
+  "mcp_tool_count": 18,
   "mcp_tools": [
     "index_repository",
     "search_graph",
@@ -22,11 +22,12 @@
     "check_index_coverage",
     "detect_changes",
     "manage_adr",
-    "ingest_traces"
+    "ingest_traces",
+    "get_runtime_traces"
   ],
   "language_enum_count": 165,
   "language_spec_count": 164,
-  "language_count": 164,
+  "language_count": 162,
   "semantic_edge_threshold": 0.75,
   "agent_surface_count": 45,
   "cache_env": "MFA_CACHE_DIR",
