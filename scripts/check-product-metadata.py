@@ -27,6 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_HEADER = ROOT / "src" / "foundation" / "product.h"
 MCP_SOURCE = ROOT / "src" / "mcp" / "mcp.c"
+LANGUAGE_HEADER = ROOT / "internal" / "cbm" / "cbm.h"
+LANGUAGE_SPECS = ROOT / "internal" / "cbm" / "lang_specs.c"
+SEMANTIC_HEADER = ROOT / "src" / "semantic" / "semantic.h"
 SERVER_JSON = ROOT / "server.json"
 METADATA_JSON = ROOT / "docs" / "product-metadata.json"
 
@@ -82,6 +85,56 @@ def tool_names() -> list[str]:
     return names
 
 
+def language_metadata() -> dict[str, int]:
+    """Derive language counts from the native registry instead of prose.
+
+    The enum contains a few dialect/synthetic entries that do not have a
+    Tree-sitter factory (for example ObjectScript export XML).  Keep those
+    counts explicit so marketing documentation can describe the actual
+    parser surface without pretending every enum value is a grammar.
+    """
+
+    enum_text = read_text(LANGUAGE_HEADER)
+    enum_names = re.findall(r"^\s*CBM_LANG_[A-Z0-9_]+\s*(?:,|$)", enum_text, re.MULTILINE)
+    enum_names = [name.strip().rstrip(",") for name in enum_names if name.strip() != "CBM_LANG_COUNT"]
+    if not enum_names:
+        fail("could not locate CBM_LANG_* registry in internal/cbm/cbm.h")
+
+    specs_text = read_text(LANGUAGE_SPECS)
+    spec_matches = list(
+        re.finditer(r"^\s*\[CBM_LANG_([A-Z0-9_]+)\]\s*=", specs_text, re.MULTILINE)
+    )
+    spec_names = [match.group(1) for match in spec_matches]
+    grammar_names: list[str] = []
+    for index, match in enumerate(spec_matches):
+        end = spec_matches[index + 1].start() if index + 1 < len(spec_matches) else len(specs_text)
+        block = specs_text[match.end() : end]
+        if re.search(r"tree_sitter_[A-Za-z0-9_]+\s*,", block):
+            grammar_names.append(match.group(1))
+    if not grammar_names:
+        fail("could not locate Tree-sitter language factories in internal/cbm/lang_specs.c")
+
+    return {
+        "language_enum_count": len(enum_names),
+        "language_spec_count": len(spec_names),
+        "language_count": len(grammar_names),
+    }
+
+
+def semantic_metadata() -> dict[str, float]:
+    """Read semantic edge policy from the native implementation header."""
+
+    text = read_text(SEMANTIC_HEADER)
+    match = re.search(
+        r"^#define\s+CBM_SEM_EDGE_THRESHOLD\s+([0-9]+(?:\.[0-9]+)?)\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if not match:
+        fail("could not locate CBM_SEM_EDGE_THRESHOLD in src/semantic/semantic.h")
+    return {"semantic_edge_threshold": float(match.group(1))}
+
+
 def server_metadata() -> dict:
     try:
         return json.loads(read_text(SERVER_JSON))
@@ -96,6 +149,8 @@ def canonical_metadata() -> dict:
     repository = macros["CBM_PRODUCT_REPOSITORY"]
     repository_url = macros["CBM_PRODUCT_REPOSITORY_URL"]
     expected_mcp_name = f"io.github.{repository}"
+    languages = language_metadata()
+    semantic = semantic_metadata()
 
     if server.get("name") != expected_mcp_name:
         fail(f"server.json name is {server.get('name')!r}, expected {expected_mcp_name!r}")
@@ -115,7 +170,8 @@ def canonical_metadata() -> dict:
         "version": version,
         "mcp_tool_count": len(names),
         "mcp_tools": names,
-        "language_count": 162,
+        **languages,
+        **semantic,
         "agent_surface_count": 45,
         "cache_env": macros["CBM_PRODUCT_CACHE_ENV"],
         "runtime_env": macros["CBM_PRODUCT_RUNTIME_ENV"],
@@ -145,27 +201,38 @@ def write_generated_metadata(metadata: dict) -> None:
 def write_active_docs(metadata: dict) -> list[str]:
     count = str(metadata["mcp_tool_count"])
     languages = str(metadata["language_count"])
+    semantic_threshold = f"{metadata['semantic_edge_threshold']:.2f}"
     version = metadata["version"]
     changed: list[str] = []
 
     replacements = {
         "README.md": [
             (r"\b\d+ MCP tools\b", f"{count} MCP tools"),
+            (r"languages-\d+", f"languages-{languages}"),
+            (r"\b\d+ languages\b", f"{languages} languages"),
             (r"\b\d+ vendored tree-sitter grammars\b", f"{languages} vendored tree-sitter grammars"),
+            (r"score ≥ \d+\.\d+", f"score ≥ {semantic_threshold}"),
+            (r"(Channel detection.*?across )\d+( languages)", r"\g<1>8\g<2>"),
         ],
         "pkg/npm/README.md": [
             (r"\b\d+ MCP tools\b", f"{count} MCP tools"),
+            (r"languages-\d+", f"languages-{languages}"),
+            (r"\b\d+ languages\b", f"{languages} languages"),
             (r"\b\d+ vendored tree-sitter grammars\b", f"{languages} vendored tree-sitter grammars"),
+            (r"score ≥ \d+\.\d+", f"score ≥ {semantic_threshold}"),
         ],
         "docs/llms.txt": [
+            (r"\b\d+ languages\b", f"{languages} languages"),
             (r"Languages: \d+ \(\d+ vendored", f"Languages: {languages} ({languages} vendored"),
             (r"MCP tools: \d+\b", f"MCP tools: {count}"),
+            (r"score ≥ \d+\.\d+", f"score ≥ {semantic_threshold}"),
         ],
         "docs/index.html": [
             (r'"softwareVersion": "[^"]+"', f'"softwareVersion": "{version}"'),
             (r"\b\d+ languages\b", f"{languages} languages"),
             (r"Indexes \d+ programming languages", f"Indexes {languages} programming languages"),
             (r"\b\d+ MCP tools\b", f"{count} MCP tools"),
+            (r"scored ≥ \d+\.\d+", f"scored ≥ {semantic_threshold}"),
         ],
     }
     for relative, patterns in replacements.items():
@@ -205,16 +272,30 @@ def check_package_versions(metadata: dict) -> list[str]:
 def check_docs(metadata: dict) -> list[str]:
     errors: list[str] = []
     expected_count = str(metadata["mcp_tool_count"])
+    expected_languages = str(metadata["language_count"])
+    expected_threshold = f"{metadata['semantic_edge_threshold']:.2f}"
     for relative in ("README.md", "pkg/npm/README.md", "docs/llms.txt", "docs/index.html"):
         text = read_text(ROOT / relative)
         values = re.findall(r"\b(\d+) MCP tools\b", text)
         if any(value != expected_count for value in values):
             errors.append(f"{relative}: MCP tool count is not {expected_count}")
-        if re.search(
-            r"\b158 languages\b|Languages: 158|158 vendored|Indexes 158 programming",
-            text,
-        ):
-            errors.append(f"{relative}: stale language count 158")
+        # The channel detector intentionally covers a smaller, documented
+        # language subset than the complete parser registry.
+        check_text = re.sub(r"(?im)^.*Channel detection.*$", "", text)
+        language_values = re.findall(r"\b(\d+) languages\b", check_text)
+        if any(value != expected_languages for value in language_values):
+            errors.append(f"{relative}: language count is not {expected_languages}")
+        if re.search(r"Languages:\s*\d+\s*\(\d+ vendored", text):
+            match = re.search(r"Languages:\s*(\d+)\s*\((\d+) vendored", text)
+            if not match or match.group(1) != expected_languages or match.group(2) != expected_languages:
+                errors.append(f"{relative}: vendored language count is not {expected_languages}")
+        if re.search(r"Indexes\s+\d+ programming languages", text):
+            match = re.search(r"Indexes\s+(\d+) programming languages", text)
+            if not match or match.group(1) != expected_languages:
+                errors.append(f"{relative}: indexed language count is not {expected_languages}")
+        thresholds = re.findall(r"(?:scored|score) ≥ (\d+\.\d+)", text)
+        if any(value != expected_threshold for value in thresholds):
+            errors.append(f"{relative}: semantic threshold is not {expected_threshold}")
     return errors
 
 

@@ -10,6 +10,7 @@ enum { TRACE_PATH_SLASHES = 3, TRACE_NOT_FOUND = -1 };
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <errno.h>
 
 /* ── extractServiceName ──────────────────────────────────────────── */
 
@@ -64,11 +65,41 @@ const char *cbm_extract_path_from_url(const char *url, char *buf, size_t buf_sz)
 /* ── parseDuration ───────────────────────────────────────────────── */
 
 int64_t cbm_parse_duration(const char *start_nano, const char *end_nano) {
-    if (!start_nano || !end_nano) {
+    if (!start_nano || !end_nano || !*start_nano || !*end_nano) {
         return 0;
     }
-    int64_t start = strtoll(start_nano, NULL, CBM_DECIMAL_BASE);
-    int64_t end = strtoll(end_nano, NULL, CBM_DECIMAL_BASE);
+
+    /* Timestamps arrive at the JSON boundary as decimal strings. Reject
+     * whitespace, signs, suffixes, and overflow instead of allowing strtoll
+     * to silently return a partial or saturated value. */
+    for (const char *p = start_nano; *p; p++) {
+        if (*p < '0' || *p > '9') {
+            return 0;
+        }
+    }
+    for (const char *p = end_nano; *p; p++) {
+        if (*p < '0' || *p > '9') {
+            return 0;
+        }
+    }
+
+    errno = 0;
+    char *start_end = NULL;
+    uintmax_t start_value = strtoumax(start_nano, &start_end, CBM_DECIMAL_BASE);
+    if (errno == ERANGE || start_end == start_nano || *start_end != '\0' ||
+        start_value > (uintmax_t)INT64_MAX) {
+        return 0;
+    }
+    errno = 0;
+    char *end_end = NULL;
+    uintmax_t end_value = strtoumax(end_nano, &end_end, CBM_DECIMAL_BASE);
+    if (errno == ERANGE || end_end == end_nano || *end_end != '\0' ||
+        end_value > (uintmax_t)INT64_MAX) {
+        return 0;
+    }
+
+    int64_t start = (int64_t)start_value;
+    int64_t end = (int64_t)end_value;
     return (end > start) ? (end - start) : 0;
 }
 
@@ -84,7 +115,6 @@ bool cbm_extract_http_info(const cbm_trace_span_t *span, const char *service_nam
     out->span_kind = span->kind;
 
     bool has_http = false;
-    static char url_buf[CBM_SZ_1K];
 
     for (int i = 0; i < span->attr_count; i++) {
         const char *key = span->attributes[i].key;
@@ -103,7 +133,8 @@ bool cbm_extract_http_info(const cbm_trace_span_t *span, const char *service_nam
         } else if (strcmp(key, "http.status_code") == 0) {
             out->status_code = val;
         } else if (strcmp(key, "url.full") == 0) {
-            const char *path = cbm_extract_path_from_url(val, url_buf, sizeof(url_buf));
+            const char *path = cbm_extract_path_from_url(val, out->path_storage,
+                                                         sizeof(out->path_storage));
             if (path[0] != '\0') {
                 out->path = path;
                 has_http = true;

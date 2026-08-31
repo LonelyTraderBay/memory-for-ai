@@ -3,7 +3,7 @@
  *
  * Keep externally visible names and operating-system rendezvous identifiers
  * here so this distribution cannot accidentally share state with the upstream
- * the upstream installation.
+ * installation.
  */
 #ifndef CBM_PRODUCT_H
 #define CBM_PRODUCT_H

@@ -24,7 +24,10 @@
     "manage_adr",
     "ingest_traces"
   ],
-  "language_count": 162,
+  "language_enum_count": 165,
+  "language_spec_count": 164,
+  "language_count": 164,
+  "semantic_edge_threshold": 0.75,
   "agent_surface_count": 45,
   "cache_env": "MFA_CACHE_DIR",
   "runtime_env": "MFA_RUNTIME_DIR",

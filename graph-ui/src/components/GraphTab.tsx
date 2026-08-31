@@ -29,10 +29,17 @@ import type { GraphNode, GraphData, RepoInfo } from "../lib/types";
 import { colorForStatus } from "../lib/colors";
 
 /* Persist panel widths */
-function loadWidth(key: string, fallback: number): number {
+const STORAGE_PREFIX = "memory-for-ai";
+
+function loadWidth(key: string, fallback: number, legacyKey?: string): number {
   try {
-    const v = localStorage.getItem(key);
-    if (v) return Math.max(150, Math.min(600, parseInt(v, 10)));
+    const v =
+      localStorage.getItem(key) ??
+      (legacyKey ? localStorage.getItem(legacyKey) : null);
+    if (v) {
+      const parsed = parseInt(v, 10);
+      if (Number.isFinite(parsed)) return Math.max(150, Math.min(600, parsed));
+    }
   } catch { /* ignore */ }
   return fallback;
 }
@@ -42,11 +49,16 @@ function saveWidth(key: string, value: number) {
 
 /* Persist the node budget per project */
 function budgetKey(project: string): string {
+  return `${STORAGE_PREFIX}-node-budget:${project}`;
+}
+function legacyBudgetKey(project: string): string {
   return `cbm-node-budget:${project}`;
 }
 function loadNodeBudget(project: string): number {
   try {
-    const v = localStorage.getItem(budgetKey(project));
+    const v =
+      localStorage.getItem(budgetKey(project)) ??
+      localStorage.getItem(legacyBudgetKey(project));
     if (v) return clampNodeBudget(parseInt(v, 10));
   } catch { /* ignore */ }
   return GRAPH_RENDER_NODE_LIMIT;
@@ -83,8 +95,12 @@ export function GraphTab({ project }: GraphTabProps) {
     setDisplay(next);
     saveDisplaySettings(next);
   }, []);
-  const [leftWidth, setLeftWidth] = useState(() => loadWidth("cbm-left-w", 260));
-  const [rightWidth, setRightWidth] = useState(() => loadWidth("cbm-right-w", 280));
+  const [leftWidth, setLeftWidth] = useState(() =>
+    loadWidth(`${STORAGE_PREFIX}-left-w`, 260, "cbm-left-w"),
+  );
+  const [rightWidth, setRightWidth] = useState(() =>
+    loadWidth(`${STORAGE_PREFIX}-right-w`, 280, "cbm-right-w"),
+  );
   const limitNotice = formatGraphLimitNotice(data);
 
   /* Node budget — keyed to its project so switching projects re-reads the
@@ -428,7 +444,7 @@ export function GraphTab({ project }: GraphTabProps) {
       <div className="flex items-center justify-center h-full">
         <div className="text-center p-8">
           <p className="text-red-400 text-sm mb-2">{error}</p>
-          <Button variant="outline" size="sm" onClick={() => fetchOverview(project)}>
+          <Button variant="outline" size="sm" onClick={() => fetchOverview(project, budget.value)}>
             Retry
           </Button>
         </div>
@@ -487,7 +503,7 @@ export function GraphTab({ project }: GraphTabProps) {
         onResize={(d) => {
           setLeftWidth((w) => {
             const nw = Math.max(150, Math.min(500, w + d));
-            saveWidth("cbm-left-w", nw);
+            saveWidth(`${STORAGE_PREFIX}-left-w`, nw);
             return nw;
           });
         }}
@@ -612,7 +628,7 @@ export function GraphTab({ project }: GraphTabProps) {
             onResize={(d) => {
               setRightWidth((w) => {
                 const nw = Math.max(200, Math.min(500, w + d));
-                saveWidth("cbm-right-w", nw);
+                saveWidth(`${STORAGE_PREFIX}-right-w`, nw);
                 return nw;
               });
             }}

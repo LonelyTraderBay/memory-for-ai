@@ -105,6 +105,25 @@ TEST(traces_extract_http_info_url_full) {
     PASS();
 }
 
+TEST(traces_extract_http_info_url_storage_is_per_result) {
+    cbm_trace_attr_t attrs[] = {
+        {.key = "http.method", .string_value = "GET"},
+        {.key = "url.full", .string_value = "https://example.com/first"},
+    };
+    cbm_trace_span_t span = {.kind = 2, .attributes = attrs, .attr_count = 2};
+    cbm_http_span_info_t first;
+    cbm_http_span_info_t second;
+
+    ASSERT(cbm_extract_http_info(&span, "svc", &first));
+    ASSERT_STR_EQ(first.path, "/first");
+
+    attrs[1].string_value = "https://example.com/second";
+    ASSERT(cbm_extract_http_info(&span, "svc", &second));
+    ASSERT_STR_EQ(second.path, "/second");
+    ASSERT_STR_EQ(first.path, "/first");
+    PASS();
+}
+
 /* ── TestExtractServiceName — edge cases ───────────────────────── */
 
 TEST(traces_extract_service_name_empty_attrs) {
@@ -265,6 +284,20 @@ TEST(traces_parse_duration_large_values) {
     PASS();
 }
 
+TEST(traces_parse_duration_rejects_malformed_input) {
+    ASSERT_EQ(cbm_parse_duration("1000junk", "2000"), 0);
+    ASSERT_EQ(cbm_parse_duration(" 1000", "2000"), 0);
+    ASSERT_EQ(cbm_parse_duration("+1000", "2000"), 0);
+    ASSERT_EQ(cbm_parse_duration("1000", "2000ns"), 0);
+    PASS();
+}
+
+TEST(traces_parse_duration_rejects_overflow) {
+    ASSERT_EQ(cbm_parse_duration("9223372036854775808", "9223372036854775809"), 0);
+    ASSERT_EQ(cbm_parse_duration("0", "999999999999999999999999999999"), 0);
+    PASS();
+}
+
 /* ── TestCalculateP99 — edge cases ────────────────────────────────── */
 
 TEST(traces_calculate_p99_100_values) {
@@ -319,6 +352,7 @@ SUITE(traces) {
     RUN_TEST(traces_extract_http_info);
     RUN_TEST(traces_extract_http_info_non_http);
     RUN_TEST(traces_extract_http_info_url_full);
+    RUN_TEST(traces_extract_http_info_url_storage_is_per_result);
     RUN_TEST(traces_extract_path_from_url);
     RUN_TEST(traces_extract_path_null_url);
     RUN_TEST(traces_extract_path_empty_url);
@@ -341,4 +375,6 @@ SUITE(traces) {
     RUN_TEST(traces_parse_duration_both_null);
     RUN_TEST(traces_parse_duration_equal);
     RUN_TEST(traces_parse_duration_large_values);
+    RUN_TEST(traces_parse_duration_rejects_malformed_input);
+    RUN_TEST(traces_parse_duration_rejects_overflow);
 }

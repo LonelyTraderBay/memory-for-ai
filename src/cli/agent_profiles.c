@@ -158,9 +158,9 @@ const char *cbm_graph_tier_slug(cbm_graph_tier_t tier) {
 
 const char *cbm_graph_tier_display_name(cbm_graph_tier_t tier) {
     static const char *const names[CBM_GRAPH_TIER_COUNT] = {
-        "Codebase Memory Scout",
-        "Codebase Memory Verify",
-        "Codebase Memory Auditor",
+        "Memory for AI Scout",
+        "Memory for AI Verify",
+        "Memory for AI Auditor",
     };
     return tier_valid(tier) ? names[tier] : NULL;
 }

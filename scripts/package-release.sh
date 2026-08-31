@@ -291,7 +291,7 @@ build_mcpb_bundle() {
 {
   "manifest_version": "0.3",
   "name": "memory-for-ai",
-  "display_name": "Codebase Memory",
+  "display_name": "Memory for AI",
   "version": "$mcpb_version",
   "description": "Codebase knowledge graph for AI agents — 162 languages, sub-ms queries, 99% fewer tokens.",
   "author": { "name": "LonelyTraderBay", "url": "https://github.com/LonelyTraderBay" },

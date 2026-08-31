@@ -1290,7 +1290,7 @@ static const char skill_content[] =
     "Cypher query examples, edge types, how to use search_graph.\"\n"
     "---\n"
     "\n"
-    "# Codebase Memory — Knowledge Graph Tools\n"
+    "# Memory for AI — Knowledge Graph Tools\n"
     "\n"
     "Graph tools return precise structural results in ~500 tokens vs ~80K for grep.\n"
     "\n"
@@ -2898,7 +2898,7 @@ cbm_detected_agents_t cbm_detect_agents(const char *home_dir) {
 /* ── Shared agent instructions content ────────────────────────── */
 
 static const char agent_instructions_content[] =
-    "# Codebase Memory\n"
+    "# Memory for AI\n"
     "\n"
     "## Codebase Knowledge Graph (memory-for-ai)\n"
     "\n"
@@ -3128,7 +3128,7 @@ static const char legacy_kilo_verify_agent_content[] =
 
 static const char legacy_vibe_verify_agent_content[] =
     "agent_type = \"subagent\"\n"
-    "display_name = \"Codebase Memory\"\n"
+    "display_name = \"Memory for AI\"\n"
     "description = \"Read-only knowledge-graph specialist for structure, dependencies, and call "
     "chains.\"\n"
     "safety = \"safe\"\n"
@@ -3300,7 +3300,7 @@ static const char legacy_omp_verify_agent_content[] =
  * first and make the handoff explicit instead of instructing the child to call
  * tools it cannot access. */
 static const char crush_context_content[] =
-    "# Codebase Memory for Crush\n"
+    "# Memory for AI for Crush\n"
     "\n"
     "Route work as Scout (fast provisional lookup), Verify (default task-directed verification), "
     "or Auditor (bounded full graph verification). Use `search_graph`, `trace_path`, and "
@@ -9171,7 +9171,7 @@ static void install_editor_agent_configs(const cbm_detected_agents_t *agents, co
                     printf("  instructions: %s\n", agents_path);
                     printf("  tools context: %s\n", tools_path);
                     if (compaction_installed) {
-                        printf("  compaction: reinjects Codebase Memory\n");
+                        printf("  compaction: reinjects Memory for AI\n");
                     } else {
                         printf("  compaction: could not update exact-owned augmentation\n");
                     }

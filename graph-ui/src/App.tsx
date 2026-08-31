@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
-import { GraphTab } from "./components/GraphTab";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { StatsTab } from "./components/StatsTab";
 import { ControlTab } from "./components/ControlTab";
 import type { TabId } from "./lib/types";
 import { useUiMessages } from "./lib/i18n";
+
+/* Three.js and the graph renderer are the heaviest UI dependencies. Keep them
+ * out of the initial Projects/Control load and fetch them only when the user
+ * opens the Graph tab. */
+const GraphTab = lazy(() =>
+  import("./components/GraphTab").then(({ GraphTab: component }) => ({
+    default: component,
+  })),
+);
 
 const TAB_IDS: TabId[] = ["graph", "stats", "control"];
 
@@ -71,7 +79,7 @@ export function App() {
           <div className="flex items-center gap-2.5">
             <div className="w-[7px] h-[7px] rounded-full bg-primary" />
             <span className="text-[13px] font-semibold text-foreground/90 tracking-tight">
-              Codebase Memory
+              Memory for AI
             </span>
           </div>
 
@@ -121,7 +129,15 @@ export function App() {
       {/* Content */}
       <main className="flex-1 min-h-0">
         {activeTab === "graph" ? (
-          <GraphTab project={selectedProject} />
+          <Suspense
+            fallback={
+              <div className="h-full flex items-center justify-center text-[12px] text-foreground/35">
+                Loading graph renderer…
+              </div>
+            }
+          >
+            <GraphTab project={selectedProject} />
+          </Suspense>
         ) : activeTab === "control" ? (
           <ControlTab />
         ) : (

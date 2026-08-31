@@ -100,7 +100,11 @@ export const DISPLAY_LIMITS = {
   bloom: { min: 0, max: 2 },
 } as const;
 
-const DISPLAY_STORAGE_KEY = "cbm-display";
+/* Keep this fork's browser preferences in a separate namespace. The legacy
+ * key is read once as a compatibility fallback for users upgrading from the
+ * upstream UI, but all future writes stay isolated to memory-for-ai. */
+const DISPLAY_STORAGE_KEY = "memory-for-ai-display";
+const LEGACY_DISPLAY_STORAGE_KEY = "cbm-display";
 
 function clampSetting(key: keyof DisplaySettings, value: unknown): number {
   const { min, max } = DISPLAY_LIMITS[key];
@@ -121,7 +125,9 @@ export function clampDisplaySettings(
 
 export function loadDisplaySettings(): DisplaySettings {
   try {
-    const raw = localStorage.getItem(DISPLAY_STORAGE_KEY);
+    const raw =
+      localStorage.getItem(DISPLAY_STORAGE_KEY) ??
+      localStorage.getItem(LEGACY_DISPLAY_STORAGE_KEY);
     if (raw) return clampDisplaySettings(JSON.parse(raw));
   } catch { /* ignore */ }
   return DEFAULT_DISPLAY_SETTINGS;
@@ -129,6 +135,9 @@ export function loadDisplaySettings(): DisplaySettings {
 
 export function saveDisplaySettings(settings: DisplaySettings) {
   try {
-    localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(
+      DISPLAY_STORAGE_KEY,
+      JSON.stringify(clampDisplaySettings(settings)),
+    );
   } catch { /* ignore */ }
 }

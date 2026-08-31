@@ -646,7 +646,8 @@ static const tool_def_t TOOLS[] = {
      "\"minimum\":0,\"default\":0},"
      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":100,\"default\":50},"
      "\"include_details\":{\"type\":\"boolean\",\"default\":false,"
-     "\"description\":\"Include branch, node/edge counts and database size. Slower.\"},"
+     "\"description\":\"Include branch, node/edge counts, database size, and \"
+     "label/type counts. Slower.\"},"
      "\"metadata_only\":{\"type\":\"boolean\",\"description\":\"Deprecated compatibility "
      "alias for include_details=false.\"}}}"},
     {"delete_project", "Delete project", "Delete a project from the index",
@@ -2645,15 +2646,17 @@ static void build_project_json_entry(yyjson_mut_doc *doc, yyjson_mut_val *arr, c
         edges = cbm_store_count_edges(pstore, project_name);
     }
     char root_path_buf[CBM_SZ_1K] = "";
+    char indexed_at_buf[CBM_SZ_256] = "";
     cbm_project_t proj = {0};
     if (cbm_store_get_project(pstore, project_name, &proj) == CBM_STORE_OK) {
         if (proj.root_path) {
             snprintf(root_path_buf, sizeof(root_path_buf), "%s", proj.root_path);
         }
+        if (proj.indexed_at) {
+            snprintf(indexed_at_buf, sizeof(indexed_at_buf), "%s", proj.indexed_at);
+        }
         cbm_project_free_fields(&proj);
     }
-    cbm_store_close(pstore);
-
     yyjson_mut_val *p = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_strcpy(doc, p, "name", project_name);
     yyjson_mut_obj_add_strcpy(doc, p, "root_path", root_path_buf);
@@ -2673,7 +2676,41 @@ static void build_project_json_entry(yyjson_mut_doc *doc, yyjson_mut_val *arr, c
         yyjson_mut_obj_add_int(doc, p, "nodes", nodes);
         yyjson_mut_obj_add_int(doc, p, "edges", edges);
         yyjson_mut_obj_add_int(doc, p, "size_bytes", size_bytes);
+        yyjson_mut_obj_add_strcpy(doc, p, "indexed_at", indexed_at_buf);
+
+        /* The UI needs label/type counts for its project cards. Include the
+         * count-only schema here so clients can render all project summaries
+         * with one bounded list_projects call instead of an N+1 request burst.
+         * Property discovery remains available through get_graph_schema. */
+        cbm_schema_info_t schema = {0};
+        if (cbm_store_get_schema_counts(pstore, project_name, &schema) == CBM_STORE_OK) {
+            yyjson_mut_val *schema_obj = yyjson_mut_obj(doc);
+            yyjson_mut_val *labels = yyjson_mut_arr(doc);
+            for (int i = 0; i < schema.node_label_count; i++) {
+                yyjson_mut_val *label = yyjson_mut_obj(doc);
+                yyjson_mut_obj_add_strcpy(doc, label, "label", schema.node_labels[i].label);
+                yyjson_mut_obj_add_int(doc, label, "count", schema.node_labels[i].count);
+                yyjson_mut_obj_add_val(doc, label, "properties", yyjson_mut_arr(doc));
+                yyjson_mut_arr_add_val(labels, label);
+            }
+            yyjson_mut_obj_add_val(doc, schema_obj, "node_labels", labels);
+
+            yyjson_mut_val *types = yyjson_mut_arr(doc);
+            for (int i = 0; i < schema.edge_type_count; i++) {
+                yyjson_mut_val *type = yyjson_mut_obj(doc);
+                yyjson_mut_obj_add_strcpy(doc, type, "type", schema.edge_types[i].type);
+                yyjson_mut_obj_add_int(doc, type, "count", schema.edge_types[i].count);
+                yyjson_mut_obj_add_val(doc, type, "properties", yyjson_mut_arr(doc));
+                yyjson_mut_arr_add_val(types, type);
+            }
+            yyjson_mut_obj_add_val(doc, schema_obj, "edge_types", types);
+            yyjson_mut_obj_add_int(doc, schema_obj, "total_nodes", nodes);
+            yyjson_mut_obj_add_int(doc, schema_obj, "total_edges", edges);
+            yyjson_mut_obj_add_val(doc, p, "schema", schema_obj);
+        }
+        cbm_store_schema_free(&schema);
     }
+    cbm_store_close(pstore);
     yyjson_mut_arr_add_val(arr, p);
 }
 

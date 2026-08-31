@@ -11,6 +11,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Storage owned by cbm_http_span_info_t for URL-derived paths. Keeping the
+ * buffer in the result object makes extraction re-entrant and avoids returning
+ * a pointer to shared scratch memory. */
+#define CBM_TRACE_PATH_MAX 1024U
+
 /* ── Attribute key-value pair ─────────────────────────────────────── */
 
 typedef struct {
@@ -44,6 +49,7 @@ typedef struct {
     const char *status_code;
     int span_kind;
     int64_t duration_ns;
+    char path_storage[CBM_TRACE_PATH_MAX];
 } cbm_http_span_info_t;
 
 /* ── Helper functions ─────────────────────────────────────────────── */
@@ -52,8 +58,9 @@ typedef struct {
 const char *cbm_extract_service_name(const cbm_trace_resource_t *r);
 
 /* Extract HTTP info from a span. Returns true if HTTP span, false otherwise.
- * Fills out with method, path, status, duration. Caller owns string pointers
- * (they point to data within the span's attribute strings — NOT heap-allocated). */
+ * Fills out with method, path, status, duration. Attribute-derived pointers
+ * point into the span; a URL-derived path points into out->path_storage and
+ * remains valid until the result object is reused or released. */
 bool cbm_extract_http_info(const cbm_trace_span_t *span, const char *service_name,
                            cbm_http_span_info_t *out);
 

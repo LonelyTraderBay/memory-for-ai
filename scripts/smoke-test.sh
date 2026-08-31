@@ -1784,7 +1784,7 @@ if [[ "$BINARY" == *.exe ]]; then
 else
   ZED_INSTR="$FAKE_HOME/.config/zed/AGENTS.md"
 fi
-if ! grep -q 'Codebase Memory' "$ZED_INSTR" 2>/dev/null ||
+if ! grep -q 'Memory for AI' "$ZED_INSTR" 2>/dev/null ||
    ! grep -q 'search_graph' "$ZED_INSTR" 2>/dev/null; then
   echo "FAIL 8n-i: Zed durable AGENTS.md missing"
   exit 1

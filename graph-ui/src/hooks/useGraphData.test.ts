@@ -46,6 +46,23 @@ describe("fetchLayout", () => {
     );
   });
 
+  it("passes an abort signal to the layout request", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ nodes: [], edges: [], total_nodes: 0 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await fetchLayout("large-project", 5000, undefined, "code", undefined, controller.signal);
+
+    const calls = fetchMock.mock.calls as unknown as Array<[
+      string,
+      RequestInit | undefined,
+    ]>;
+    expect(calls[0]?.[1]).toEqual({ signal: controller.signal });
+  });
+
   it("requests a bounded detail neighborhood around the qualified name", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,

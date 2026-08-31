@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   edgeIntensityScale,
   bloomIntensityScale,
@@ -8,7 +8,13 @@ import {
   DEFAULT_DISPLAY_SETTINGS,
   EDGE_REFERENCE_COUNT,
   NODE_REFERENCE_COUNT,
+  loadDisplaySettings,
+  saveDisplaySettings,
 } from "./density";
+
+afterEach(() => {
+  localStorage.clear();
+});
 
 /* Parse "#rrggbb" to 0..1 channels, matching how the renderer feeds colors. */
 function rgb(hex: string): [number, number, number] {
@@ -104,5 +110,26 @@ describe("clampDisplaySettings", () => {
     expect(clampDisplaySettings({ bloom: Number.NaN }).bloom).toBe(
       DEFAULT_DISPLAY_SETTINGS.bloom,
     );
+  });
+});
+
+describe("display preference storage", () => {
+  it("reads the legacy preference but writes only to the fork namespace", () => {
+    localStorage.setItem(
+      "cbm-display",
+      JSON.stringify({ edgeBrightness: 2, nodeGlow: 1, bloom: 0.5 }),
+    );
+
+    expect(loadDisplaySettings()).toEqual({
+      edgeBrightness: 2,
+      nodeGlow: 1,
+      bloom: 0.5,
+    });
+
+    saveDisplaySettings({ edgeBrightness: 1.5, nodeGlow: 0.5, bloom: 1 });
+    expect(localStorage.getItem("memory-for-ai-display")).toBe(
+      JSON.stringify({ edgeBrightness: 1.5, nodeGlow: 0.5, bloom: 1 }),
+    );
+    expect(localStorage.getItem("cbm-display")).not.toBeNull();
   });
 });

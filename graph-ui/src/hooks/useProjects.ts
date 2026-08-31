@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { callTool } from "../api/rpc";
 import type { Project, SchemaInfo } from "../lib/types";
 
@@ -14,42 +14,59 @@ interface UseProjectsResult {
   refresh: () => void;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export function useProjects(): UseProjectsResult {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
+  const activeController = useRef<AbortController | null>(null);
 
   const fetchProjects = useCallback(async () => {
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+    const sequence = ++requestSequence.current;
     setLoading(true);
     setError(null);
     try {
-      const result = await callTool<{ projects: Project[] }>("list_projects");
+      const result = await callTool<{ projects: Project[] }>(
+        "list_projects",
+        { include_details: true },
+        { signal: controller.signal },
+      );
       const list = result.projects ?? [];
 
-      /* Fetch schema for each project */
-      const infos: ProjectInfo[] = await Promise.all(
-        list.map(async (p) => {
-          try {
-            const schema = await callTool<SchemaInfo>("get_graph_schema", {
-              project: p.name,
-            });
-            return { project: p, schema };
-          } catch {
-            return { project: p, schema: null };
-          }
-        }),
-      );
+      /* include_details carries a count-only schema, avoiding an N+1
+       * get_graph_schema burst while preserving the existing view model. */
+      const infos: ProjectInfo[] = list.map((project) => ({
+        project,
+        schema: project.schema ?? null,
+      }));
 
-      setProjects(infos);
+      if (requestSequence.current === sequence) setProjects(infos);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to fetch projects");
+      if (requestSequence.current === sequence && !isAbortError(e)) {
+        setError(e instanceof Error ? e.message : "Failed to fetch projects");
+      }
     } finally {
-      setLoading(false);
+      if (requestSequence.current === sequence) {
+        activeController.current = null;
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     fetchProjects();
+    return () => {
+      activeController.current?.abort();
+      activeController.current = null;
+      requestSequence.current += 1;
+    };
   }, [fetchProjects]);
 
   return { projects, loading, error, refresh: fetchProjects };

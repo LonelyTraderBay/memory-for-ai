@@ -42,7 +42,20 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: undefined,
+        manualChunks(id) {
+          /* Keep the 3D dependency family in its own cacheable chunk. The
+           * Graph tab is already lazy-loaded; this also prevents one large
+           * renderer bundle from blocking its surrounding UI shell. */
+          const normalized = id.replace(/\\/g, "/");
+          if (
+            normalized.includes("/node_modules/three/") ||
+            normalized.includes("/node_modules/@react-three/") ||
+            normalized.includes("/node_modules/postprocessing/")
+          ) {
+            return "three-vendor";
+          }
+          return undefined;
+        },
       },
     },
   },

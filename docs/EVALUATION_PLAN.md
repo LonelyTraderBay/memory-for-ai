@@ -1,4 +1,10 @@
-# memory-for-ai — Evaluation Plan (159 Languages)
+# memory-for-ai — Evaluation Plan (159-Language Benchmark Cohort)
+
+> This document defines a fixed 159-language benchmark cohort. It is not the
+> current parser-registry count. The current native registry and Tree-sitter
+> grammar count are generated into [product-metadata.json](product-metadata.json)
+> by `scripts/check-product-metadata.py`; benchmark results remain comparable
+> across runs even when the product adds a new language or dialect.
 
 > **Status:** Working plan document, **for peer review prior to execution**. This is a **plan, not a
 > result set** — it defines *how* the next evaluation is run and contains no scores. Execution happens

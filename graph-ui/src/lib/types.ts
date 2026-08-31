@@ -70,14 +70,20 @@ export interface GraphData {
 export interface Project {
   name: string;
   root_path: string;
-  indexed_at: string;
+  indexed_at?: string;
+  branch?: string;
+  nodes?: number;
+  edges?: number;
+  size_bytes?: number;
+  /* Count-only schema included by list_projects(include_details=true). */
+  schema?: SchemaInfo;
 }
 
 export interface SchemaInfo {
   node_labels: { label: string; count: number }[];
   edge_types: { type: string; count: number }[];
-  total_nodes: number;
-  total_edges: number;
+  total_nodes?: number;
+  total_edges?: number;
 }
 
 export type TabId = "graph" | "stats" | "control";

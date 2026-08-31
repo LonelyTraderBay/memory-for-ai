@@ -10778,6 +10778,10 @@ TEST(tool_resolve_store_by_internal_name_issue704) {
              "\"arguments\":{\"offset\":0,\"limit\":1,\"include_details\":true}}}");
     ASSERT_NOT_NULL(details);
     ASSERT_NOT_NULL(strstr(details, "\\\"nodes\\\""));
+    ASSERT_NOT_NULL(strstr(details, "\\\"schema\\\""));
+    ASSERT_NOT_NULL(strstr(details, "\\\"node_labels\\\""));
+    ASSERT_NOT_NULL(strstr(details, "\\\"indexed_at\\\""));
+    ASSERT_NOT_NULL(strstr(details, "\\\"total_nodes\\\""));
     free(details);
 
     /* ── B: the drifted project resolves by its INTERNAL name ──────── */
