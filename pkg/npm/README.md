@@ -78,6 +78,10 @@ memory-for-ai cli get_architecture '{}'
 | **Analysis** | `get_architecture`, `get_graph_schema`, `get_code_snippet`, `search_code`, `get_code_actions` |
 | **Advanced** | `manage_adr`, `ingest_traces`, `get_runtime_traces` |
 
+`ingest_traces` uses `compact-v1` by default. The opt-in `canonical-v2` contract accepts
+producer-scoped hexadecimal span IDs and provides exact duplicate suppression plus
+conflict rejection; it never writes runtime observations into the static graph.
+
 ## Performance
 
 Benchmarked on Apple M3 Pro:

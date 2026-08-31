@@ -73,6 +73,24 @@ typedef struct {
     int64_t observations;
 } cbm_runtime_trace_edge_t;
 
+/* One canonical-v2 span contribution. Identity fields are producer-scoped;
+ * normalized_hash covers the allowlisted observation fields and is used to
+ * reject the same span being replayed with different content. The strings
+ * remain caller-owned for the duration of the ingest call. */
+typedef struct {
+    const char *producer_id;
+    const char *producer_epoch;
+    const char *trace_id;
+    const char *span_id;
+    const char *normalized_hash;
+    const char *caller;
+    const char *callee;
+    int64_t call_count;
+    int64_t error_count;
+    int64_t duration_ns_total;
+    int64_t duration_ns_max;
+} cbm_runtime_trace_span_t;
+
 typedef struct {
     const char *project;
     const char *rel_path;
@@ -484,6 +502,16 @@ int cbm_store_ingest_runtime_traces(cbm_store_t *s, const char *project,
                                     const char *batch_id, const char *payload_hash,
                                     const cbm_runtime_trace_edge_t *edges, int count,
                                     bool *idempotent, int64_t *observations_out);
+
+/* Persist a producer-scoped canonical contribution. The contribution and
+ * every unique span are immutable: retrying the same contribution/hash is
+ * idempotent, reusing either identity with different content is a conflict,
+ * and spans already accepted in another contribution are not counted twice. */
+int cbm_store_ingest_runtime_trace_contribution(
+    cbm_store_t *s, const char *project, const char *producer_id, const char *producer_epoch,
+    const char *contribution_id, const char *payload_hash,
+    const cbm_runtime_trace_span_t *spans, int count, bool *idempotent,
+    int64_t *observations_out, int *new_spans_out);
 
 /* Read the explicit runtime sidecar without changing the static graph. Rows
  * are ordered by call_count DESC, caller ASC, callee ASC and are bounded by

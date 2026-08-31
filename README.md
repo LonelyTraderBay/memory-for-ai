@@ -672,6 +672,13 @@ JSON arguments can also be piped on stdin, for tools that take arguments. A tool
 | `ingest_traces` | Ingest runtime traces into the isolated runtime sidecar. |
 | `get_runtime_traces` | Read deterministic, paginated runtime edge aggregates from the sidecar. |
 
+`ingest_traces` defaults to the backward-compatible `compact-v1` wire. Producers that
+have stable lowercase hexadecimal `trace_id`/`span_id` values may opt into
+`runtime_semantic_version: "canonical-v2"` with `producer_id`, `producer_epoch`, and
+`source_batch_id`; the server deduplicates producer-scoped spans and rejects conflicting
+replays without modifying the static graph. See
+[`docs/RUNTIME_TRACE_MODEL.md`](docs/RUNTIME_TRACE_MODEL.md) for the version boundary.
+
 `manage_adr(mode='set_sections')` writes one or more sections by name and splices them into the stored document, so text outside the named sections — including a preamble, code fences and section ordering — is preserved byte-for-byte. Any `## Heading` works, not just the conventional PURPOSE / STACK / ARCHITECTURE / PATTERNS / TRADEOFFS / PHILOSOPHY set; names match exactly, including case. Writing the same section twice is a no-op, so a retry after a lost response cannot duplicate content.
 
 `manage_adr` query modes (`get` and `sections`) use the server's cached query store so they can proceed while a same-project reindex is running. If another process publishes a replacement store during reindexing, they can return the pre-publication ADR until idle eviction refreshes that cache. Updates remain serialized through the project mutation guard.

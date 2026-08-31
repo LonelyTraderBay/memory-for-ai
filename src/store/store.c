@@ -27,6 +27,9 @@ enum {
     ST_COL_8 = 8,
     ST_COL_9 = 9,
     ST_COL_10 = 10,
+    ST_COL_11 = 11,
+    ST_COL_12 = 12,
+    ST_COL_13 = 13,
     ST_FOUND = -1,
     ST_BUF_16 = 16,
     ST_BUF_64 = 64,
@@ -354,6 +357,38 @@ static int init_schema(cbm_store_t *s) {
         ");"
         "CREATE INDEX IF NOT EXISTS idx_runtime_trace_edges_project_count "
         "ON runtime_trace_edges(project, call_count DESC)"
+        ";"
+        /* Canonical-v2 keeps immutable producer contributions and exact span
+         * identities alongside the compact aggregate. These tables are an
+         * additive migration: compact-v1 databases keep working unchanged. */
+        "CREATE TABLE IF NOT EXISTS runtime_trace_contributions ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  producer_id TEXT NOT NULL,"
+        "  producer_epoch TEXT NOT NULL,"
+        "  contribution_id TEXT NOT NULL,"
+        "  payload_hash TEXT NOT NULL,"
+        "  trace_count INTEGER NOT NULL,"
+        "  accepted_at TEXT NOT NULL,"
+        "  PRIMARY KEY (project, producer_id, contribution_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS runtime_trace_spans ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  producer_id TEXT NOT NULL,"
+        "  producer_epoch TEXT NOT NULL,"
+        "  trace_id TEXT NOT NULL,"
+        "  span_id TEXT NOT NULL,"
+        "  normalized_hash TEXT NOT NULL,"
+        "  caller TEXT NOT NULL,"
+        "  callee TEXT NOT NULL,"
+        "  call_count INTEGER NOT NULL,"
+        "  error_count INTEGER NOT NULL,"
+        "  duration_ns_total INTEGER NOT NULL,"
+        "  duration_ns_max INTEGER NOT NULL,"
+        "  accepted_at TEXT NOT NULL,"
+        "  PRIMARY KEY (project, producer_id, producer_epoch, trace_id, span_id)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_spans_project_endpoint "
+        "ON runtime_trace_spans(project, caller, callee)"
         ";";
 
     int rc = exec_sql(s, ddl);
@@ -2446,6 +2481,277 @@ rollback:
 cleanup:
     sqlite3_finalize(batch_lookup);
     sqlite3_finalize(batch_insert);
+    sqlite3_finalize(edge_lookup);
+    sqlite3_finalize(edge_upsert);
+    return result;
+}
+
+int cbm_store_ingest_runtime_trace_contribution(
+    cbm_store_t *s, const char *project, const char *producer_id, const char *producer_epoch,
+    const char *contribution_id, const char *payload_hash,
+    const cbm_runtime_trace_span_t *spans, int count, bool *idempotent,
+    int64_t *observations_out, int *new_spans_out) {
+    if (idempotent) {
+        *idempotent = false;
+    }
+    if (observations_out) {
+        *observations_out = 0;
+    }
+    if (new_spans_out) {
+        *new_spans_out = 0;
+    }
+    if (!s || !s->db || !project || !project[0] || !producer_id || !producer_id[0] ||
+        !producer_epoch || !producer_epoch[0] || !contribution_id || !contribution_id[0] ||
+        !payload_hash || !payload_hash[0] || count < 0 || (count > 0 && !spans)) {
+        if (s) {
+            store_set_error(s, "invalid runtime trace contribution");
+        }
+        return CBM_STORE_ERR;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const cbm_runtime_trace_span_t *span = &spans[i];
+        if (!span->producer_id || !span->producer_id[0] || !span->producer_epoch ||
+            !span->producer_epoch[0] || !span->trace_id || !span->trace_id[0] ||
+            !span->span_id || !span->span_id[0] || !span->normalized_hash ||
+            !span->normalized_hash[0] || !span->caller || !span->caller[0] || !span->callee ||
+            !span->callee[0] || span->call_count < 0 || span->error_count < 0 ||
+            span->duration_ns_total < 0 || span->duration_ns_max < 0) {
+            store_set_error(s, "invalid canonical runtime span");
+            return CBM_STORE_ERR;
+        }
+        if (strcmp(span->producer_id, producer_id) != 0 ||
+            strcmp(span->producer_epoch, producer_epoch) != 0) {
+            store_set_error(s, "runtime span producer identity does not match contribution");
+            return CBM_STORE_ERR;
+        }
+    }
+
+    if (cbm_store_begin(s) != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+
+    sqlite3_stmt *contribution_lookup = NULL;
+    sqlite3_stmt *contribution_insert = NULL;
+    sqlite3_stmt *span_lookup = NULL;
+    sqlite3_stmt *span_insert = NULL;
+    sqlite3_stmt *edge_lookup = NULL;
+    sqlite3_stmt *edge_upsert = NULL;
+    int result = CBM_STORE_ERR;
+
+    if (sqlite3_prepare_v2(
+            s->db,
+            "SELECT producer_epoch, payload_hash FROM runtime_trace_contributions "
+            "WHERE project = ?1 AND producer_id = ?2 AND contribution_id = ?3;",
+            CBM_NOT_FOUND, &contribution_lookup, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime contribution lookup prepare");
+        goto rollback;
+    }
+    if (bind_text(contribution_lookup, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(contribution_lookup, ST_COL_2, producer_id) != SQLITE_OK ||
+        bind_text(contribution_lookup, ST_COL_3, contribution_id) != SQLITE_OK) {
+        store_set_error(s, "runtime contribution lookup bind failed");
+        goto rollback;
+    }
+    int lookup_rc = sqlite3_step(contribution_lookup);
+    if (lookup_rc == SQLITE_ROW) {
+        const char *existing_epoch = (const char *)sqlite3_column_text(contribution_lookup, 0);
+        const char *existing_hash = (const char *)sqlite3_column_text(contribution_lookup, 1);
+        if (existing_epoch && existing_hash && strcmp(existing_epoch, producer_epoch) == 0 &&
+            strcmp(existing_hash, payload_hash) == 0) {
+            if (idempotent) {
+                *idempotent = true;
+            }
+            result = CBM_STORE_OK;
+            goto rollback;
+        }
+        store_set_error(s, "runtime contribution conflicts with existing payload");
+        result = CBM_STORE_CONFLICT;
+        goto rollback;
+    }
+    if (lookup_rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime contribution lookup");
+        goto rollback;
+    }
+
+    if (sqlite3_prepare_v2(
+            s->db,
+            "INSERT INTO runtime_trace_contributions "
+            "(project, producer_id, producer_epoch, contribution_id, payload_hash, "
+            "trace_count, accepted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+            CBM_NOT_FOUND, &contribution_insert, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "runtime contribution insert prepare");
+        goto rollback;
+    }
+    char ts[CBM_SZ_64];
+    iso_now(ts, sizeof(ts));
+    if (bind_text(contribution_insert, ST_COL_1, project) != SQLITE_OK ||
+        bind_text(contribution_insert, ST_COL_2, producer_id) != SQLITE_OK ||
+        bind_text(contribution_insert, ST_COL_3, producer_epoch) != SQLITE_OK ||
+        bind_text(contribution_insert, ST_COL_4, contribution_id) != SQLITE_OK ||
+        bind_text(contribution_insert, ST_COL_5, payload_hash) != SQLITE_OK ||
+        sqlite3_bind_int(contribution_insert, ST_COL_6, count) != SQLITE_OK ||
+        bind_text(contribution_insert, ST_COL_7, ts) != SQLITE_OK ||
+        sqlite3_step(contribution_insert) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "runtime contribution insert");
+        goto rollback;
+    }
+
+    if (count > 0) {
+        if (sqlite3_prepare_v2(
+                s->db,
+                "SELECT normalized_hash FROM runtime_trace_spans WHERE project = ?1 "
+                "AND producer_id = ?2 AND producer_epoch = ?3 AND trace_id = ?4 "
+                "AND span_id = ?5;",
+                CBM_NOT_FOUND, &span_lookup, NULL) != SQLITE_OK ||
+            sqlite3_prepare_v2(
+                s->db,
+                "INSERT INTO runtime_trace_spans "
+                "(project, producer_id, producer_epoch, trace_id, span_id, normalized_hash, "
+                "caller, callee, call_count, error_count, duration_ns_total, duration_ns_max, "
+                "accepted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);",
+                CBM_NOT_FOUND, &span_insert, NULL) != SQLITE_OK ||
+            sqlite3_prepare_v2(
+                s->db,
+                "SELECT call_count, error_count, duration_ns_total, observations "
+                "FROM runtime_trace_edges WHERE project = ?1 AND caller = ?2 AND callee = ?3;",
+                CBM_NOT_FOUND, &edge_lookup, NULL) != SQLITE_OK ||
+            sqlite3_prepare_v2(
+                s->db,
+                "INSERT INTO runtime_trace_edges "
+                "(project, caller, callee, call_count, error_count, duration_ns_total, "
+                "duration_ns_max, observations, first_seen, last_seen) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) "
+                "ON CONFLICT(project, caller, callee) DO UPDATE SET "
+                "call_count = call_count + excluded.call_count, "
+                "error_count = error_count + excluded.error_count, "
+                "duration_ns_total = duration_ns_total + excluded.duration_ns_total, "
+                "duration_ns_max = MAX(duration_ns_max, excluded.duration_ns_max), "
+                "observations = observations + excluded.observations, "
+                "last_seen = excluded.last_seen;",
+                CBM_NOT_FOUND, &edge_upsert, NULL) != SQLITE_OK) {
+            store_set_error_sqlite(s, "runtime canonical statement prepare");
+            goto rollback;
+        }
+
+        int64_t new_observations = 0;
+        int new_spans = 0;
+        for (int i = 0; i < count; i++) {
+            const cbm_runtime_trace_span_t *span = &spans[i];
+            sqlite3_reset(span_lookup);
+            sqlite3_clear_bindings(span_lookup);
+            if (bind_text(span_lookup, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(span_lookup, ST_COL_2, span->producer_id) != SQLITE_OK ||
+                bind_text(span_lookup, ST_COL_3, span->producer_epoch) != SQLITE_OK ||
+                bind_text(span_lookup, ST_COL_4, span->trace_id) != SQLITE_OK ||
+                bind_text(span_lookup, ST_COL_5, span->span_id) != SQLITE_OK) {
+                store_set_error(s, "runtime span lookup bind failed");
+                goto rollback;
+            }
+            int span_rc = sqlite3_step(span_lookup);
+            if (span_rc == SQLITE_ROW) {
+                const char *existing_hash = (const char *)sqlite3_column_text(span_lookup, 0);
+                if (!existing_hash || strcmp(existing_hash, span->normalized_hash) != 0) {
+                    store_set_error(s, "runtime span conflicts with existing payload");
+                    result = CBM_STORE_CONFLICT;
+                    goto rollback;
+                }
+                continue;
+            }
+            if (span_rc != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime span lookup");
+                goto rollback;
+            }
+
+            sqlite3_reset(edge_lookup);
+            sqlite3_clear_bindings(edge_lookup);
+            if (bind_text(edge_lookup, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(edge_lookup, ST_COL_2, span->caller) != SQLITE_OK ||
+                bind_text(edge_lookup, ST_COL_3, span->callee) != SQLITE_OK) {
+                store_set_error(s, "runtime aggregate lookup bind failed");
+                goto rollback;
+            }
+            int edge_rc = sqlite3_step(edge_lookup);
+            if (edge_rc == SQLITE_ROW) {
+                int64_t current_call_count = sqlite3_column_int64(edge_lookup, 0);
+                int64_t current_error_count = sqlite3_column_int64(edge_lookup, 1);
+                int64_t current_duration_total = sqlite3_column_int64(edge_lookup, 2);
+                int64_t current_observations = sqlite3_column_int64(edge_lookup, 3);
+                if (current_call_count < 0 || current_error_count < 0 ||
+                    current_duration_total < 0 || current_observations < 0 ||
+                    INT64_MAX - current_call_count < span->call_count ||
+                    INT64_MAX - current_error_count < span->error_count ||
+                    INT64_MAX - current_duration_total < span->duration_ns_total ||
+                    INT64_MAX - current_observations < 1) {
+                    store_set_error(s, "runtime aggregate counter overflow");
+                    goto rollback;
+                }
+            } else if (edge_rc != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime aggregate lookup");
+                goto rollback;
+            }
+
+            sqlite3_reset(span_insert);
+            sqlite3_clear_bindings(span_insert);
+            if (bind_text(span_insert, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_2, span->producer_id) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_3, span->producer_epoch) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_4, span->trace_id) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_5, span->span_id) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_6, span->normalized_hash) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_7, span->caller) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_8, span->callee) != SQLITE_OK ||
+                sqlite3_bind_int64(span_insert, ST_COL_9, span->call_count) != SQLITE_OK ||
+                sqlite3_bind_int64(span_insert, ST_COL_10, span->error_count) != SQLITE_OK ||
+                sqlite3_bind_int64(span_insert, ST_COL_11, span->duration_ns_total) != SQLITE_OK ||
+                sqlite3_bind_int64(span_insert, ST_COL_12, span->duration_ns_max) != SQLITE_OK ||
+                bind_text(span_insert, ST_COL_13, ts) != SQLITE_OK ||
+                sqlite3_step(span_insert) != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime span insert");
+                goto rollback;
+            }
+
+            sqlite3_reset(edge_upsert);
+            sqlite3_clear_bindings(edge_upsert);
+            if (bind_text(edge_upsert, ST_COL_1, project) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_2, span->caller) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_3, span->callee) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_4, span->call_count) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_5, span->error_count) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_6, span->duration_ns_total) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_7, span->duration_ns_max) != SQLITE_OK ||
+                sqlite3_bind_int64(edge_upsert, ST_COL_8, 1) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_9, ts) != SQLITE_OK ||
+                bind_text(edge_upsert, ST_COL_10, ts) != SQLITE_OK ||
+                sqlite3_step(edge_upsert) != SQLITE_DONE) {
+                store_set_error_sqlite(s, "runtime aggregate upsert");
+                goto rollback;
+            }
+            new_observations++;
+            new_spans++;
+        }
+        if (observations_out) {
+            *observations_out = new_observations;
+        }
+        if (new_spans_out) {
+            *new_spans_out = new_spans;
+        }
+    }
+
+    if (cbm_store_commit(s) != CBM_STORE_OK) {
+        (void)cbm_store_rollback(s);
+        goto cleanup;
+    }
+    result = CBM_STORE_OK;
+    goto cleanup;
+
+rollback:
+    (void)cbm_store_rollback(s);
+cleanup:
+    sqlite3_finalize(contribution_lookup);
+    sqlite3_finalize(contribution_insert);
+    sqlite3_finalize(span_lookup);
+    sqlite3_finalize(span_insert);
     sqlite3_finalize(edge_lookup);
     sqlite3_finalize(edge_upsert);
     return result;

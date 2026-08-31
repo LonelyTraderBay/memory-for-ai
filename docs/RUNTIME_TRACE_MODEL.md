@@ -4,19 +4,23 @@
 
 This document is an architecture contract for a durable, versioned runtime-observation
 sidecar whose publications can be read alongside a pinned static index generation. The
-current branch implements the first bounded compact-pair ingestion slice of that model:
-validated observations are persisted in sidecar tables with retry idempotency and
-payload conflict detection. Runtime observations MUST NOT patch static `CALLS` edges,
-fabricate static nodes, or appear as persistent edges in the default graph.
+current branch implements the first bounded compact-pair ingestion slice and the
+producer-scoped canonical contribution slice of that model: validated observations are
+persisted in sidecar tables with retry idempotency, payload conflict detection, and exact
+span deduplication for the opt-in canonical wire version. Runtime observations MUST NOT
+patch static `CALLS` edges, fabricate static nodes, or appear as persistent edges in the
+default graph.
 
 The model intentionally separates facts observed at runtime from facts derived from
 source. A caller may explicitly request a `RUNTIME_CALL` overlay; existing static
 search, architecture, and default trace behavior remain unchanged.
 
 The compact-pair ingestion slice does not alter the runtime wire version, runtime schema
-version, runtime semantic version, runtime artifact version, static semantic index
-version, or artifact schema version. In particular, the static semantic index version
-remains 3.
+version, runtime artifact version, static semantic index version, or artifact schema
+version. It keeps `runtime_semantic_version: "compact-v1"` as the default compatibility
+surface. The opt-in canonical contribution surface uses
+`runtime_semantic_version: "canonical-v2"`; it is additive and does not change the static
+semantic index version, which remains 3.
 
 ## Scope
 
@@ -53,23 +57,37 @@ requires non-empty `caller` and `callee` strings and accepts `count` (default `1
 `duration_ns` (default `0`), and `error` (default `false`). The request may also carry
 `source_batch_id`; `producer_id` and `producer_epoch` must be supplied together when
 used. The handler validates a maximum of 10,000 items, computes `payload_sha256`, and
-returns the explicit `runtime_semantic_version: "compact-v1"` while persisting a compact
-aggregate in the runtime sidecar. A repeated `(project, batch_id)`
+returns the explicit `runtime_semantic_version: "compact-v1"` by default while persisting
+a compact aggregate in the runtime sidecar. A repeated `(project, batch_id)`
 with the same payload is an idempotent success; a different payload is a no-mutation
 conflict. An empty trace array without a project remains an accepted, non-persisting
 daemon health probe for compatibility.
 
 The current compact endpoint normalizes the allowlisted edge fields, sorts the rows,
 and hashes a versioned canonical representation of those rows. JSON object key order
-and trace-array order therefore do not create a false payload conflict. It is
-intentionally smaller than the full canonical contribution map described below;
-canonical span identity, endpoint resolution, runtime generations, and the opt-in
-overlay remain follow-up packages. No raw request payload is stored.
+and trace-array order therefore do not create a false payload conflict. It is intentionally
+smaller than the full canonical contribution map described below; canonical span identity
+is available only in the opt-in `canonical-v2` surface. Endpoint resolution, runtime
+generations, and the opt-in overlay remain follow-up packages. No raw request payload is
+stored.
+
+For `canonical-v2`, the request MUST also provide non-empty `producer_id`,
+`producer_epoch`, and `source_batch_id`. Every trace MUST provide lowercase,
+even-length hexadecimal `trace_id` and `span_id` values. The server derives a hashed
+producer contribution identity from those three producer fields, hashes the normalized
+allowlisted span content, and stores immutable contribution and span rows. Replaying the
+same contribution with the same canonical payload is idempotent. Replaying a contribution
+or span identity with different canonical content is a conflict. Replaying a span in a
+different contribution is accepted but does not increment the compact aggregate twice.
+Duplicate identical span records inside one contribution are collapsed before hashing.
+This version does not yet resolve endpoints to static symbols or publish runtime
+generations.
 
 The explicit `get_runtime_traces` read surface returns only these persisted compact
 aggregates. It supports caller/callee filters and deterministic limit/offset pagination,
-and reports `runtime_semantic_version: "compact-v1"`. Static graph search, architecture,
-and `trace_path` remain runtime-free.
+and reports the runtime semantic version of the persisted surface (`compact-v1` for the
+legacy aggregate query; canonical contributions currently fold into the same compact
+aggregate). Static graph search, architecture, and `trace_path` remain runtime-free.
 
 The existing trace helper surface can extract `service.name`, HTTP method, HTTP path,
 HTTP status, span kind, duration, URL path, and p99. Verified span-kind values are:
@@ -279,6 +297,14 @@ checks.
 
 No table above is a static graph node or edge table. The implementation MUST NOT reuse
 generic `json_patch` edge upsert for contribution merging.
+
+The current bounded implementation materializes the compact compatibility pair as
+`runtime_trace_batches` and `runtime_trace_edges`, and the canonical-v2 ingest slice as
+`runtime_trace_contributions` and `runtime_trace_spans`. The latter stores immutable
+producer-scoped contribution/span facts and folds newly accepted spans into the compact
+aggregate transactionally. Endpoint records, observation-contribution maps, runtime
+generations, and publication heads from the full logical model are not present yet;
+canonical-v2 therefore remains an ingestion foundation, not a published runtime overlay.
 
 ## Deterministic aggregation
 
@@ -494,20 +520,23 @@ and compatibility testable rather than implicit.
 
 ## Bounded implementation packages
 
-The remaining implementation is intentionally ordered and bounded; each package
-requires its own reproduce-first tests and review. The current compact ingestion slice
-covers validation, a versioned canonical payload hash, durable aggregate rows,
-idempotent retry, and conflict rejection. It does not claim the full
-contribution/publication model below.
+The implementation is intentionally ordered and bounded; each package requires its own
+reproduce-first tests and review. The current branch has completed the compact-v1 route
+and a bounded canonical-v2 foundation: versioned producer/contribution identity,
+allowlisted span normalization, exact span deduplication, conflict rejection, additive
+sidecar tables, idempotent retry, and transactional aggregate updates. It does not claim
+the full contribution/publication model below.
 
-1. **Versioned wire validation and canonicalization.** Extend the compact route's
-   versioned normalized edge hash with authenticated producer identity and epoch,
-   contribution ID, exact span-identity deduplication, conflicting duplicate rejection,
-   canonical contribution maps and payload hashes, allowlisted HTTP/span mapping,
-   limits, and dry-run validation. No store mutation.
-2. **Sidecar schema and immutable contributions.** Add runtime schema migrations,
-   endpoints, contribution records, observation-contribution maps, idempotent retry,
-   conflict rejection, and transactional rollback. No publication head or overlay.
+1. **Versioned wire validation and canonicalization — bounded slice implemented.** The
+   canonical-v2 route adds producer identity and epoch, contribution ID, exact
+   span-identity deduplication, conflicting duplicate rejection, and canonical payload
+   hashes. Allowlisted HTTP/span mapping, dry-run validation, and endpoint derivation
+   remain follow-up work.
+2. **Sidecar schema and immutable contributions — bounded slice implemented.** Additive
+   runtime contribution/span tables provide immutable records, idempotent retry,
+   conflict rejection, and transactional rollback. Endpoint records,
+   observation-contribution maps, finalization state, and publication heads remain
+   follow-up work; there is no overlay publication yet.
 3. **Deterministic aggregation.** Add canonical intra-contribution grouping, keyed
    exact-span idempotent set union/deduplication, associative and commutative exact
    integer/status/histogram addition, cross-contribution map-union folds, fixed

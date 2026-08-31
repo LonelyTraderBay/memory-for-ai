@@ -48,6 +48,7 @@ enum {
 #define MCP_MS_TO_US 1000LL
 #define MCP_S_TO_US 1000000LL
 #define MCP_RUNTIME_TRACE_SEMANTIC_VERSION "compact-v1"
+#define MCP_RUNTIME_TRACE_CANONICAL_VERSION "canonical-v2"
 
 #define SLEN(s) (sizeof(s) - 1)
 #include "mcp/mcp.h"
@@ -741,8 +742,10 @@ static const tool_def_t TOOLS[] = {
      "\"required\":[\"project\"]}"},
 
     {"ingest_traces", "Ingest traces", "Ingest runtime traces to enhance the knowledge graph",
-     "{\"type\":\"object\",\"properties\":{\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
+     "{\"type\":\"object\",\"properties\":{\"runtime_semantic_version\":{\"type\":\"string\","
+     "\"enum\":[\"compact-v1\",\"canonical-v2\"],\"default\":\"compact-v1\"},\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
      "\"object\",\"properties\":{\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
+     "\"trace_id\":{\"type\":\"string\"},\"span_id\":{\"type\":\"string\"},"
      "\"count\":{\"type\":\"integer\",\"minimum\":1},\"duration_ns\":{\"type\":\"integer\","
      "\"minimum\":0},\"error\":{\"type\":\"boolean\"}},\"required\":[\"caller\",\"callee\"],"
      "\"additionalProperties\":false},\"maxItems\":10000},\"project\":{\"type\":\"string\"},"
@@ -12779,6 +12782,128 @@ static void runtime_trace_canonical_hash(const cbm_runtime_trace_edge_t *edges, 
     cbm_secure_zero(digest, sizeof(digest));
 }
 
+static bool runtime_trace_valid_hex_id(yyjson_val *value) {
+    if (!runtime_trace_valid_string(value, 128U)) {
+        return false;
+    }
+    size_t length = yyjson_get_len(value);
+    if (length < 2U || (length & 1U) != 0U) {
+        return false;
+    }
+    const char *text = yyjson_get_str(value);
+    for (size_t i = 0; i < length; i++) {
+        char ch = text[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int runtime_trace_span_compare(const void *left_ptr, const void *right_ptr) {
+    const cbm_runtime_trace_span_t *left = (const cbm_runtime_trace_span_t *)left_ptr;
+    const cbm_runtime_trace_span_t *right = (const cbm_runtime_trace_span_t *)right_ptr;
+    int result = strcmp(left->trace_id, right->trace_id);
+    if (result != 0) {
+        return result;
+    }
+    result = strcmp(left->span_id, right->span_id);
+    if (result != 0) {
+        return result;
+    }
+    result = strcmp(left->normalized_hash, right->normalized_hash);
+    if (result != 0) {
+        return result;
+    }
+    result = strcmp(left->caller, right->caller);
+    if (result != 0) {
+        return result;
+    }
+    return strcmp(left->callee, right->callee);
+}
+
+static void runtime_trace_hash_span_payload(cbm_sha256_ctx *hash,
+                                            const cbm_runtime_trace_span_t *span) {
+    runtime_trace_hash_string(hash, span->caller);
+    runtime_trace_hash_string(hash, span->callee);
+    runtime_trace_hash_u64(hash, (uint64_t)span->call_count);
+    runtime_trace_hash_u64(hash, (uint64_t)span->error_count);
+    runtime_trace_hash_u64(hash, (uint64_t)span->duration_ns_total);
+    runtime_trace_hash_u64(hash, (uint64_t)span->duration_ns_max);
+}
+
+static void runtime_trace_span_payload_hash(const cbm_runtime_trace_span_t *span,
+                                            char out[CBM_SHA256_HEX_LEN + 1]) {
+    static const char format_version[] = "memory-for-ai-runtime-span-canonical-v2";
+    cbm_sha256_ctx hash;
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+
+    cbm_sha256_init(&hash);
+    cbm_sha256_update(&hash, format_version, sizeof(format_version) - 1U);
+    runtime_trace_hash_span_payload(&hash, span);
+    cbm_sha256_final(&hash, digest);
+
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+    cbm_secure_zero(&hash, sizeof(hash));
+    cbm_secure_zero(digest, sizeof(digest));
+}
+
+static void runtime_trace_contribution_id(const char *producer_id, const char *producer_epoch,
+                                          const char *source_batch_id,
+                                          char out[CBM_SHA256_HEX_LEN + 1]) {
+    static const char format_version[] = "memory-for-ai-runtime-contribution-canonical-v2";
+    cbm_sha256_ctx hash;
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+
+    cbm_sha256_init(&hash);
+    cbm_sha256_update(&hash, format_version, sizeof(format_version) - 1U);
+    runtime_trace_hash_string(&hash, producer_id);
+    runtime_trace_hash_string(&hash, producer_epoch);
+    runtime_trace_hash_string(&hash, source_batch_id);
+    cbm_sha256_final(&hash, digest);
+
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+    cbm_secure_zero(&hash, sizeof(hash));
+    cbm_secure_zero(digest, sizeof(digest));
+}
+
+static void runtime_trace_canonical_contribution_hash(
+    const cbm_runtime_trace_span_t *spans, int count,
+    char out[CBM_SHA256_HEX_LEN + 1]) {
+    static const char format_version[] = "memory-for-ai-runtime-contribution-payload-canonical-v2";
+    cbm_sha256_ctx hash;
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+
+    cbm_sha256_init(&hash);
+    cbm_sha256_update(&hash, format_version, sizeof(format_version) - 1U);
+    runtime_trace_hash_u64(&hash, (uint64_t)count);
+    for (int i = 0; i < count; i++) {
+        runtime_trace_hash_string(&hash, spans[i].trace_id);
+        runtime_trace_hash_string(&hash, spans[i].span_id);
+        runtime_trace_hash_string(&hash, spans[i].normalized_hash);
+    }
+    cbm_sha256_final(&hash, digest);
+
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+    cbm_secure_zero(&hash, sizeof(hash));
+    cbm_secure_zero(digest, sizeof(digest));
+}
+
 static char *runtime_trace_make_batch_id(const char *producer_id, const char *producer_epoch,
                                          const char *source_batch_id, const char *payload_hash) {
     const char *base = source_batch_id && source_batch_id[0] ? source_batch_id : payload_hash;
@@ -12859,17 +12984,50 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     yyjson_val *source_batch = yyjson_obj_get(aroot, "source_batch_id");
     yyjson_val *producer = yyjson_obj_get(aroot, "producer_id");
     yyjson_val *epoch = yyjson_obj_get(aroot, "producer_epoch");
+    yyjson_val *semantic = yyjson_obj_get(aroot, "runtime_semantic_version");
     if ((source_batch && !runtime_trace_valid_string(source_batch, MCP_RUNTIME_TRACE_BATCH_ID_MAX)) ||
         (producer && !runtime_trace_valid_string(producer, MCP_RUNTIME_TRACE_STRING_MAX)) ||
-        (epoch && !runtime_trace_valid_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX))) {
+        (epoch && !runtime_trace_valid_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX)) ||
+        (semantic && !runtime_trace_valid_string(semantic, 32U))) {
         free(project);
         yyjson_doc_free(adoc);
         return cbm_mcp_text_result("source_batch_id, producer_id and producer_epoch must be non-empty strings within the size limit", true);
     }
 
+    const char *semantic_version = semantic ? yyjson_get_str(semantic) : NULL;
+    bool canonical_v2 = semantic_version &&
+                        strcmp(semantic_version, MCP_RUNTIME_TRACE_CANONICAL_VERSION) == 0;
+    if (semantic_version && !canonical_v2 &&
+        strcmp(semantic_version, MCP_RUNTIME_TRACE_SEMANTIC_VERSION) != 0) {
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result("runtime_semantic_version must be compact-v1 or canonical-v2",
+                                   true);
+    }
+    if (canonical_v2 &&
+        (!source_batch || !producer || !epoch || !runtime_trace_valid_string(source_batch,
+                                                                                MCP_RUNTIME_TRACE_BATCH_ID_MAX) ||
+         !runtime_trace_valid_string(producer, MCP_RUNTIME_TRACE_STRING_MAX) ||
+         !runtime_trace_valid_string(epoch, MCP_RUNTIME_TRACE_STRING_MAX))) {
+        free(project);
+        yyjson_doc_free(adoc);
+        return cbm_mcp_text_result(
+            "canonical-v2 requires non-empty source_batch_id, producer_id and producer_epoch",
+            true);
+    }
+
     cbm_runtime_trace_edge_t *edge_rows =
         calloc(trace_count > 0 ? (size_t)trace_count : 1U, sizeof(*edge_rows));
-    if (!edge_rows) {
+    cbm_runtime_trace_span_t *span_rows =
+        canonical_v2 ? calloc(trace_count > 0 ? (size_t)trace_count : 1U, sizeof(*span_rows))
+                     : NULL;
+    char (*span_hashes)[CBM_SHA256_HEX_LEN + 1] =
+        canonical_v2 ? calloc(trace_count > 0 ? (size_t)trace_count : 1U, sizeof(*span_hashes))
+                     : NULL;
+    if (!edge_rows || (canonical_v2 && (!span_rows || !span_hashes))) {
+        free(span_hashes);
+        free(span_rows);
+        free(edge_rows);
         free(project);
         yyjson_doc_free(adoc);
         return cbm_mcp_text_result("out of memory while preparing runtime traces", true);
@@ -12925,9 +13083,38 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
         edge_rows[i].duration_ns_total = duration_ns * call_count;
         edge_rows[i].duration_ns_max = duration_ns;
         edge_rows[i].observations = 1;
+
+        if (canonical_v2) {
+            yyjson_val *trace_id = yyjson_obj_get(item, "trace_id");
+            yyjson_val *span_id = yyjson_obj_get(item, "span_id");
+            if (!runtime_trace_valid_hex_id(trace_id) || !runtime_trace_valid_hex_id(span_id)) {
+                valid = false;
+                validation_error =
+                    "canonical-v2 traces require lowercase even-length hexadecimal trace_id and span_id";
+                break;
+            }
+            span_rows[i].producer_id = yyjson_get_str(producer);
+            span_rows[i].producer_epoch = yyjson_get_str(epoch);
+            span_rows[i].trace_id = yyjson_get_str(trace_id);
+            span_rows[i].span_id = yyjson_get_str(span_id);
+            span_rows[i].caller = edge_rows[i].caller;
+            span_rows[i].callee = edge_rows[i].callee;
+            span_rows[i].call_count = call_count;
+            span_rows[i].error_count = is_error ? call_count : 0;
+            span_rows[i].duration_ns_total = duration_ns * call_count;
+            span_rows[i].duration_ns_max = duration_ns;
+            span_rows[i].normalized_hash = span_hashes[i];
+            runtime_trace_span_payload_hash(&span_rows[i], span_hashes[i]);
+        } else if (yyjson_obj_get(item, "trace_id") || yyjson_obj_get(item, "span_id")) {
+            valid = false;
+            validation_error = "trace_id and span_id require runtime_semantic_version canonical-v2";
+            break;
+        }
     }
 
     if (!valid) {
+        free(span_hashes);
+        free(span_rows);
         free(edge_rows);
         free(project);
         yyjson_doc_free(adoc);
@@ -12935,21 +13122,55 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
                                    true);
     }
 
-    /* Hash only the normalized allowlisted rows. This makes retries stable
-     * across JSON object/array ordering and prevents ignored envelope fields
-     * from turning the same contribution into a false conflict. */
-    if (trace_count > 1) {
-        qsort(edge_rows, (size_t)trace_count, sizeof(*edge_rows), runtime_trace_edge_compare);
-    }
+    const int received_trace_count = trace_count;
     char payload_hash[CBM_SHA256_HEX_LEN + 1];
-    runtime_trace_canonical_hash(edge_rows, trace_count, payload_hash);
-
     const char *producer_id = producer ? yyjson_get_str(producer) : NULL;
     const char *producer_epoch = epoch ? yyjson_get_str(epoch) : NULL;
     const char *source_batch_id = source_batch ? yyjson_get_str(source_batch) : NULL;
-    char *batch_id = runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id,
-                                                 payload_hash);
-    if (!batch_id) {
+    char contribution_id[CBM_SHA256_HEX_LEN + 1] = {0};
+    char *batch_id = NULL;
+
+    if (canonical_v2) {
+        if (trace_count > 1) {
+            qsort(span_rows, (size_t)trace_count, sizeof(*span_rows), runtime_trace_span_compare);
+        }
+        int unique_count = 0;
+        for (int i = 0; i < trace_count; i++) {
+            if (unique_count > 0 &&
+                strcmp(span_rows[unique_count - 1].trace_id, span_rows[i].trace_id) == 0 &&
+                strcmp(span_rows[unique_count - 1].span_id, span_rows[i].span_id) == 0) {
+                if (strcmp(span_rows[unique_count - 1].normalized_hash,
+                           span_rows[i].normalized_hash) != 0) {
+                    free(span_hashes);
+                    free(span_rows);
+                    free(edge_rows);
+                    free(project);
+                    yyjson_doc_free(adoc);
+                    return cbm_mcp_text_result(
+                        "canonical-v2 contains the same span identity with different content",
+                        true);
+                }
+                continue;
+            }
+            span_rows[unique_count++] = span_rows[i];
+        }
+        trace_count = unique_count;
+        runtime_trace_canonical_contribution_hash(span_rows, trace_count, payload_hash);
+        runtime_trace_contribution_id(producer_id, producer_epoch, source_batch_id,
+                                      contribution_id);
+    } else {
+        /* Hash only the normalized allowlisted rows. This makes retries stable
+         * across JSON object/array ordering and prevents ignored envelope fields
+         * from turning the same contribution into a false conflict. */
+        if (trace_count > 1) {
+            qsort(edge_rows, (size_t)trace_count, sizeof(*edge_rows), runtime_trace_edge_compare);
+        }
+        runtime_trace_canonical_hash(edge_rows, trace_count, payload_hash);
+        batch_id = runtime_trace_make_batch_id(producer_id, producer_epoch, source_batch_id,
+                                               payload_hash);
+    }
+    if (!canonical_v2 && !batch_id) {
+        free(span_hashes);
         free(edge_rows);
         free(project);
         yyjson_doc_free(adoc);
@@ -12957,6 +13178,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     }
 
     if (!mcp_project_mutation_begin(srv, project)) {
+        free(span_hashes);
+        free(span_rows);
         free(edge_rows);
         free(batch_id);
         free(project);
@@ -12971,6 +13194,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
         char *result = cbm_mcp_text_result(error, true);
         free(error);
         mcp_project_mutation_end(srv, project);
+        free(span_hashes);
+        free(span_rows);
         free(edge_rows);
         free(batch_id);
         free(project);
@@ -12982,6 +13207,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     cbm_store_t *store = open_adr_store_for_write(srv, resolved, &owned_rw);
     if (!store) {
         mcp_project_mutation_end(srv, project);
+        free(span_hashes);
+        free(span_rows);
         free(edge_rows);
         free(batch_id);
         free(project);
@@ -12991,9 +13218,15 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
 
     bool is_idempotent = false;
     int64_t observations = 0;
-    int store_rc = cbm_store_ingest_runtime_traces(store, project, batch_id, payload_hash,
-                                                   edge_rows, trace_count, &is_idempotent,
-                                                   &observations);
+    int new_spans = 0;
+    int store_rc = canonical_v2
+                       ? cbm_store_ingest_runtime_trace_contribution(
+                             store, project, producer_id, producer_epoch, contribution_id,
+                             payload_hash, span_rows, trace_count, &is_idempotent, &observations,
+                             &new_spans)
+                       : cbm_store_ingest_runtime_traces(store, project, batch_id, payload_hash,
+                                                         edge_rows, trace_count, &is_idempotent,
+                                                         &observations);
     char store_error[CBM_SZ_512] = {0};
     if (store_rc != CBM_STORE_OK) {
         snprintf(store_error, sizeof(store_error), "%s", cbm_store_error(store));
@@ -13014,15 +13247,23 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     } else {
         yyjson_mut_obj_add_str(doc, root, "status", "accepted");
     }
-    yyjson_mut_obj_add_int(doc, root, "traces_received", trace_count);
+    yyjson_mut_obj_add_int(doc, root, "traces_received", received_trace_count);
     yyjson_mut_obj_add_int(doc, root, "runtime_edges_received", trace_count);
     yyjson_mut_obj_add_int(doc, root, "observations_persisted", observations);
+    if (canonical_v2) {
+        yyjson_mut_obj_add_int(doc, root, "unique_spans", trace_count);
+        yyjson_mut_obj_add_int(doc, root, "new_spans_persisted", new_spans);
+    }
     yyjson_mut_obj_add_bool(doc, root, "idempotent", is_idempotent);
     yyjson_mut_obj_add_bool(doc, root, "persisted", !is_error);
     yyjson_mut_obj_add_str(doc, root, "project", project);
     yyjson_mut_obj_add_str(doc, root, "runtime_semantic_version",
-                           MCP_RUNTIME_TRACE_SEMANTIC_VERSION);
-    yyjson_mut_obj_add_str(doc, root, "batch_id", batch_id);
+                           canonical_v2 ? MCP_RUNTIME_TRACE_CANONICAL_VERSION
+                                        : MCP_RUNTIME_TRACE_SEMANTIC_VERSION);
+    yyjson_mut_obj_add_str(doc, root, "batch_id", canonical_v2 ? contribution_id : batch_id);
+    if (canonical_v2) {
+        yyjson_mut_obj_add_str(doc, root, "contribution_id", contribution_id);
+    }
     yyjson_mut_obj_add_str(doc, root, "payload_sha256", payload_hash);
     if (is_error) {
         yyjson_mut_obj_add_str(doc, root, "error",
@@ -13031,6 +13272,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
 
     char *json = yy_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
+    free(span_hashes);
+    free(span_rows);
     free(edge_rows);
     free(batch_id);
     free(project);

@@ -1074,6 +1074,13 @@ TEST(mcp_ingest_traces_items_disallow_additional_properties_issue731) {
     ASSERT_NOT_NULL(input_schema);
     yyjson_val *properties = yyjson_obj_get(input_schema, "properties");
     ASSERT_NOT_NULL(properties);
+    yyjson_val *semantic_version = yyjson_obj_get(properties, "runtime_semantic_version");
+    ASSERT_NOT_NULL(semantic_version);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(semantic_version, "type")), "string");
+    yyjson_val *semantic_enum = yyjson_obj_get(semantic_version, "enum");
+    ASSERT_NOT_NULL(semantic_enum);
+    ASSERT_TRUE(yyjson_is_arr(semantic_enum));
+    ASSERT_EQ(yyjson_arr_size(semantic_enum), 2U);
     yyjson_val *traces = yyjson_obj_get(properties, "traces");
     ASSERT_NOT_NULL(traces);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(traces, "type")), "array");
@@ -1088,6 +1095,12 @@ TEST(mcp_ingest_traces_items_disallow_additional_properties_issue731) {
     yyjson_val *callee = yyjson_obj_get(item_properties, "callee");
     ASSERT_NOT_NULL(callee);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(callee, "type")), "string");
+    yyjson_val *trace_id = yyjson_obj_get(item_properties, "trace_id");
+    ASSERT_NOT_NULL(trace_id);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(trace_id, "type")), "string");
+    yyjson_val *span_id = yyjson_obj_get(item_properties, "span_id");
+    ASSERT_NOT_NULL(span_id);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(span_id, "type")), "string");
     yyjson_val *count = yyjson_obj_get(item_properties, "count");
     ASSERT_NOT_NULL(count);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(count, "type")), "integer");
@@ -8735,6 +8748,153 @@ TEST(tool_ingest_traces_canonical_array_order) {
     PASS();
 }
 
+TEST(tool_ingest_traces_canonical_v2_deduplicates_spans) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-canonical-v2", "/tmp/runtime-canonical-v2"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "runtime-canonical-v2");
+
+    const char *first =
+        "{\"runtime_semantic_version\":\"canonical-v2\","
+        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-1\","
+        "\"traces\":["
+        "{\"trace_id\":\"00000000000000000000000000000001\","
+        "\"span_id\":\"0000000000000001\",\"caller\":\"a\",\"callee\":\"b\","
+        "\"count\":2,\"duration_ns\":5},"
+        "{\"trace_id\":\"00000000000000000000000000000002\","
+        "\"span_id\":\"0000000000000002\",\"caller\":\"c\",\"callee\":\"d\","
+        "\"count\":3,\"duration_ns\":7}]}";
+    char *resp = cbm_mcp_handle_tool(srv, "ingest_traces", first);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"runtime_semantic_version\":\"canonical-v2\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"unique_spans\":2"));
+    ASSERT_NOT_NULL(strstr(resp, "\"new_spans_persisted\":2"));
+    free(resp);
+
+    /* Same contribution, reordered objects and spans: exact retry. */
+    const char *retry =
+        "{\"source_batch_id\":\"batch-1\",\"producer_epoch\":\"epoch-1\","
+        "\"producer_id\":\"agent-a\",\"project\":\"runtime-canonical-v2\","
+        "\"runtime_semantic_version\":\"canonical-v2\",\"traces\":["
+        "{\"duration_ns\":7,\"callee\":\"d\",\"span_id\":\"0000000000000002\","
+        "\"trace_id\":\"00000000000000000000000000000002\",\"count\":3,\"caller\":\"c\"},"
+        "{\"caller\":\"a\",\"span_id\":\"0000000000000001\",\"count\":2,"
+        "\"trace_id\":\"00000000000000000000000000000001\",\"callee\":\"b\","
+        "\"duration_ns\":5}]}";
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", retry);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"idempotent\":true"));
+    ASSERT_NOT_NULL(strstr(resp, "\"observations_persisted\":0"));
+    free(resp);
+
+    /* A different contribution may contain a replayed span, but it must not
+     * add that span twice; only the new span contributes to the aggregate. */
+    const char *second =
+        "{\"runtime_semantic_version\":\"canonical-v2\","
+        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-2\","
+        "\"traces\":["
+        "{\"trace_id\":\"00000000000000000000000000000001\","
+        "\"span_id\":\"0000000000000001\",\"caller\":\"a\",\"callee\":\"b\","
+        "\"count\":2,\"duration_ns\":5},"
+        "{\"trace_id\":\"00000000000000000000000000000003\","
+        "\"span_id\":\"0000000000000003\",\"caller\":\"a\",\"callee\":\"b\","
+        "\"count\":4,\"duration_ns\":11}]}";
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", second);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"new_spans_persisted\":1"));
+    ASSERT_NOT_NULL(strstr(resp, "\"observations_persisted\":1"));
+    free(resp);
+
+    resp = cbm_mcp_handle_tool(
+        srv, "get_runtime_traces",
+        "{\"project\":\"runtime-canonical-v2\",\"caller\":\"a\",\"callee\":\"b\"}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"call_count\":6"));
+    ASSERT_NOT_NULL(strstr(resp, "\"duration_ns_total\":54"));
+    ASSERT_NOT_NULL(strstr(resp, "\"observations\":2"));
+    free(resp);
+
+    /* Reusing an existing span identity with different content is a conflict,
+     * and the aggregate remains unchanged. */
+    const char *conflict =
+        "{\"runtime_semantic_version\":\"canonical-v2\","
+        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-3\","
+        "\"traces\":["
+        "{\"trace_id\":\"00000000000000000000000000000001\","
+        "\"span_id\":\"0000000000000001\",\"caller\":\"changed\",\"callee\":\"b\","
+        "\"count\":2,\"duration_ns\":5}]}";
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", conflict);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"conflict\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"persisted\":false"));
+    free(resp);
+
+    /* A conflict after a new span has been staged must roll back both the
+     * staged span and its contribution record, not only the aggregate. */
+    const char *partial_conflict =
+        "{\"runtime_semantic_version\":\"canonical-v2\","
+        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-3-partial\","
+        "\"traces\":["
+        "{\"trace_id\":\"00000000000000000000000000000005\","
+        "\"span_id\":\"0000000000000005\",\"caller\":\"a\",\"callee\":\"b\","
+        "\"count\":1,\"duration_ns\":13},"
+        "{\"trace_id\":\"00000000000000000000000000000001\","
+        "\"span_id\":\"0000000000000001\",\"caller\":\"changed\",\"callee\":\"b\","
+        "\"count\":2,\"duration_ns\":5}]}";
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", partial_conflict);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"status\":\"conflict\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"persisted\":false"));
+    free(resp);
+
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(store),
+                  "SELECT COUNT(*) FROM runtime_trace_contributions "
+                  "WHERE project='runtime-canonical-v2';",
+                  -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int(stmt, 0), 2);
+    sqlite3_finalize(stmt);
+    ASSERT_EQ(sqlite3_prepare_v2(
+                  cbm_store_get_db(store),
+                  "SELECT COUNT(*) FROM runtime_trace_spans WHERE project='runtime-canonical-v2';",
+                  -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int(stmt, 0), 3);
+    sqlite3_finalize(stmt);
+
+    /* Duplicate identity with different content in one contribution is
+     * rejected before opening the project mutation transaction. */
+    const char *local_conflict =
+        "{\"runtime_semantic_version\":\"canonical-v2\","
+        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-4\","
+        "\"traces\":["
+        "{\"trace_id\":\"00000000000000000000000000000004\","
+        "\"span_id\":\"0000000000000004\",\"caller\":\"a\",\"callee\":\"b\"},"
+        "{\"trace_id\":\"00000000000000000000000000000004\","
+        "\"span_id\":\"0000000000000004\",\"caller\":\"changed\",\"callee\":\"b\"}]}";
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", local_conflict);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "canonical-v2 contains the same span identity"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 TEST(tool_get_runtime_traces_returns_sorted_pages) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     cbm_store_t *store = cbm_mcp_server_store(srv);
@@ -13903,6 +14063,7 @@ SUITE(mcp) {
     RUN_TEST(detect_changes_zero_overlap_falls_back_issue1363);
     RUN_TEST(tool_ingest_traces_basic);
     RUN_TEST(tool_ingest_traces_canonical_array_order);
+    RUN_TEST(tool_ingest_traces_canonical_v2_deduplicates_spans);
     RUN_TEST(tool_get_runtime_traces_returns_sorted_pages);
     RUN_TEST(tool_ingest_traces_empty);
 
