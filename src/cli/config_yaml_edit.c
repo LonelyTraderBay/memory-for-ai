@@ -1717,6 +1717,52 @@ static int yaml_analyze_mapping(const yaml_doc_t *doc, const char *section_key, 
     return 0;
 }
 
+/* These names belonged to the official predecessor or to an early fork. If
+ * one is already present under the requested MCP section, a generic upsert
+ * must not silently add a second product entry beside it. Treat the document
+ * as ambiguous and fail closed; ownership-aware callers surface FOREIGN. */
+static bool yaml_is_memory_for_ai_legacy_key(const char *key) {
+    return key && (strcmp(key, "codebase-memory") == 0 || strcmp(key, "codebase-memory-mcp") == 0 ||
+                   strcmp(key, "memory-for-ai-mcp") == 0);
+}
+
+/* Returns 1 when a legacy product key is present, 0 when absent, -1 on a
+ * structural decode failure. The document has already passed the normal
+ * mapping validator, but this helper remains fail-closed if that contract ever
+ * changes. */
+static int yaml_mapping_has_memory_for_ai_legacy_key(const yaml_doc_t *doc,
+                                                     const yaml_mapping_target_t *target) {
+    if (!doc || !target || !target->section_found || target->section_inline_empty) {
+        return 0;
+    }
+    for (size_t i = target->section_line + YAML_UNIT; i < doc->line_count; i++) {
+        const yaml_line_t *line = &doc->lines[i];
+        if (line->start >= target->section_end) {
+            break;
+        }
+        if (line->blank || line->comment || line->dquote_cont ||
+            line->indent != YAML_ENTRY_INDENT) {
+            continue;
+        }
+        size_t start = line->start + line->indent;
+        size_t colon = 0U;
+        if (yaml_find_mapping_colon(doc->data, start, line->text_end, &colon) != 0) {
+            return -1;
+        }
+        size_t key_end = yaml_trim_spaces_end(doc->data, start, colon);
+        char *decoded = NULL;
+        if (yaml_decode_scalar(doc->data, start, key_end, &decoded) != 0) {
+            return -1;
+        }
+        bool legacy = yaml_is_memory_for_ai_legacy_key(decoded);
+        free(decoded);
+        if (legacy) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int yaml_validate_entry_block_line(const char *block, size_t start, size_t text_end) {
     size_t indent = start;
     while (indent < text_end && block[indent] == ' ') {
@@ -3182,6 +3228,11 @@ static int yaml_upsert_mapping_entry_locked(const char *file_path, const char *s
         free(data);
         return YAML_ERROR;
     }
+    if (yaml_mapping_has_memory_for_ai_legacy_key(&doc, &target) != 0) {
+        yaml_doc_free(&doc);
+        free(data);
+        return YAML_ERROR;
+    }
 
     yaml_buf_t entry = {0};
     const yaml_line_t *header = NULL;
@@ -3402,6 +3453,17 @@ static int yaml_edit_owned_mapping_entry_locked(const char *file_path, const cha
         yaml_doc_free(&doc);
         free(data);
         return CBM_YAML_IDENTITY_EDIT_ERROR;
+    }
+    int legacy_key = yaml_mapping_has_memory_for_ai_legacy_key(&doc, &target);
+    if (legacy_key < 0) {
+        yaml_doc_free(&doc);
+        free(data);
+        return CBM_YAML_IDENTITY_EDIT_ERROR;
+    }
+    if (legacy_key > 0 && !target.entry_found) {
+        yaml_doc_free(&doc);
+        free(data);
+        return CBM_YAML_IDENTITY_EDIT_FOREIGN;
     }
 
     yaml_buf_t canonical = {0};

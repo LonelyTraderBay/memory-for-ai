@@ -136,6 +136,10 @@ done < "$VENDORED_FILES"
 while IFS=' ' read -r expected_hash filepath || [[ -n "$expected_hash$filepath" ]]; do
     [[ -z "$expected_hash" && -z "$filepath" ]] && continue
     filepath="${filepath#"${filepath%%[![:space:]]*}"}"
+    # Git checkouts on Windows may materialize this checked-in LF manifest as
+    # CRLF.  Normalize only the record terminator; carriage returns anywhere
+    # else remain rejected by valid_vendored_path().
+    filepath="${filepath%$'\r'}"
 
     if [[ ! "$expected_hash" =~ ^[[:xdigit:]]{64}$ ]] ||
        ! valid_vendored_path "$filepath"; then

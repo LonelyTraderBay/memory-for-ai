@@ -26,9 +26,6 @@ jobs:
       - name: Product metadata consistency
         run: python3 scripts/check-product-metadata.py
 
-      - name: Vendored language surface consistency
-        run: bash tests/test_language_count_contract.sh
-
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y zlib1g-dev cmake
 

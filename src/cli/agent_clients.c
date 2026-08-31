@@ -19,6 +19,7 @@
 #include <string.h>
 
 #define AGENT_ENTRY_KEY "memory-for-ai"
+#define AGENT_LEGACY_ENTRY_KEY "codebase-memory-mcp"
 #define AGENT_MAX_CONFIG_BYTES (8U * 1024U * 1024U)
 #define AGENT_JSON_MAX_DEPTH 64U
 
@@ -994,7 +995,7 @@ static int agent_json_find_member(const char *data, size_t object_start, size_t 
 }
 
 static int agent_json_find_entry(const char *document, size_t length, const char *section,
-                                 size_t *entry_start, size_t *entry_end) {
+                                 const char *entry_key, size_t *entry_start, size_t *entry_end) {
     size_t bom = length >= 3U && (unsigned char)document[0] == 0xefU &&
                          (unsigned char)document[1] == 0xbbU && (unsigned char)document[2] == 0xbfU
                      ? 3U
@@ -1024,7 +1025,7 @@ static int agent_json_find_entry(const char *document, size_t length, const char
         object_start = section_start;
         object_end = section_end;
     }
-    return agent_json_find_member(document, object_start, object_end, AGENT_ENTRY_KEY, entry_start,
+    return agent_json_find_member(document, object_start, object_end, entry_key, entry_start,
                                   entry_end);
 }
 
@@ -1184,14 +1185,34 @@ static int agent_json_edit(cbm_agent_client_id_t id, const char *config_path,
     }
     size_t entry_start = 0U;
     size_t entry_end = 0U;
+    const char *section = agent_json_section(id);
     int find_result = read_result == 1
                           ? 1
-                          : agent_json_find_entry(document, length, agent_json_section(id),
+                          : agent_json_find_entry(document, length, section, AGENT_ENTRY_KEY,
                                                   &entry_start, &entry_end);
     if (find_result < 0) {
         free(document);
         free(canonical);
         return CBM_AGENT_EDIT_ERROR;
+    }
+    if (find_result == 1 && read_result != 1) {
+        /* Never overwrite an entry left by the official predecessor. The
+         * escaped-key form is decoded by agent_json_key_equals, so this also
+         * protects configs that serialize the legacy hyphen as \u002d. */
+        size_t legacy_start = 0U;
+        size_t legacy_end = 0U;
+        int legacy_result = agent_json_find_entry(document, length, section, AGENT_LEGACY_ENTRY_KEY,
+                                                  &legacy_start, &legacy_end);
+        if (legacy_result < 0) {
+            free(document);
+            free(canonical);
+            return CBM_AGENT_EDIT_ERROR;
+        }
+        if (legacy_result == 0) {
+            free(document);
+            free(canonical);
+            return CBM_AGENT_EDIT_FOREIGN;
+        }
     }
     if (find_result == 0 && !agent_json_owned(document, entry_start, entry_end, canonical)) {
         free(document);
@@ -1203,7 +1224,6 @@ static int agent_json_edit(cbm_agent_client_id_t id, const char *config_path,
         free(canonical);
         return CBM_AGENT_EDIT_OK;
     }
-    const char *section = agent_json_section(id);
     const char *path[1] = {section};
     int edit_result =
         remove

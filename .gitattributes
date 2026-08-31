@@ -2,6 +2,12 @@
 # they check out as CRLF and bash inside the build containers rejects them.
 *.sh text eol=lf
 
+# Vendored inputs are integrity-pinned by their exact repository bytes. Keep
+# Git's Windows autocrlf conversion from changing those bytes in the worktree.
+/vendored/** -text
+/internal/cbm/vendored/** -text
+scripts/vendored-checksums.txt text eol=lf
+
 # Vendored tree-sitter grammars — machine-generated, hide from stats and diffs
 internal/cbm/vendored/grammars/**/parser.c  linguist-generated=true diff=false
 internal/cbm/vendored/grammars/**/scanner.c linguist-generated=true diff=false

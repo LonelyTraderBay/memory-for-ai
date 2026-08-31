@@ -334,7 +334,7 @@ TOTAL_SKIP=$(awk -F'skip=' '{split($2,a," "); s+=a[1]} END{print s+0}' "$RESULTS
 BAD_RC=$(grep -cv ' rc=0 ' "$RESULTS_FILE" || true)
 
 echo "── 8 slowest suites ──"
-sort -t= -k6 -rn "$RESULTS_FILE" | head -8
+sort -t '=' -k6 -rn "$RESULTS_FILE" | head -8
 grep -v ' rc=0 ' "$RESULTS_FILE" || true
 for f in $(grep -v ' rc=0 ' "$RESULTS_FILE" | awk '{print $1}'); do
     echo "──── $f: every failure site ────"

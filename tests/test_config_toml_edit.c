@@ -1017,7 +1017,12 @@ TEST(config_toml_vibe_literal_and_basic_identity) {
     ASSERT_EQ(cbm_toml_upsert_named_array_table(path, CTE_TABLE, CTE_KEY, CTE_IDENTITY, CTE_BODY),
               0);
     ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
+    /* A differently spelled/escaped name is foreign data. Preserve it and
+     * append the canonical entry instead of mutating another owner's table. */
     ASSERT_STR_EQ(actual, "[[mcp_servers]]\n"
+                          "name = \"memory-for-ai-\\u006dcp\" # basic\n"
+                          "command = \"old\"\n\n"
+                          "[[mcp_servers]]\n"
                           "name = \"memory-for-ai\"\n"
                           "command = \"memory-for-ai\"\n");
     th_cleanup(dir);

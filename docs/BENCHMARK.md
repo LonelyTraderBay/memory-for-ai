@@ -1,4 +1,4 @@
-# Codebase Memory MCP -- v0.3.0 Language Benchmark
+# memory-for-ai -- v0.3.0 Language Benchmark
 
 ## Methodology
 

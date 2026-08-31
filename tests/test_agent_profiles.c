@@ -61,9 +61,9 @@ TEST(agent_profiles_stable_tier_identity) {
     ASSERT_STR_EQ(cbm_graph_tier_slug(CBM_GRAPH_TIER_SCOUT), "memory-for-ai-scout");
     ASSERT_STR_EQ(cbm_graph_tier_slug(CBM_GRAPH_TIER_VERIFY), "memory-for-ai");
     ASSERT_STR_EQ(cbm_graph_tier_slug(CBM_GRAPH_TIER_AUDIT), "memory-for-ai-auditor");
-    ASSERT_STR_EQ(cbm_graph_tier_display_name(CBM_GRAPH_TIER_SCOUT), "Codebase Memory Scout");
-    ASSERT_STR_EQ(cbm_graph_tier_display_name(CBM_GRAPH_TIER_VERIFY), "Codebase Memory Verify");
-    ASSERT_STR_EQ(cbm_graph_tier_display_name(CBM_GRAPH_TIER_AUDIT), "Codebase Memory Auditor");
+    ASSERT_STR_EQ(cbm_graph_tier_display_name(CBM_GRAPH_TIER_SCOUT), "Memory for AI Scout");
+    ASSERT_STR_EQ(cbm_graph_tier_display_name(CBM_GRAPH_TIER_VERIFY), "Memory for AI Verify");
+    ASSERT_STR_EQ(cbm_graph_tier_display_name(CBM_GRAPH_TIER_AUDIT), "Memory for AI Auditor");
     ASSERT_TRUE(cbm_graph_dialect_direct_capable(CBM_GRAPH_DIALECT_CLAUDE));
     ASSERT_TRUE(cbm_graph_dialect_direct_capable(CBM_GRAPH_DIALECT_KIRO));
     ASSERT_FALSE(cbm_graph_dialect_direct_capable(CBM_GRAPH_DIALECT_AUGMENT));
@@ -90,19 +90,23 @@ TEST(agent_profiles_direct_dialects_are_coverage_aware_and_read_only) {
             if (!profile) {
                 FAIL("every documented direct dialect must render all three tiers");
             }
+            bool code_actions_exposed = strstr(profile, "get_code_actions") != NULL ||
+                                        (expectation->dialect == CBM_GRAPH_DIALECT_JUNIE &&
+                                         tier != (int)CBM_GRAPH_TIER_SCOUT &&
+                                         strstr(profile, "memory-for-ai-analysis") != NULL);
             int valid = strstr(profile, "memory-for-ai") != NULL &&
                         strstr(profile, "check_index_coverage") != NULL &&
-                        (strstr(profile, "get_code_actions") != NULL) ==
-                            (tier != (int)CBM_GRAPH_TIER_SCOUT) &&
+                        code_actions_exposed == (tier != (int)CBM_GRAPH_TIER_SCOUT) &&
                         strstr(profile, expectation->syntax_fragment) != NULL &&
                         strstr(profile, expectation->read_fragment) != NULL &&
                         strstr(profile, expectation->grep_fragment) != NULL &&
                         strstr(profile, "source read/grep fallback") != NULL &&
                         !profile_has_mutator(profile);
-            free(profile);
             if (!valid) {
+                free(profile);
                 FAIL("direct profiles must expose coverage plus source fallback and omit mutators");
             }
+            free(profile);
         }
     }
     PASS();
