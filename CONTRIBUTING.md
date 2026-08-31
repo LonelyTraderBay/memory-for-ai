@@ -48,6 +48,11 @@ make -f Makefile.cbm security
 
 Runs 8 security layers: static allow-list audit, binary string scan, UI audit, install audit, network egress test, MCP robustness (fuzz), vendored dependency integrity, and frontend integrity.
 
+The pull-request ClusterFuzzLite workflow also builds two isolated libFuzzer
+targets: "sha256_fuzzer" for release-integrity primitives and "traces_fuzzer"
+for strict OTLP duration/URL normalization. Both run with the workflow
+sanitizer and coverage flags.
+
 ## Project Structure
 
 ```
@@ -55,7 +60,7 @@ src/
   foundation/       Arena allocator, hash table, string utils, platform compat
   store/            SQLite graph storage (WAL mode, FTS5)
   cypher/           Cypher query → SQL translation
-  mcp/              MCP server (JSON-RPC 2.0 over stdio, 14 tools)
+  mcp/              MCP server (JSON-RPC 2.0 over stdio, 17 tools)
   pipeline/         Multi-pass indexing pipeline
     pass_*.c        Individual pipeline passes (definitions, calls, usages, etc.)
     httplink.c      HTTP route extraction (Go/Express/Laravel/Ktor/Python)

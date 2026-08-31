@@ -105,6 +105,15 @@ TEST(traces_extract_http_info_url_full) {
     PASS();
 }
 
+TEST(traces_extract_http_info_null_attrs_with_count) {
+    cbm_trace_span_t span = {.kind = 2, .attributes = NULL, .attr_count = 1};
+    cbm_http_span_info_t info;
+    ASSERT_FALSE(cbm_extract_http_info(&span, "svc", &info));
+    ASSERT_STR_EQ(info.service_name, "svc");
+    ASSERT_EQ(info.span_kind, 2);
+    PASS();
+}
+
 TEST(traces_extract_http_info_url_storage_is_per_result) {
     cbm_trace_attr_t attrs[] = {
         {.key = "http.method", .string_value = "GET"},
@@ -121,6 +130,19 @@ TEST(traces_extract_http_info_url_storage_is_per_result) {
     ASSERT(cbm_extract_http_info(&span, "svc", &second));
     ASSERT_STR_EQ(second.path, "/second");
     ASSERT_STR_EQ(first.path, "/first");
+    PASS();
+}
+
+TEST(traces_extract_http_info_route_precedes_url_full) {
+    cbm_trace_attr_t attrs[] = {
+        {.key = "url.full", .string_value = "https://example.com/raw/123"},
+        {.key = "http.route", .string_value = "/orders/:id"},
+    };
+    cbm_trace_span_t span = {.kind = 2, .attributes = attrs, .attr_count = 2};
+    cbm_http_span_info_t info;
+
+    ASSERT(cbm_extract_http_info(&span, "svc", &info));
+    ASSERT_STR_EQ(info.path, "/orders/:id");
     PASS();
 }
 
@@ -191,8 +213,8 @@ TEST(traces_extract_path_with_port) {
 
 TEST(traces_extract_path_with_query_and_fragment) {
     char buf[256];
-    /* Query params should be stripped (stops at '?') */
-    cbm_extract_path_from_url("https://example.com/search?q=test&page=2", buf, sizeof(buf));
+    /* Query and fragment components should not become route identities. */
+    cbm_extract_path_from_url("https://example.com/search?q=test#results", buf, sizeof(buf));
     ASSERT_STR_EQ(buf, "/search");
     PASS();
 }
@@ -284,6 +306,26 @@ TEST(traces_parse_duration_large_values) {
     PASS();
 }
 
+TEST(traces_extract_path_rejects_non_http_urls) {
+    char buf[256];
+    cbm_extract_path_from_url("ftp://example.com/data/file", buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "");
+
+    cbm_extract_path_from_url("host/with/multiple/slashes", buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "");
+
+    cbm_extract_path_from_url("https://?query=/not-a-path", buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "");
+    PASS();
+}
+
+TEST(traces_extract_service_name_null_attrs_with_count) {
+    cbm_trace_resource_t r = {.attributes = NULL, .attr_count = 1};
+    const char *name = cbm_extract_service_name(&r);
+    ASSERT_STR_EQ(name, "");
+    PASS();
+}
+
 TEST(traces_parse_duration_rejects_malformed_input) {
     ASSERT_EQ(cbm_parse_duration("1000junk", "2000"), 0);
     ASSERT_EQ(cbm_parse_duration(" 1000", "2000"), 0);
@@ -348,11 +390,14 @@ SUITE(traces) {
     RUN_TEST(traces_extract_service_name_missing);
     RUN_TEST(traces_extract_service_name_null);
     RUN_TEST(traces_extract_service_name_empty_attrs);
+    RUN_TEST(traces_extract_service_name_null_attrs_with_count);
     RUN_TEST(traces_extract_service_name_multiple_attrs);
     RUN_TEST(traces_extract_http_info);
     RUN_TEST(traces_extract_http_info_non_http);
+    RUN_TEST(traces_extract_http_info_null_attrs_with_count);
     RUN_TEST(traces_extract_http_info_url_full);
     RUN_TEST(traces_extract_http_info_url_storage_is_per_result);
+    RUN_TEST(traces_extract_http_info_route_precedes_url_full);
     RUN_TEST(traces_extract_path_from_url);
     RUN_TEST(traces_extract_path_null_url);
     RUN_TEST(traces_extract_path_empty_url);
@@ -360,6 +405,7 @@ SUITE(traces) {
     RUN_TEST(traces_extract_path_with_query_and_fragment);
     RUN_TEST(traces_extract_path_buffer_too_small);
     RUN_TEST(traces_extract_path_relative_path);
+    RUN_TEST(traces_extract_path_rejects_non_http_urls);
     RUN_TEST(traces_calculate_p99);
     RUN_TEST(traces_calculate_p99_single);
     RUN_TEST(traces_calculate_p99_empty);

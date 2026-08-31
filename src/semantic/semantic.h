@@ -52,9 +52,9 @@ enum { CBM_SEM_WINDOW = 5 };
 enum { CBM_SEM_MAX_OCCUR = 512 };
 
 /* Default score threshold for SEMANTICALLY_RELATED edge emission.
- * 0.75 balances recall with precision: validated ~95% precision on
- * Linux kernel (0.80 = 100% but only 90 edges, 0.70 = 2047 edges
- * but ~80% precision). */
+ * 0.75 balances recall with precision: validated ~95% precision on the
+ * Linux kernel (0.80 = 100% but only 90 edges, 0.70 = 2047 edges but
+ * ~80% precision). */
 #define CBM_SEM_EDGE_THRESHOLD 0.75
 
 /* Maximum SEMANTICALLY_RELATED edges per node. */

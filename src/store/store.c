@@ -4310,8 +4310,17 @@ int cbm_store_get_format_version(cbm_store_t *s, int *out) {
         SQLITE_OK) {
         return CBM_STORE_ERR;
     }
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
         *out = sqlite3_column_int(stmt, 0);
+    } else {
+        if (rc == SQLITE_DONE) {
+            store_set_error(s, "format version query returned no row");
+        } else {
+            store_set_error_sqlite(s, "format version query");
+        }
+        sqlite3_finalize(stmt);
+        return CBM_STORE_ERR;
     }
     sqlite3_finalize(stmt);
     return CBM_STORE_OK;
@@ -4321,6 +4330,10 @@ int cbm_store_get_format_version(cbm_store_t *s, int *out) {
  * only call on a read-write connection (never from configure_pragmas). */
 int cbm_store_set_format_version(cbm_store_t *s, int version) {
     if (!s || !s->db) {
+        return CBM_STORE_ERR;
+    }
+    if (version < 0) {
+        store_set_error(s, "format version must be non-negative");
         return CBM_STORE_ERR;
     }
     char sql[ST_BUF_64];

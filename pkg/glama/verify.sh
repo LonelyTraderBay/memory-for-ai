@@ -35,4 +35,13 @@ echo "==> assertions"
 printf '%s' "${OUT}" | grep -q '"result"'     || { echo "FAIL: no JSON-RPC result (server did not respond)"; exit 1; }
 printf '%s' "${OUT}" | grep -q 'search_graph' || { echo "FAIL: tools/list missing expected tool 'search_graph'"; exit 1; }
 COUNT="$(printf '%s' "${OUT}" | grep -o '"name"' | wc -l | tr -d ' ')"
-echo "PASS: server started and introspected; ~${COUNT} name entries (>=14 tools expected)"
+EXPECTED_TOOL_COUNT="$(
+  sed -n 's/.*"mcp_tool_count":[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "${DIR}/../../docs/product-metadata.json" | head -n 1
+)"
+if ! [[ "${COUNT}" =~ ^[0-9]+$ ]] || ! [[ "${EXPECTED_TOOL_COUNT}" =~ ^[0-9]+$ ]] ||
+   [ "${COUNT}" -lt "${EXPECTED_TOOL_COUNT}" ]; then
+  echo "FAIL: tools/list exposed ${COUNT:-invalid} name entries; expected at least ${EXPECTED_TOOL_COUNT}" >&2
+  exit 1
+fi
+echo "PASS: server started and introspected; ~${COUNT} name entries (>=${EXPECTED_TOOL_COUNT} tools expected)"

@@ -60,12 +60,13 @@ const char *cbm_extract_service_name(const cbm_trace_resource_t *r);
 /* Extract HTTP info from a span. Returns true if HTTP span, false otherwise.
  * Fills out with method, path, status, duration. Attribute-derived pointers
  * point into the span; a URL-derived path points into out->path_storage and
- * remains valid until the result object is reused or released. */
+ * remains valid until the result object is reused or released. Path precedence
+ * is http.route, url.path, http.target, then url.full. */
 bool cbm_extract_http_info(const cbm_trace_span_t *span, const char *service_name,
                            cbm_http_span_info_t *out);
 
 /* Extract path component from a full URL.
- * E.g. "https://example.com/api/orders?q=1" → "/api/orders"
+ * E.g. "https://example.com/api/orders?q=1#items" → "/api/orders"
  * Writes to buf (up to buf_sz). Returns buf, or "" if not a valid URL. */
 const char *cbm_extract_path_from_url(const char *url, char *buf, size_t buf_sz);
 

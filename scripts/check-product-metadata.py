@@ -234,6 +234,18 @@ def write_active_docs(metadata: dict) -> list[str]:
             (r"\b\d+ MCP tools\b", f"{count} MCP tools"),
             (r"scored ≥ \d+\.\d+", f"scored ≥ {semantic_threshold}"),
         ],
+        "server.json": [
+            (r"\b\d+ languages\b", f"{languages} languages"),
+        ],
+        "pkg/chocolatey/memory-for-ai.nuspec": [
+            (r"\b\d+ languages\b", f"{languages} languages"),
+        ],
+        "scripts/package-release.sh": [
+            (r"\b\d+ languages\b", f"{languages} languages"),
+        ],
+        "CONTRIBUTING.md": [
+            (r"\b\d+ tools\b", f"{count} tools"),
+        ],
     }
     for relative, patterns in replacements.items():
         path = ROOT / relative
@@ -274,7 +286,15 @@ def check_docs(metadata: dict) -> list[str]:
     expected_count = str(metadata["mcp_tool_count"])
     expected_languages = str(metadata["language_count"])
     expected_threshold = f"{metadata['semantic_edge_threshold']:.2f}"
-    for relative in ("README.md", "pkg/npm/README.md", "docs/llms.txt", "docs/index.html"):
+    for relative in (
+        "README.md",
+        "pkg/npm/README.md",
+        "docs/llms.txt",
+        "docs/index.html",
+        "server.json",
+        "pkg/chocolatey/memory-for-ai.nuspec",
+        "scripts/package-release.sh",
+    ):
         text = read_text(ROOT / relative)
         values = re.findall(r"\b(\d+) MCP tools\b", text)
         if any(value != expected_count for value in values):
@@ -296,6 +316,10 @@ def check_docs(metadata: dict) -> list[str]:
         thresholds = re.findall(r"(?:scored|score) ≥ (\d+\.\d+)", text)
         if any(value != expected_threshold for value in thresholds):
             errors.append(f"{relative}: semantic threshold is not {expected_threshold}")
+    contributing = read_text(ROOT / "CONTRIBUTING.md")
+    contributing_tools = re.findall(r"\b(\d+) tools\b", contributing)
+    if any(value != expected_count for value in contributing_tools):
+        errors.append(f"CONTRIBUTING.md: MCP tool count is not {expected_count}")
     return errors
 
 

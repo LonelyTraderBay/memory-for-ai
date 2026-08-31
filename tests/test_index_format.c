@@ -177,6 +177,7 @@ TEST(index_format_legacy_index_rebuilds_and_repairs) {
     ASSERT_EQ(cbm_store_adr_store(w, lp.project, "index-format-adr"), CBM_STORE_OK);
     snprintf(legacy_qn, sizeof(legacy_qn), "%s.badge.badge.component.__file__", lp.project);
     ASSERT_EQ(make_legacy_file_graph(w, lp.project, legacy_qn), 0);
+    ASSERT_EQ(cbm_store_set_format_version(w, -1), CBM_STORE_ERR);
     ASSERT_EQ(cbm_store_set_format_version(w, 0), CBM_STORE_OK);
     cbm_store_close(w);
 
