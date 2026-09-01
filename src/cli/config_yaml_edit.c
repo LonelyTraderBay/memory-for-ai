@@ -1722,8 +1722,7 @@ static int yaml_analyze_mapping(const yaml_doc_t *doc, const char *section_key, 
  * must not silently add a second product entry beside it. Treat the document
  * as ambiguous and fail closed; ownership-aware callers surface FOREIGN. */
 static bool yaml_is_memory_for_ai_legacy_key(const char *key) {
-    return key && (strcmp(key, "codebase-memory") == 0 || strcmp(key, "codebase-memory-mcp") == 0 ||
-                   strcmp(key, "memory-for-ai-mcp") == 0);
+    return key && (strcmp(key, "codebase-memory") == 0 || strcmp(key, "memory-for-ai-mcp") == 0);
 }
 
 /* Returns 1 when a legacy product key is present, 0 when absent, -1 on a

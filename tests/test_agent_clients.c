@@ -907,7 +907,7 @@ TEST(agent_clients_refuse_foreign_and_preserve_modified_entries) {
     free(after);
 
     const char *escaped_foreign =
-        "{mcpServers:{\"codebase\\u002dmemory-mcp\":{command:'foreign',args:[]}}}\n";
+        "{mcpServers:{\"memory\\u002dfor\\u002dai\\u002dmcp\":{command:'foreign',args:[]}}}\n";
     ASSERT_EQ(th_write_file(path, escaped_foreign), 0);
     ASSERT_EQ(cbm_agent_client_install_mcp(CBM_AGENT_CLIENT_QODER, path, "/usr/bin/cbm"),
               CBM_AGENT_EDIT_FOREIGN);
