@@ -751,6 +751,24 @@ test-foundation: $(BUILD_DIR)/test-foundation
 $(BUILD_DIR)/%.o: $(CBM_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(GRAMMAR_CFLAGS_TEST) -c -o $@ $<
 
+# Grammar shims textually include their vendored parser/scanner sources.  Keep
+# the ObjectScript shims' included files in the dependency graph for every
+# build flavour so an incremental build cannot relink a stale object after a
+# scanner edit.  The shim stem is not always the directory name (for example
+# grammar_makefile.c includes vendored/grammars/make), so this is intentionally
+# explicit instead of guessing paths from every stem.
+$(BUILD_DIR)/grammar_objectscript_udl.o \
+$(BUILD_DIR)/prod_grammar_objectscript_udl.o \
+$(BUILD_DIR)/tsan_grammar_objectscript_udl.o: \
+	$(CBM_DIR)/vendored/grammars/objectscript_udl/parser.c \
+	$(CBM_DIR)/vendored/grammars/objectscript_udl/scanner.c
+
+$(BUILD_DIR)/grammar_objectscript_routine.o \
+$(BUILD_DIR)/prod_grammar_objectscript_routine.o \
+$(BUILD_DIR)/tsan_grammar_objectscript_routine.o: \
+	$(CBM_DIR)/vendored/grammars/objectscript_routine/parser.c \
+	$(CBM_DIR)/vendored/grammars/objectscript_routine/scanner.c
+
 $(BUILD_DIR)/ts_runtime.o: $(TS_RUNTIME_DEPS) | $(BUILD_DIR)
 	$(CC) $(GRAMMAR_CFLAGS_TEST) -c -o $@ $<
 

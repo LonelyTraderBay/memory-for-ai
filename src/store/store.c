@@ -1882,6 +1882,13 @@ static int configure_pragmas(cbm_store_t *s, bool in_memory, bool read_only) {
         if (rc != CBM_STORE_OK) {
             return rc;
         }
+        /* Query stores are short-lived and may be opened for every MCP
+         * request. Keep their connection-local page cache bounded instead of
+         * inheriting a larger cache from a previous bulk writer. */
+        rc = exec_sql(s, "PRAGMA cache_size = -2000;"); /* approximately 2 MB */
+        if (rc != CBM_STORE_OK) {
+            return rc;
+        }
         char mmap_sql[ST_BUF_64];
         snprintf(mmap_sql, sizeof(mmap_sql), "PRAGMA mmap_size = %lld;",
                  (long long)cbm_store_resolve_mmap_size());
@@ -2578,12 +2585,6 @@ void cbm_store_close(cbm_store_t *s) {
         return;
     }
 
-    /* Checkpoint WAL before close to prevent orphan WAL accumulation.
-     * Best-effort — silently skips if concurrent reader holds a lock. */
-    if (s->db && s->db_path) {
-        (void)sqlite3_wal_checkpoint_v2(s->db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
-    }
-
     /* Finalize all cached statements */
     finalize_stmt(&s->stmt_upsert_node);
     finalize_stmt(&s->stmt_find_node_by_id);
@@ -2619,6 +2620,22 @@ void cbm_store_close(cbm_store_t *s) {
     finalize_stmt(&s->stmt_get_file_hashes);
     finalize_stmt(&s->stmt_delete_file_hash);
     finalize_stmt(&s->stmt_delete_file_hashes);
+
+    /* Checkpoint only after cached statements are finalized. A cached SELECT
+     * can retain a read snapshot; attempting the checkpoint first makes the
+     * close path silently skip reclaiming frames and can leave a WAL growing
+     * across request-scoped query connections. This remains PASSIVE so closing
+     * one process never truncates a WAL mapped by a sibling reader. */
+    if (s->db && s->db_path) {
+        (void)sqlite3_wal_checkpoint_v2(s->db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+    }
+
+    /* Explicitly release SQLite's connection-local page cache before closing.
+     * Request-scoped query stores are intentionally short-lived; relying only
+     * on sqlite3_close_v2 leaves cache pages to allocator retention until the
+     * next global collection, which is visible as long-run daemon growth on
+     * Windows. This is a best-effort hint and is safe for read-only stores. */
+    (void)sqlite3_db_release_memory(s->db);
 
     /* Use sqlite3_close_v2 — auto-deallocates when last statement finalizes.
      * Prevents ASan false-positive leaks from sqlite3 internal state. */
@@ -2669,6 +2686,16 @@ int cbm_store_get_runtime_metrics(cbm_store_t *s, const char *project, cbm_runti
         return CBM_STORE_ERR;
     }
     memset(out, 0, sizeof(*out));
+    /* The seven counters describe one operational snapshot. Without a read
+     * transaction, a concurrent ingest can commit between two COUNT queries
+     * and expose a combination of values that never existed together. Use a
+     * deferred transaction so this remains valid on query-only connections;
+     * preserve any transaction owned by the caller. */
+    bool own_transaction = sqlite3_get_autocommit(s->db) != 0;
+    if (own_transaction && exec_sql(s, "BEGIN;") != CBM_STORE_OK) {
+        return CBM_STORE_ERR;
+    }
+    int rc = CBM_STORE_OK;
     if (runtime_count_project_rows(s, "runtime_trace_batches", project, &out->legacy_batches) !=
             CBM_STORE_OK ||
         runtime_count_project_rows(s, "runtime_trace_contributions", project,
@@ -2684,9 +2711,18 @@ int cbm_store_get_runtime_metrics(cbm_store_t *s, const char *project, cbm_runti
         runtime_count_project_rows(s, "runtime_resolutions", project, &out->runtime_resolutions) !=
             CBM_STORE_OK ||
         cbm_store_get_runtime_quota(s, &out->quota) != CBM_STORE_OK) {
-        return CBM_STORE_ERR;
+        rc = CBM_STORE_ERR;
     }
-    return CBM_STORE_OK;
+    if (own_transaction) {
+        int end_rc = exec_sql(s, rc == CBM_STORE_OK ? "COMMIT;" : "ROLLBACK;");
+        if (end_rc != CBM_STORE_OK) {
+            rc = CBM_STORE_ERR;
+        }
+    }
+    if (rc != CBM_STORE_OK) {
+        memset(out, 0, sizeof(*out));
+    }
+    return rc;
 }
 
 int cbm_store_rebuild_runtime_aggregates(cbm_store_t *s, const char *project) {

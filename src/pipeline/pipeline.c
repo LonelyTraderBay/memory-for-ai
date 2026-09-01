@@ -422,6 +422,10 @@ const char *cbm_pipeline_repo_path(const cbm_pipeline_t *p) {
     return p ? p->repo_path : NULL;
 }
 
+bool cbm_pipeline_persistence_enabled(const cbm_pipeline_t *p) {
+    return p && p->persistence;
+}
+
 atomic_int *cbm_pipeline_cancelled_ptr(cbm_pipeline_t *p) {
     return p ? p->cancelled : NULL;
 }

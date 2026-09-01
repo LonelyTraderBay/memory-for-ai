@@ -89,6 +89,56 @@ TEST(store_open_with_mmap_disabled) {
     PASS();
 }
 
+/* Query connections are created per request. Their page cache must remain
+ * bounded even when the same process previously used a larger bulk-write
+ * cache on another connection. */
+TEST(store_query_cache_is_bounded) {
+    char tmp_path[256];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/cbm_test_query_cache_%d.db", cbm_tmpdir(),
+             (int)getpid());
+    unlink(tmp_path);
+
+    cbm_store_t *writer = cbm_store_open_path(tmp_path);
+    ASSERT_NOT_NULL(writer);
+    cbm_store_close(writer);
+
+    cbm_store_t *query = cbm_store_open_path_query(tmp_path);
+    ASSERT_NOT_NULL(query);
+    sqlite3_stmt *stmt = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(query), "PRAGMA cache_size;", -1, &stmt, NULL),
+              SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int64(stmt, 0), -2000);
+    sqlite3_finalize(stmt);
+    cbm_store_close(query);
+
+    unlink(tmp_path);
+    char tmp_wal[300];
+    char tmp_shm[300];
+    snprintf(tmp_wal, sizeof(tmp_wal), "%s-wal", tmp_path);
+    snprintf(tmp_shm, sizeof(tmp_shm), "%s-shm", tmp_path);
+    unlink(tmp_wal);
+    unlink(tmp_shm);
+    PASS();
+}
+
+/* Metrics own a deferred read transaction only when the caller is idle. If a
+ * caller already has a transaction, the function must not commit or roll it
+ * back behind the caller's back. */
+TEST(runtime_metrics_preserve_caller_transaction) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(sqlite3_exec(cbm_store_get_db(s), "BEGIN;", NULL, NULL, NULL), SQLITE_OK);
+    ASSERT_EQ(sqlite3_get_autocommit(cbm_store_get_db(s)), 0);
+
+    cbm_runtime_metrics_t metrics = {0};
+    ASSERT_EQ(cbm_store_get_runtime_metrics(s, "runtime-transaction", &metrics), CBM_STORE_OK);
+    ASSERT_EQ(sqlite3_get_autocommit(cbm_store_get_db(s)), 0);
+    ASSERT_EQ(sqlite3_exec(cbm_store_get_db(s), "ROLLBACK;", NULL, NULL, NULL), SQLITE_OK);
+    cbm_store_close(s);
+    PASS();
+}
+
 TEST(runtime_operational_hardening_quota_metrics_rebuild) {
     cbm_store_t *s = cbm_store_open_memory();
     ASSERT_NOT_NULL(s);
@@ -476,6 +526,8 @@ SUITE(store_pragmas) {
     RUN_TEST(mmap_size_partial_garbage_falls_back_to_default);
     RUN_TEST(store_open_with_mmap_disabled);
     RUN_TEST(runtime_operational_hardening_quota_metrics_rebuild);
+    RUN_TEST(store_query_cache_is_bounded);
+    RUN_TEST(runtime_metrics_preserve_caller_transaction);
     RUN_TEST(runtime_canonical_span_histograms_are_per_span);
     RUN_TEST(runtime_multi_producer_handles_are_serializable);
 }

@@ -1884,6 +1884,7 @@ void cbm_mcp_server_free(cbm_mcp_server_t *srv) {
     }
     if (srv->owns_store && srv->store) {
         cbm_store_close(srv->store);
+        cbm_mem_collect();
     }
     free(srv->current_project);
     free(srv->allowed_root);
@@ -1909,13 +1910,21 @@ void cbm_mcp_server_evict_idle(cbm_mcp_server_t *srv, int timeout_s) {
         return;
     }
 
+    bool released = false;
     if (srv->owns_store) {
         cbm_store_close(srv->store);
+        released = true;
     }
     srv->store = NULL;
     free(srv->current_project);
     srv->current_project = NULL;
     srv->store_last_used = 0;
+    if (released) {
+        /* Idle eviction is another long-lived query boundary. Without an
+         * explicit purge, mimalloc can retain the request store's pages until
+         * process exit even though the SQLite connection is already closed. */
+        cbm_mem_collect();
+    }
 }
 
 bool cbm_mcp_server_has_cached_store(cbm_mcp_server_t *srv) {
@@ -1930,6 +1939,7 @@ bool cbm_mcp_server_release_pristine_memory_store(cbm_mcp_server_t *srv) {
     }
     cbm_store_close(srv->store);
     srv->store = NULL;
+    cbm_mem_collect();
     return true;
 }
 

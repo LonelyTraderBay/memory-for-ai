@@ -117,8 +117,19 @@ unsigned tree_sitter_objectscript_udl_external_scanner_serialize(void *payload,
 
 void tree_sitter_objectscript_udl_external_scanner_deserialize(
     void *payload, const char *buffer, unsigned length) {
-  // This one is a bit funky.
-  // length includes the sizeof(struct Scanner) and the structs it points to
+  /* Tree-sitter may request a reset with an empty/NULL serialized state.
+   * Never pass that NULL buffer to memcpy, and clamp hostile/corrupt lengths
+   * to the concrete scanner object so deserialization cannot overflow it. */
+  if (!payload) {
+    return;
+  }
+  memset(payload, 0, sizeof(struct ObjectScript_Udl_Scanner));
+  if (!buffer || length == 0) {
+    return;
+  }
+  if (length > sizeof(struct ObjectScript_Udl_Scanner)) {
+    length = sizeof(struct ObjectScript_Udl_Scanner);
+  }
   memcpy(payload, buffer, length);
 }
 

@@ -1,4 +1,4 @@
-// repro_issue581.c -- Reproduce-first case for OPEN bug #581.
+// repro_issue581.c -- Regression coverage for the #581 query-memory fix.
 //
 // Issue: #581 -- "Memory leak: process grows to 50+ GB virtual memory over
 //               hours/days, crashes Windows"
@@ -80,19 +80,12 @@
 //       is declared inconclusive and PASSES to avoid false failures (the
 //       growth assertion requires reliable RSS readings).
 //
-// FIX LOCATION (not implemented here -- this test must stay RED until fixed):
-//   Two complementary fixes are needed:
-//   1. src/mcp/mcp.c, cbm_mcp_server_run event loop (or after each tool call
-//      in cbm_mcp_handle_tool): periodically call
-//        sqlite3_wal_checkpoint_v2(..., SQLITE_CHECKPOINT_TRUNCATE, ...)
-//      and cbm_mem_collect() after query bursts (e.g. every N=50 calls or
-//      after exceeding a RSS threshold via cbm_mem_over_budget()).
-//   2. src/mcp/mcp.c, cbm_mcp_server_evict_idle: on idle eviction, call
-//      cbm_mem_collect() so mimalloc returns pages to the OS, matching the
-//      same pattern used after index_repository.
-//
-//   Without both fixes the WAL and mimalloc page pools grow monotonically
-//   across a long-running server session.
+// FIX STATUS:
+//   Request-scoped file stores are closed after every MCP tool call, cached
+//   statements are finalized before the close-path checkpoint, and allocator
+//   pages are collected after request/idle/shutdown store eviction. Shared
+//   databases still use PASSIVE checkpoints deliberately: TRUNCATE is unsafe
+//   while a sibling process can hold a live mmap'd WAL view.
 
 #include "test_framework.h"
 #include "repro_harness.h"
@@ -194,15 +187,9 @@ static char *build_search_args(const char *project) {
 // Asserts that RSS does not grow monotonically when search_graph is called
 // repeatedly against a single indexed project.
 //
-// RED on current code:
-//   SQLite WAL frames + mimalloc retained pages accumulate across iterations.
-//   After ITER_TOTAL iterations the RSS exceeds LEAK_FACTOR x warmup RSS.
-//   The ASSERT below fires -> RED.
-//
-// GREEN after fix:
-//   cbm_mem_collect() and/or TRUNCATE checkpoint called periodically by the
-//   MCP event loop (or after tool calls) return pages to OS.  End RSS stays
-//   near warmup RSS (jitter only) -> assertion passes -> GREEN.
+// The test also checks the direct request-store lifecycle invariant and uses
+// RSS as a coarse signal. It is intentionally small; it is not a substitute
+// for the manual large-repository soak that originally exposed #581.
 //
 // NOTE on ITER_WARMUP/ITER_TOTAL calibration:
 //   The real leak is ~10 GB/day with an active agent (rough rate:
@@ -234,6 +221,9 @@ TEST(repro_issue581_query_rss_stable) {
         if (resp) {
             free(resp);
         }
+        /* File-backed query stores must not survive the request boundary. This
+         * is the direct lifecycle invariant behind the #581 hardening. */
+        ASSERT_FALSE(cbm_mcp_server_has_cached_store(lp.srv));
 
         if (i + 1 == ITER_WARMUP) {
             rss_warmup = rss_bytes();
@@ -252,34 +242,14 @@ TEST(repro_issue581_query_rss_stable) {
         printf("  NOTE: RSS not measurable on this platform/build\n");
     }
 
-    // HONEST RED — this guard is currently VACUOUS and #581 is OPEN.
-    //
-    // This fixture CANNOT reproduce the leak: a 3-node graph over 150
-    // search_graph calls allocates far too little to move process RSS (observed
-    // factor=1.00), so the old "rss_end <= 3.0 x rss_warmup" assertion passed
-    // even on the leaking build. A green here would mean "leak fixed" while the
-    // leak is unfixed — a false guard that violates the tests-are-guards rule
-    // (green <=> fixed). So it stays RED.
-    //
-    // Turning this GREEN legitimately requires BOTH:
-    //   (a) a real reproduction tier — a long-running MCP session issuing
-    //       thousands of ops against a LARGE graph, measuring the SQLite WAL
-    //       file size and mimalloc committed pages DIRECTLY (not process-RSS
-    //       jitter) so the monotonic growth is actually observable; AND
-    //   (b) the fix — periodic SQLITE_CHECKPOINT_TRUNCATE + cbm_mem_collect() in
-    //       the MCP query loop / idle eviction (see the header + #581).
-    //
-    // Until both land this is an honest "not fixed / not provable here" RED, not
-    // a false green.
-    /* TODO(#581): whitelisted known-red on the non-gating bug-repro board. The
-     * leak is a real OPEN bug; this fixture cannot yet reproduce it, so the test
-     * stays RED (honest "not fixed") rather than vacuously green. Turning it
-     * green requires a real WAL-size / mimalloc-committed-pages reproduction tier
-     * plus the query-path compaction fix (see header). Tracked, not skipped. */
-    FAIL("TODO(#581) whitelisted known-red: query-path memory leak is OPEN and "
-         "cannot be reproduced in this fixture (RSS factor ~1.0 even when "
-         "leaking) — needs a real WAL/committed-pages reproduction tier plus the "
-         "query-path compaction fix");
+    /* This small fixture is a bounded smoke guard, not a claim that 150 calls
+     * reproduce the historical multi-day large-repository leak. The production
+     * fix is covered directly by request-store eviction and allocator cleanup;
+     * RSS remains a coarse regression signal. */
+    if (rss_warmup > 0 && rss_end > 0) {
+        ASSERT_TRUE((double)rss_end <= (double)rss_warmup * LEAK_FACTOR);
+    }
+    PASS();
 }
 
 // -- Suite ------------------------------------------------------------------

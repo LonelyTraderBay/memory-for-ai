@@ -115,6 +115,19 @@ unsigned tree_sitter_objectscript_routine_external_scanner_serialize(void *paylo
 
 void tree_sitter_objectscript_routine_external_scanner_deserialize(
     void *payload, const char *buffer, unsigned length) {
+  /* Empty parser state is a valid reset request. Guard NULL and bound the
+   * copy to the scanner object to keep malformed state from invoking UB or
+   * overflowing the external scanner payload. */
+  if (!payload) {
+    return;
+  }
+  memset(payload, 0, sizeof(struct ObjectScript_Routine_Scanner));
+  if (!buffer || length == 0) {
+    return;
+  }
+  if (length > sizeof(struct ObjectScript_Routine_Scanner)) {
+    length = sizeof(struct ObjectScript_Routine_Scanner);
+  }
   memcpy(payload, buffer, length);
 }
 

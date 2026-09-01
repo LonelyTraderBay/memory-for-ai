@@ -13,6 +13,7 @@
 
 enum { INCR_RING_BUF = 4, INCR_RING_MASK = 3, INCR_TS_BUF = 24 };
 #include "pipeline/pipeline.h"
+#include "pipeline/artifact.h"
 #include <stdio.h>
 #include <time.h>
 #include "pipeline/lsp_surface.h"
@@ -1498,7 +1499,8 @@ static int dump_and_persist(cbm_gbuf_t *gbuf, const char *db_path, const char *p
                             int manifest_count, const char *adr_content,
                             const cbm_coverage_row_t *cov, int cov_count,
                             const cbm_coverage_meta_t *meta_template,
-                            const cbm_lsp_surface_row_t *surface_rows, int surface_row_count) {
+                            const cbm_lsp_surface_row_t *surface_rows, int surface_row_count,
+                            const char *repo_path, bool persistence) {
     struct timespec t;
     cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     cbm_pipeline_generation_t generation = {
@@ -1521,7 +1523,21 @@ static int dump_and_persist(cbm_gbuf_t *gbuf, const char *db_path, const char *p
     if (rc != 0) {
         return rc;
     }
-    return 0;
+    /* Keep incremental publication's artifact contract identical to the full
+     * pipeline: an explicit persistence request always writes a fresh BEST
+     * artifact, while an existing shared artifact is refreshed even when the
+     * current invocation uses the default flag. Without this leg the live DB
+     * advanced but teammates importing graph.db.zst received the prior graph. */
+    if (repo_path && persistence) {
+        rc = cbm_artifact_export(db_path, repo_path, project, CBM_ARTIFACT_BEST);
+    } else if (repo_path && cbm_artifact_exists(repo_path)) {
+        rc = cbm_artifact_export(db_path, repo_path, project, CBM_ARTIFACT_FAST);
+    }
+    if (rc != 0) {
+        const char *err = cbm_artifact_export_last_error();
+        cbm_log_error("incremental.artifact", "err", err ? err : "export failed");
+    }
+    return rc;
 }
 
 /* Parallel base-def rehydration: rows are independent, so the JSON decode
@@ -2910,7 +2926,8 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
      * empty table just routes the next incremental to a full rebuild. */
     int persist_rc =
         dump_and_persist(existing, db_path, project, cbm_pipeline_cancelled_ptr(p), manifest,
-                         manifest_count, saved_adr, cov, cov_n, &coverage_meta, NULL, 0);
+                         manifest_count, saved_adr, cov, cov_n, &coverage_meta, NULL, 0,
+                         cbm_pipeline_repo_path(p), cbm_pipeline_persistence_enabled(p));
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
     free(saved_adr);
     free(cov);
