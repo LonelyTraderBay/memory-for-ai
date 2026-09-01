@@ -173,10 +173,10 @@ static char *join_and_strip(const char *dir, const char *entry) {
         entry += PAIR_LEN;
     }
     char buf[PKGMAP_PATH_BUF];
-    if (dir[0] == '\0') {
-        snprintf(buf, sizeof(buf), "%s", entry);
-    } else {
-        snprintf(buf, sizeof(buf), "%s/%s", dir, entry);
+    int written = dir[0] == '\0' ? snprintf(buf, sizeof(buf), "%s", entry)
+                                  : snprintf(buf, sizeof(buf), "%s/%s", dir, entry);
+    if (written <= 0 || (size_t)written >= sizeof(buf)) {
+        return NULL; /* never publish a truncated module path */
     }
     return strip_extension(buf);
 }
@@ -376,8 +376,12 @@ static char *toml_extract_name(const char *section_start, const char *end) {
 static char *build_entry_path(const char *rel_path, const char *suffix) {
     char *dir = path_dirname(rel_path);
     char buf[PKGMAP_PATH_BUF];
-    snprintf(buf, sizeof(buf), "%s%s%s", dir[0] ? dir : "", dir[0] ? "/" : "", suffix);
+    int written = snprintf(buf, sizeof(buf), "%s%s%s", dir[0] ? dir : "", dir[0] ? "/" : "",
+                           suffix);
     free(dir);
+    if (written <= 0 || (size_t)written >= sizeof(buf)) {
+        return NULL; /* an unresolved/truncated entry is worse than no entry */
+    }
     return strdup(buf);
 }
 
@@ -934,7 +938,7 @@ static void parse_package_swift(const char *source, int source_len, const char *
 
 bool cbm_pkgmap_try_parse(const char *basename, const char *rel_path, const char *source,
                           int source_len, cbm_pkg_entries_t *entries) {
-    if (!basename || !source || source_len <= 0) {
+    if (!basename || !rel_path || !source || source_len <= 0 || !entries) {
         return false;
     }
 
@@ -987,8 +991,13 @@ bool cbm_pkgmap_try_parse(const char *basename, const char *rel_path, const char
 
 /* ── Merge: per-worker entries → hash table ────────────────────── */
 
+static int pkg_entry_ptr_cmp(const void *pa, const void *pb);
+
 CBMHashTable *cbm_pkgmap_build(cbm_pkg_entries_t *worker_entries, int worker_count,
                                const char *project_name) {
+    if (!worker_entries || worker_count <= 0 || !project_name) {
+        return NULL;
+    }
     /* Count total entries */
     int total = 0;
     for (int w = 0; w < worker_count; w++) {
@@ -998,30 +1007,65 @@ CBMHashTable *cbm_pkgmap_build(cbm_pkg_entries_t *worker_entries, int worker_cou
         return NULL;
     }
 
-    CBMHashTable *map = cbm_ht_create(PKGMAP_HT_INIT);
-    int merged = 0;
-
+    cbm_pkg_entry_t **ordered = malloc((size_t)total * sizeof(*ordered));
+    if (!ordered) {
+        return NULL;
+    }
+    int ordered_count = 0;
     for (int w = 0; w < worker_count; w++) {
-        cbm_pkg_entries_t *we = &worker_entries[w];
-        for (int i = 0; i < we->count; i++) {
-            /* Convert entry_rel to QN: project.dir.parts */
-            char *qn = cbm_pipeline_fqn_module(project_name, we->items[i].entry_rel);
-            if (!qn) {
-                continue;
-            }
-
-            /* Check for duplicate — first wins */
-            if (cbm_ht_has(map, we->items[i].pkg_name)) {
-                free(qn);
-                continue;
-            }
-
-            /* Transfer ownership: key = strdup'd pkg_name, value = qn */
-            char *key = strdup(we->items[i].pkg_name);
-            cbm_ht_set(map, key, qn);
-            merged++;
+        for (int i = 0; i < worker_entries[w].count; i++) {
+            ordered[ordered_count++] = &worker_entries[w].items[i];
         }
     }
+    qsort(ordered, (size_t)ordered_count, sizeof(*ordered), pkg_entry_ptr_cmp);
+
+    CBMHashTable *map = cbm_ht_create(PKGMAP_HT_INIT);
+    if (!map) {
+        free(ordered);
+        return NULL;
+    }
+    int merged = 0;
+
+    for (int i = 0; i < ordered_count; i++) {
+        cbm_pkg_entry_t *entry = ordered[i];
+        /* An empty entry path is meaningful for a root-level manifest: Go's
+         * go.mod (and a root package.json) maps the package to the repository
+         * root, whose FQN is simply the project name.  Reject NULL entries,
+         * but do not confuse the valid empty-root path with malformed input. */
+        if (!entry->pkg_name || !entry->pkg_name[0] || !entry->entry_rel) {
+            continue;
+        }
+        /* Convert entry_rel to QN: project.dir.parts */
+        char *qn = cbm_pipeline_fqn_module(project_name, entry->entry_rel);
+        if (!qn) {
+            continue;
+        }
+
+        /* Check for duplicate — ordered input makes the winner deterministic. */
+        if (cbm_ht_has(map, entry->pkg_name)) {
+            free(qn);
+            continue;
+        }
+
+        /* Transfer ownership: key = strdup'd pkg_name, value = qn */
+        char *key = strdup(entry->pkg_name);
+        if (!key) {
+            free(qn);
+            continue;
+        }
+        cbm_ht_set(map, key, qn);
+        if (!cbm_ht_has(map, key)) {
+            /* Hash-table insertion is void-returning; retain a defensive
+             * postcondition so an allocator/table failure cannot leak the
+             * detached key and value. */
+            free(key);
+            free(qn);
+            continue;
+        }
+        merged++;
+    }
+
+    free(ordered);
 
     if (merged == 0) {
         cbm_ht_free(map);
@@ -1103,6 +1147,17 @@ static bool pkgmap_is_reparse_point(const char *abs_path) {
 }
 #endif
 
+/* Join two path components into a bounded buffer. The manifest walker must
+ * skip overlong paths rather than silently turning them into a different,
+ * truncated path that could collide with a real entry. */
+static bool pkgmap_join_path(char *out, size_t out_size, const char *left, const char *right) {
+    if (!out || out_size == 0U || !left || !right || !right[0]) {
+        return false;
+    }
+    int written = snprintf(out, out_size, "%s/%s", left, right);
+    return written > 0 && (size_t)written < out_size;
+}
+
 /* Recursive filesystem walker that finds and parses package manifest
  * files independently of the main discovery filter. The main discovery
  * filter intentionally hides package.json / composer.json etc. from
@@ -1120,6 +1175,11 @@ static bool pkgmap_is_reparse_point(const char *abs_path) {
  * descending as a best-effort early-out. */
 static int pkgmap_walk_dir(const char *abs_dir, const char *rel_dir, cbm_pkg_entries_t *entries,
                            int depth, char **excluded_dirs, int excluded_count) {
+    if (!abs_dir || !rel_dir || !entries || strlen(abs_dir) >= PKGMAP_PATH_BUF ||
+        strlen(rel_dir) >= PKGMAP_PATH_BUF) {
+        cbm_log_info("pkgmap.walk", "path_cap", "skipped_overlong_path");
+        return 0;
+    }
     if (depth >= PKGMAP_WALK_MAX_DEPTH) {
         cbm_log_info("pkgmap.walk", "depth_cap", rel_dir && rel_dir[0] ? rel_dir : ".");
         return 0;
@@ -1137,11 +1197,21 @@ static int pkgmap_walk_dir(const char *abs_dir, const char *rel_dir, cbm_pkg_ent
         }
         char abs_path[PKGMAP_PATH_BUF];
         char rel_path[PKGMAP_PATH_BUF];
-        snprintf(abs_path, sizeof(abs_path), "%s/%s", abs_dir, name);
-        if (rel_dir && rel_dir[0]) {
-            snprintf(rel_path, sizeof(rel_path), "%s/%s", rel_dir, name);
+        if (!pkgmap_join_path(abs_path, sizeof(abs_path), abs_dir, name)) {
+            cbm_log_info("pkgmap.walk", "path_cap", "skipped_overlong_path");
+            continue;
+        }
+        if (rel_dir[0]) {
+            if (!pkgmap_join_path(rel_path, sizeof(rel_path), rel_dir, name)) {
+                cbm_log_info("pkgmap.walk", "path_cap", "skipped_overlong_path");
+                continue;
+            }
         } else {
-            snprintf(rel_path, sizeof(rel_path), "%s", name);
+            int written = snprintf(rel_path, sizeof(rel_path), "%s", name);
+            if (written <= 0 || (size_t)written >= sizeof(rel_path)) {
+                cbm_log_info("pkgmap.walk", "path_cap", "skipped_overlong_path");
+                continue;
+            }
         }
         struct stat st;
         if (pkgmap_safe_stat(abs_path, &st) != 0) {
@@ -1276,6 +1346,21 @@ static void pkgmap_free_entry(const char *key, void *value, void *userdata) {
     (void)userdata;
     free((void *)key);
     free(value);
+}
+
+/* Merge order must not depend on discovery order or filesystem enumeration.
+ * Package names can legitimately appear in more than one workspace manifest;
+ * the map keeps one deterministic winner, choosing the lexicographically first
+ * resolved entry path. This makes sequential and parallel indexing agree and
+ * keeps repeated runs reproducible across filesystems. */
+static int pkg_entry_ptr_cmp(const void *pa, const void *pb) {
+    const cbm_pkg_entry_t *a = *(const cbm_pkg_entry_t *const *)pa;
+    const cbm_pkg_entry_t *b = *(const cbm_pkg_entry_t *const *)pb;
+    int name_cmp = strcmp(a->pkg_name ? a->pkg_name : "", b->pkg_name ? b->pkg_name : "");
+    if (name_cmp != 0) {
+        return name_cmp;
+    }
+    return strcmp(a->entry_rel ? a->entry_rel : "", b->entry_rel ? b->entry_rel : "");
 }
 
 void cbm_pkgmap_free(CBMHashTable *pkgmap) {

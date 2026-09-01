@@ -3681,6 +3681,62 @@ TEST(pipeline_existing_artifact_refreshes_after_default_forced_full_reindex) {
     PASS();
 }
 
+/* An explicit persistence request must also be honored by the incremental
+ * route. The full route exports in pipeline.c, but the incremental route has
+ * its own generation publisher; this test prevents the live DB and the shared
+ * .memory-for-ai artifact from diverging after a body-only edit. */
+TEST(pipeline_incremental_persistence_refreshes_artifact) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_artifact_incremental_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    char source_path[512];
+    char db_path[512];
+    char imported_path[512];
+    snprintf(source_path, sizeof(source_path), "%s/generation.py", tmp);
+    snprintf(db_path, sizeof(db_path), "%s/generation.db", tmp);
+    snprintf(imported_path, sizeof(imported_path), "%s/imported.db", tmp);
+    ASSERT_EQ(th_write_file(source_path,
+                            "def ArtifactPersistenceGeneration():\n"
+                            "    return 1\n"),
+              0);
+    ASSERT_EQ(pipeline_test_set_mtime(source_path, 1700000200, 100000000L), 0);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    char project[256];
+    snprintf(project, sizeof(project), "%s", cbm_pipeline_project_name(baseline));
+    cbm_pipeline_free(baseline);
+    ASSERT_FALSE(cbm_artifact_exists(tmp));
+
+    ASSERT_EQ(th_write_file(source_path,
+                            "def ArtifactPersistenceGeneration():\n"
+                            "    return 2  # incremental edit\n"),
+              0);
+    ASSERT_EQ(pipeline_test_set_mtime(source_path, 1700000210, 100000000L), 0);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    cbm_pipeline_t *incremental = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(incremental);
+    cbm_pipeline_set_persistence(incremental, true);
+    int rc = cbm_pipeline_run(incremental);
+    cbm_pipeline_free(incremental);
+    ASSERT_EQ(rc, 0);
+    ASSERT_TRUE(cbm_artifact_exists(tmp));
+
+    ASSERT_EQ(cbm_artifact_import(tmp, imported_path), 0);
+    cbm_store_t *imported = cbm_store_open_path(imported_path);
+    ASSERT_NOT_NULL(imported);
+    ASSERT_EQ(named_node_count(imported, project, "ArtifactPersistenceGeneration"), 1);
+    cbm_store_close(imported);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    th_rmtree(tmp);
+    PASS();
+}
+
 /* Cancellation observed after predump must be an explicit preserved abort,
  * never a false success. The retry then publishes the edited generation. */
 TEST(pipeline_full_cancel_after_predump_preserves_previous_generation) {
@@ -9675,6 +9731,47 @@ static const char *pkg_entries_entry_for(const cbm_pkg_entries_t *e, const char 
     return NULL;
 }
 
+static void pkg_entries_add_test(cbm_pkg_entries_t *entries, const char *name, const char *entry_rel) {
+    entries->items = (cbm_pkg_entry_t *)calloc(1U, sizeof(*entries->items));
+    entries->cap = entries->items ? 1 : 0;
+    entries->count = entries->items ? 1 : 0;
+    if (entries->items) {
+        entries->items[0].pkg_name = strdup(name);
+        entries->items[0].entry_rel = strdup(entry_rel);
+    }
+}
+
+/* Package manifests are collected by parallel workers and by a repository
+ * walk. Duplicate package names must resolve identically regardless of which
+ * worker saw the manifest first or how the filesystem enumerated directories. */
+TEST(pkgmap_duplicate_names_are_order_independent) {
+    cbm_pkg_entries_t first[2];
+    cbm_pkg_entries_t second[2];
+    cbm_pkg_entries_init(&first[0]);
+    cbm_pkg_entries_init(&first[1]);
+    cbm_pkg_entries_init(&second[0]);
+    cbm_pkg_entries_init(&second[1]);
+    pkg_entries_add_test(&first[0], "shared", "z/src");
+    pkg_entries_add_test(&first[1], "shared", "a/src");
+    pkg_entries_add_test(&second[0], "shared", "a/src");
+    pkg_entries_add_test(&second[1], "shared", "z/src");
+
+    CBMHashTable *map_a = cbm_pkgmap_build(first, 2, "project");
+    CBMHashTable *map_b = cbm_pkgmap_build(second, 2, "project");
+    ASSERT_NOT_NULL(map_a);
+    ASSERT_NOT_NULL(map_b);
+    ASSERT_STR_EQ((const char *)cbm_ht_get(map_a, "shared"), "project.a.src");
+    ASSERT_STR_EQ((const char *)cbm_ht_get(map_b, "shared"), "project.a.src");
+
+    cbm_pkgmap_free(map_a);
+    cbm_pkgmap_free(map_b);
+    cbm_pkg_entries_free(&first[0]);
+    cbm_pkg_entries_free(&first[1]);
+    cbm_pkg_entries_free(&second[0]);
+    cbm_pkg_entries_free(&second[1]);
+    PASS();
+}
+
 /* ── SwiftPM Package.swift manifest resolution (issue #551 item 1) ──
  *
  * parse_package_swift is a literal pattern-extractor (mirrors
@@ -12946,6 +13043,7 @@ SUITE(pipeline) {
     RUN_TEST(envscan_skips_ignored_dirs);
     RUN_TEST(envscan_non_url_values_skipped);
     /* SwiftPM Package.swift manifest resolution (issue #551 item 1) */
+    RUN_TEST(pkgmap_duplicate_names_are_order_independent);
     RUN_TEST(pkgmap_swift_targets_registers_module);
     RUN_TEST(pkgmap_swift_products_do_not_register_alias);
     RUN_TEST(pkgmap_swift_target_name_immediately_before_close_paren);
@@ -13099,6 +13197,7 @@ SUITE(pipeline_semantic_manifest_repro) {
     RUN_TEST(pipeline_tsconfig_mutation_before_publication_preserves_previous_generation);
     RUN_TEST(pipeline_exact_inputs_migrate_coverage_metadata_and_index_mode);
     RUN_TEST(pipeline_existing_artifact_refreshes_after_default_forced_full_reindex);
+    RUN_TEST(pipeline_incremental_persistence_refreshes_artifact);
     RUN_TEST(pipeline_full_cancel_after_predump_preserves_previous_generation);
     RUN_TEST(pipeline_full_cancel_after_destination_prepare_preserves_previous_generation);
     RUN_TEST(pipeline_full_persist_failure_after_stage_dump_preserves_previous_generation);

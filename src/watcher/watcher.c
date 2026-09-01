@@ -619,26 +619,14 @@ static uint64_t sig_fold_path_stat(uint64_t h, const char *root_path, const char
     return h;
 }
 
-static int non_git_file_compare(const void *left, const void *right) {
-    const cbm_file_info_t *a = left;
-    const cbm_file_info_t *b = right;
-    if (!a->rel_path && !b->rel_path) {
-        return 0;
-    }
-    if (!a->rel_path) {
-        return -1;
-    }
-    if (!b->rel_path) {
-        return 1;
-    }
-    return strcmp(a->rel_path, b->rel_path);
-}
-
 /* Snapshot files using the indexer's discovery policy. This keeps the watcher
  * from reindexing for ignored/generated files while still detecting additions,
- * deletions, renames, and in-place edits in a plain directory. */
+ * deletions, renames, and in-place edits in a plain directory. The signature
+ * accumulator is order-independent, so it does not need an O(n log n) sort of
+ * the discovery result; directory enumeration order can vary across filesystems
+ * without causing a false change. */
 static bool non_git_filesystem_signature(const char *root_path, uint64_t *signature_out,
-                                         int *file_count_out) {
+                                        int *file_count_out) {
     if (!root_path || !signature_out || !file_count_out) {
         return false;
     }
@@ -655,11 +643,8 @@ static bool non_git_filesystem_signature(const char *root_path, uint64_t *signat
         cbm_discover_free(files, file_count);
         return false;
     }
-    if (file_count > 1) {
-        qsort(files, (size_t)file_count, sizeof(*files), non_git_file_compare);
-    }
-
-    uint64_t h = SIG_FNV_OFFSET;
+    uint64_t sum = 0;
+    uint64_t xorsum = 0;
     for (int i = 0; i < file_count; i++) {
         if (!files[i].rel_path || !files[i].path) {
             cbm_discover_free(files, file_count);
@@ -670,11 +655,19 @@ static bool non_git_filesystem_signature(const char *root_path, uint64_t *signat
             cbm_discover_free(files, file_count);
             return false;
         }
-        h = sig_fold(h, files[i].rel_path, strlen(files[i].rel_path) + 1U);
-        h = sig_fold(h, &info.size, sizeof(info.size));
-        h = sig_fold(h, &info.mtime_ns, sizeof(info.mtime_ns));
+        uint64_t record = SIG_FNV_OFFSET;
+        record = sig_fold(record, files[i].rel_path, strlen(files[i].rel_path) + 1U);
+        record = sig_fold(record, &info.size, sizeof(info.size));
+        record = sig_fold(record, &info.mtime_ns, sizeof(info.mtime_ns));
+        /* Combining both a sum and XOR keeps the set fingerprint insensitive
+         * to traversal order while making accidental cancellation for two
+         * records with the same hash impractical. */
+        sum += record * SIG_FNV_PRIME;
+        xorsum ^= record;
     }
     cbm_discover_free(files, file_count);
+    uint64_t h = sum ^ ((xorsum << 17U) | (xorsum >> 47U)) ^
+                 ((uint64_t)file_count * SIG_FNV_PRIME);
     *signature_out = file_count > 0 ? (h ? h : 1U) : 0;
     *file_count_out = file_count;
     return true;
