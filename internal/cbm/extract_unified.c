@@ -2021,8 +2021,10 @@ static TSNode nasm_preceding_label(TSNode node) {
  * real lexical boundary and deliberately bypass this recovery path. */
 static TSNode objectscript_routine_statement_tag(TSNode statement) {
     TSNode tag_statement = cbm_find_child_by_kind(statement, "tag_statement");
-    return ts_node_is_null(tag_statement) ? (TSNode){0}
-                                          : cbm_find_child_by_kind(tag_statement, "tag");
+    if (ts_node_is_null(tag_statement)) {
+        return (TSNode){0};
+    }
+    return cbm_find_child_by_kind(tag_statement, "tag");
 }
 
 static TSNode objectscript_routine_preceding_tag(TSNode node) {

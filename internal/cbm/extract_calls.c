@@ -2918,8 +2918,10 @@ static const char *resolve_objectscript_callee(CBMExtractCtx *ctx, TSNode node, 
     if ((!callee || !callee[0]) && strcmp(kind, "relative_dot_method") == 0 &&
         state->enclosing_class_qn && state->enclosing_class_qn[0]) {
         TSNode oref = cbm_find_child_by_kind(node, "oref_method");
-        TSNode method_name =
-            ts_node_is_null(oref) ? (TSNode){0} : cbm_find_child_by_kind(oref, "method_name");
+        TSNode method_name = (TSNode){0};
+        if (!ts_node_is_null(oref)) {
+            method_name = cbm_find_child_by_kind(oref, "method_name");
+        }
         TSNode identifier =
             !ts_node_is_null(method_name) && ts_node_named_child_count(method_name) > 0
                 ? ts_node_named_child(method_name, 0)
@@ -2965,8 +2967,10 @@ static TSNode objectscript_call_args(TSNode node) {
      * direct child of macro. Keep them as call arguments/data-flow inputs; the
      * macro name is an unnamed token and is handled separately. */
     TSNode macro_function = cbm_find_child_by_kind(node, "macro_function");
-    return ts_node_is_null(macro_function) ? (TSNode){0}
-                                           : cbm_find_child_by_kind(macro_function, "method_args");
+    if (ts_node_is_null(macro_function)) {
+        return (TSNode){0};
+    }
+    return cbm_find_child_by_kind(macro_function, "method_args");
 }
 
 static bool node_has_token(TSNode node, const char *token) {
@@ -3161,7 +3165,10 @@ static TSNode objectscript_callee_expr(TSNode node) {
     }
     if (strcmp(kind, "method_call") == 0 || strcmp(kind, "relative_dot_method") == 0) {
         TSNode oref = cbm_find_child_by_kind(node, "oref_method");
-        return ts_node_is_null(oref) ? (TSNode){0} : cbm_find_child_by_kind(oref, "method_name");
+        if (ts_node_is_null(oref)) {
+            return (TSNode){0};
+        }
+        return cbm_find_child_by_kind(oref, "method_name");
     }
     if (strcmp(kind, "extrinsic_function") == 0 || strcmp(kind, "routine_tag_call") == 0) {
         return cbm_find_child_by_kind(node, "line_ref");

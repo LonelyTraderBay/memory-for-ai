@@ -3103,9 +3103,10 @@ static char *resolve_param_type_text(CBMArena *a, TSNode param, const char *sour
     if ((lang == CBM_LANG_OBJECTSCRIPT_UDL || lang == CBM_LANG_OBJECTSCRIPT_ROUTINE) &&
         (strcmp(pk, "argument") == 0 || strcmp(pk, "tag_parameter") == 0)) {
         TSNode return_type = cbm_find_child_by_kind(param, "return_type");
-        TSNode typename = ts_node_is_null(return_type)
-                              ? (TSNode){0}
-                              : cbm_find_child_by_kind(return_type, "typename");
+        TSNode typename = (TSNode){0};
+        if (!ts_node_is_null(return_type)) {
+            typename = cbm_find_child_by_kind(return_type, "typename");
+        }
         return ts_node_is_null(typename) ? NULL : cbm_node_text(a, typename, source);
     }
 

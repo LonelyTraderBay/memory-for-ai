@@ -322,10 +322,10 @@ static int pg_parse_key_value_sections(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_n
             snprintf(section, sizeof(section), "%s", line);
             list_mode = false;
         } else if (line[0] != '#' && line[0] != ';' && line[0] != '\0') {
-            char key[PG_MAX_TOKEN];
-            char value[PG_MAX_TOKEN];
             const char *eq = strchr(line, '=');
             if (eq) {
+                char key[PG_MAX_TOKEN];
+                char value[PG_MAX_TOKEN];
                 size_t klen = (size_t)(eq - line);
                 if (klen >= sizeof(key)) {
                     klen = sizeof(key) - SKIP_ONE;
