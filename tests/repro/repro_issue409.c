@@ -13,19 +13,12 @@
  *   was blocked rather than being non-blocking augmented — the exact symptom
  *   of #214 which was supposed to be fixed.
  *
- * Expected (correct) behaviour after cbm_upsert_claude_hooks +
- * cbm_install_hook_gate_script:
- *   1. The gate script written to
- *      <home>/.claude/hooks/cbm-code-discovery-gate
- *      MUST contain "hook-augment" (delegating to the compiled augmenter).
- *   2. The gate script MUST NOT contain "PPID" (the $PPID-keyed blocking
- *      logic) or "exit 2" (the blocking exit code).
- *   3. The settings.json PreToolUse command must reference
- *      "cbm-code-discovery-gate" (the shim), not an inline blocking script.
- *
- * Actual (buggy) behaviour (if bug is present):
- *   The gate script still contains $PPID and exit 2; the assertions below
- *   that check for absence of "PPID" and "exit 2" FAIL -> RED.
+ * Current ownership contract:
+ *   The installer may replace a missing file, its current bytes, or an exact
+ *   byte-for-byte released version. An arbitrary existing script is treated as
+ *   user-owned and must be preserved, even when its content is an old blocking
+ *   implementation. This prevents an upgrade from silently overwriting a
+ *   user's hook or deleting their security policy.
  *
  * Upgrade scenario tested here (NOT covered by existing tests):
  *   This test simulates an upgrade from a pre-v0.7.0 install by:
@@ -34,12 +27,12 @@
  *        a pre-v0.7.0 install.
  *     b) Pre-seeding settings.json with a stale CMM hook entry using the
  *        old "Grep|Glob|Read" matcher and an old command string.
- *   Then running both cbm_upsert_claude_hooks + cbm_install_hook_gate_script
- *   (the actual install/update code path) and asserting the CORRECT result.
+ *   Then running cbm_install_hook_gate_script and asserting that the installer
+ *   fails closed without changing the foreign script. Exact released-script
+ *   migration is covered by the CLI unit tests.
  *
- *   This is the critical gap: existing tests call cbm_install_hook_gate_script
- *   into an EMPTY directory (no pre-existing script).  The upgrade path
- *   (old script on disk) was not verified to be overwritten correctly.
+ *   This guards the security boundary around the upgrade path: an old-looking
+ *   but non-owned script must not be guessed as installer-owned.
  *
  * Relationship to existing tests:
  *   cli_hook_gate_script_no_predictable_tmp_issue384 (test_cli.c:2196):
@@ -49,11 +42,9 @@
  *     Tests cbm_upsert_claude_hooks in isolation on fresh settings.json.
  *     Does NOT test the integrated (both calls) upgrade path.
  *
- * NOTE (2026-06-26): Code review of the current codebase shows that
- * cbm_install_hook_gate_script already uses fopen(path, "w") (truncate)
- * and writes the non-blocking shim. If this test is GREEN it means the bug
- * is fixed on main and the issue can be closed (the test then acts as a
- * permanent regression guard for this upgrade scenario).
+ * NOTE: the original reproduction expected arbitrary legacy bytes to be
+ * overwritten. That expectation conflicts with the ownership-safe installer
+ * contract and was corrected here so the repro tests the real safety rule.
  */
 
 #include <foundation/compat.h>
@@ -106,7 +97,7 @@ static int rp409_mkdirp(const char *path) {
 /* ── Test ──────────────────────────────────────────────────────────── */
 
 /*
- * repro_issue409_install_wires_hook_augment_not_blocking_gate
+ * repro_issue409_install_preserves_foreign_blocking_gate
  *
  * Simulates an upgrade from a pre-v0.7.0 install:
  *   - The hooks dir already contains the OLD blocking gate script
@@ -114,27 +105,17 @@ static int rp409_mkdirp(const char *path) {
  *   - settings.json already contains a stale CMM hook with the old matcher
  *     "Grep|Glob|Read" and an old inline command.
  *
- * After calling cbm_upsert_claude_hooks + cbm_install_hook_gate_script
- * (the actual install/update flow), asserts that:
- *   1. The gate script is OVERWRITTEN with the non-blocking shim
- *      (contains "hook-augment", does NOT contain "PPID" or "exit 2").
- *   2. settings.json PreToolUse command references "cbm-code-discovery-gate"
- *      (the shim path), not inline blocking code.
- *   3. settings.json uses the current non-blocking matcher "Grep|Glob"
- *      (not the old "Grep|Glob|Read" that was silently upgrading Read-gating
- *      behaviour).
+ * After calling cbm_install_hook_gate_script, asserts that:
+ *   1. Installation is refused because the existing bytes are foreign.
+ *   2. The old gate script remains byte-for-byte unchanged.
+ *   3. settings.json remains untouched because script installation failed.
  *
- * RED if:
- *   - The gate script still contains "PPID"  (old blocking logic not cleared)
- *   - The gate script still contains "exit 2" (old blocking exit not cleared)
- *   - The gate script does NOT contain "hook-augment" (shim not written)
- *   - settings.json does NOT contain "cbm-code-discovery-gate" (wrong command)
+ * RED if the installer overwrites the foreign file, reports success, or
+ * partially updates settings after refusing the script.
  *
- * Oracle used: cbm_upsert_claude_hooks(settings_path) +
- *              cbm_install_hook_gate_script(home, binary_path)
- * (the same two calls made by install_claude_code_config in cli.c).
+ * Oracle used: cbm_install_hook_gate_script(home, binary_path).
  */
-TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate) {
+TEST(repro_issue409_install_preserves_foreign_blocking_gate) {
     /* Create a temp HOME directory tree that simulates a pre-v0.7.0 install. */
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/rp409-XXXXXX");
@@ -153,7 +134,7 @@ TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate) {
     char script_path[512];
     snprintf(script_path, sizeof(script_path),
              "%s/cbm-code-discovery-gate", hooks_dir);
-    rp409_write_file(script_path,
+    static const char old_script[] =
         "#!/bin/bash\n"
         "# Gate hook: nudges Claude toward memory-for-ai for code discovery.\n"
         "# First Grep/Glob/Read per session -> block. Subsequent -> allow.\n"
@@ -162,55 +143,35 @@ TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate) {
         "if [ -f \"$GATE\" ]; then exit 0; fi\n"
         "touch \"$GATE\"\n"
         "echo 'BLOCKED: use memory-for-ai' >&2\n"
-        "exit 2\n");
+        "exit 2\n";
+    ASSERT_EQ(rp409_write_file(script_path, old_script), 0);
 
     /* Pre-seed settings.json with a stale CMM hook entry (old matcher). */
     char settings_path[512];
     snprintf(settings_path, sizeof(settings_path),
              "%s/.claude/settings.json", tmpdir);
-    rp409_write_file(settings_path,
+    static const char old_settings[] =
         "{\"hooks\":{\"PreToolUse\":["
         "{\"matcher\":\"Grep|Glob|Read\","
         "\"hooks\":[{\"type\":\"command\","
-        "\"command\":\"~/.claude/hooks/cbm-code-discovery-gate\"}]}]}}");
+        "\"command\":\"~/.claude/hooks/cbm-code-discovery-gate\"}]}]}}";
+    ASSERT_EQ(rp409_write_file(settings_path, old_settings), 0);
 
-    /* Run the actual install/update hook wiring (same two calls as
-     * install_claude_code_config in src/cli/cli.c lines 3045-3046). */
-    int rc = cbm_upsert_claude_hooks(settings_path);
-    ASSERT_EQ(rc, 0);
-    cbm_install_hook_gate_script(tmpdir, "/usr/local/bin/memory-for-ai");
+    /* An arbitrary pre-existing script is not proof of installer ownership.
+     * The production installer must refuse it before registering a new hook. */
+    ASSERT_TRUE(!cbm_install_hook_gate_script(tmpdir, "/usr/local/bin/memory-for-ai"));
 
-    /* ── Assert the gate script was OVERWRITTEN with the non-blocking shim ── */
+    /* ── Assert the foreign gate script was preserved byte-for-byte ── */
     const char *script_data = rp409_read_file(script_path);
     ASSERT_NOT_NULL(script_data);
+    ASSERT_EQ(strcmp(script_data, old_script), 0);
+    ASSERT(strstr(script_data, "PPID") != NULL);
+    ASSERT(strstr(script_data, "exit 2") != NULL);
 
-    /* MUST NOT contain $PPID: the old blocking gate used
-     * /tmp/cbm-code-discovery-gate-$PPID as a per-invocation state file.
-     * If present, the blocking gate was not overwritten -> RED for #409. */
-    ASSERT(strstr(script_data, "PPID") == NULL);
-
-    /* MUST NOT contain "exit 2": the old gate blocked tool calls with exit 2.
-     * If present, the installer still emits the blocking exit code -> RED. */
-    ASSERT(strstr(script_data, "exit 2") == NULL);
-
-    /* MUST contain "hook-augment": the non-blocking shim delegates to the
-     * compiled augmenter via `"$BIN" hook-augment 2>/dev/null`.
-     * If absent, install did not write the correct shim -> RED for #409. */
-    ASSERT(strstr(script_data, "hook-augment") != NULL);
-
-    /* ── Assert settings.json was updated to the correct non-blocking config ── */
+    /* A failed script install must not cause a partial settings update. */
     const char *settings_data = rp409_read_file(settings_path);
     ASSERT_NOT_NULL(settings_data);
-
-    /* The PreToolUse command must reference the shim (by its well-known name),
-     * not an inline blocking script. */
-    ASSERT(strstr(settings_data, "cbm-code-discovery-gate") != NULL);
-
-    /* The old "Grep|Glob|Read" matcher (which gated Read calls, breaking
-     * the read-before-edit invariant per issue #362) must have been replaced
-     * with the current "Grep|Glob" matcher. */
-    ASSERT(strstr(settings_data, "\"Grep|Glob\"") != NULL);
-    ASSERT(strstr(settings_data, "Glob|Read") == NULL);
+    ASSERT_EQ(strcmp(settings_data, old_settings), 0);
 
     th_rmtree(tmpdir);
     PASS();
@@ -218,5 +179,5 @@ TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate) {
 
 /* ── Suite ──────────────────────────────────────────────────────────── */
 SUITE(repro_issue409) {
-    RUN_TEST(repro_issue409_install_wires_hook_augment_not_blocking_gate);
+    RUN_TEST(repro_issue409_install_preserves_foreign_blocking_gate);
 }

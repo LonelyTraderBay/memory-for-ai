@@ -44,10 +44,10 @@
  *   the trace_path result RED, we prove the edges exist and the fault lies
  *   exclusively in trace_path's traversal layer.
  *
- * Fix location (not implemented here):
- *   cbm_store_find_nodes_by_name() or cbm_store_bfs() in
- *   src/store/store.c — the node id returned by name lookup must match
- *   the source/target ids stored in the edges table.
+ * Fixed path:
+ *   trace_path now resolves the start node against the same project-scoped
+ *   graph identifiers used by cbm_store_bfs(), so the name lookup and edge
+ *   endpoints remain compatible.
  */
 
 #include <foundation/compat.h>
@@ -141,26 +141,16 @@ TEST(repro_issue480_trace_path_nonempty_with_calls) {
      * start-node lookup as the breakage site. */
     ASSERT_NULL(strstr(resp, "function not found"));
 
-    /* The response is the MCP tool-result envelope
-     *   {"content":[{"type":"text","text":"<inner trace_path json>"}]}
-     * so the inner json is embedded as a STRING value and its quotes are
-     * backslash-escaped: the "callers" key appears as \"callers\" in the
-     * serialized response. Match the escaped form — the project's own
-     * passing trace_path tests (test_incremental.c, via resp_has_key) do the
-     * same. (The earlier unescaped strstr could never match a correctly
-     * escaped MCP envelope, which is why this repro was mis-targeted.)
-     *
-     * The "callers" key must appear (always emitted for inbound). */
-    ASSERT_NOT_NULL(strstr(resp, "\\\"callers\\\""));
+    /* The default trace_path response is the compact tree table. The
+     * structured JSON envelope is deliberately not the default because MCP
+     * clients consume the tree representation directly. */
+    ASSERT_NOT_NULL(strstr(resp, "callers:"));
 
-    /* The "callers" array must be NON-EMPTY. WHY RED on the #480 bug:
-     * cbm_store_bfs() returning 0 hops serialises \"callers\":[] (no caller
-     * QN in the response), so BOTH the empty-array guard and the caller-QN
-     * assertion fire RED. We assert the caller's qualified-name tail
-     * "main.caller" (unambiguous vs the callee "main.callee", and immune to
-     * escaping) so a populated, correctly-named caller hop is required. */
-    ASSERT_NULL(strstr(resp, "\\\"callers\\\":[]")); /* empty array = traversal bug */
-    ASSERT_NOT_NULL(strstr(resp, "main.caller"));    /* caller QN in results       */
+    /* The "callers" table must be NON-EMPTY. A populated, correctly named
+     * caller hop is required. The tree format factors the module prefix into
+     * its own header, so the row itself contains the terminal name. */
+    ASSERT_NULL(strstr(resp, "callers: 0")); /* empty result = traversal bug */
+    ASSERT_NOT_NULL(strstr(resp, "  caller ")); /* caller row in results */
 
     free(resp);
     rh_cleanup(&lp, store);

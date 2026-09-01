@@ -121,6 +121,10 @@ static const RFile server_files[] = {
 };
 enum { N_SERVER_FILES = (int)(sizeof(server_files) / sizeof(server_files[0])) };
 
+static bool cr536_setup(RProj *client, const char *client_py, RProj *server,
+                        const char *server_py, char *shared_cache, size_t shared_cache_sz);
+static void cr536_cleanup(RProj *client, RProj *server, const char *shared_cache);
+
 /* ── Reproduction test ───────────────────────────────────────────────────── */
 
 /*
@@ -140,11 +144,14 @@ enum { N_SERVER_FILES = (int)(sizeof(server_files) / sizeof(server_files[0])) };
  * independently; step 3 fails fast if the server was not indexed correctly.
  */
 TEST(repro_issue523_crossrepo_http_calls_edge) {
-    /* ── Index client service ─────────────────────────────────── */
-    RProj client;
-    cbm_store_t *client_store = rh_index_files(&client, client_files, N_CLIENT_FILES);
-    ASSERT_NOT_NULL(client_store);
+    RProj client, server;
+    char shared_cache[256];
+    bool setup = cr536_setup(&client, client_files[0].content, &server,
+                             server_files[0].content, shared_cache, sizeof(shared_cache));
+    ASSERT_TRUE(setup);
 
+    cbm_store_t *client_store = cbm_store_open_path_query(client.dbpath);
+    ASSERT_NOT_NULL(client_store);
     int client_http = rh_count_edges(client_store, client.project, "HTTP_CALLS");
     fprintf(stderr,
             "  [523] client HTTP_CALLS=%d  "
@@ -152,11 +159,9 @@ TEST(repro_issue523_crossrepo_http_calls_edge) {
             client_http);
 
     cbm_store_close(client_store);
-    client_store = NULL; /* re-opened inside cbm_cross_repo_match via cache dir */
+    client_store = NULL;
 
-    /* ── Index server service ─────────────────────────────────── */
-    RProj server;
-    cbm_store_t *server_store = rh_index_files(&server, server_files, N_SERVER_FILES);
+    cbm_store_t *server_store = cbm_store_open_path_query(server.dbpath);
     ASSERT_NOT_NULL(server_store);
 
     int server_routes = rh_count_label(server_store, server.project, "Route");
@@ -166,8 +171,7 @@ TEST(repro_issue523_crossrepo_http_calls_edge) {
      * broken, not the cross-repo linker.  Fail fast with a clear message. */
     if (server_routes < 1) {
         cbm_store_close(server_store);
-        rh_cleanup(&client, NULL);
-        rh_cleanup(&server, server_store);
+        cr536_cleanup(&client, &server, shared_cache);
         FAIL("server route extraction broken — test environment issue, not issue #523");
     }
 
@@ -193,8 +197,7 @@ TEST(repro_issue523_crossrepo_http_calls_edge) {
             result.http_edges);
 
     /* ── Cleanup ──────────────────────────────────────────────── */
-    rh_cleanup(&client, NULL);
-    rh_cleanup(&server, NULL);
+    cr536_cleanup(&client, &server, shared_cache);
 
     /*
      * WHY RED: result.http_edges == 0 on current code.
@@ -244,18 +247,29 @@ TEST(repro_issue523_crossrepo_http_calls_edge) {
  * PRECONDITIONS (client HTTP_CALLS edge, server Route node) are missing, so a
  * broken fixture fails RED instead of vacuously passing. */
 static bool cr536_setup(RProj *client, const char *client_py, RProj *server,
-                        const char *server_py) {
+                        const char *server_py, char *shared_cache, size_t shared_cache_sz) {
     memset(client, 0, sizeof(*client));
     memset(server, 0, sizeof(*server));
-    cbm_store_t *cs = rh_index(client, "client/orders.py", client_py);
+    snprintf(shared_cache, shared_cache_sz, "/tmp/cbm_repro_cross_XXXXXX");
+    if (!cbm_mkdtemp(shared_cache)) {
+        return false;
+    }
+    rh_to_fwd_slashes(shared_cache);
+
+    cbm_store_t *cs = rh_index_files_in_cache(
+        client, &(RFile){"client/orders.py", client_py}, 1, shared_cache);
     if (!cs) {
+        th_rmtree(shared_cache);
         return false;
     }
     int client_http = rh_count_edges(cs, client->project, "HTTP_CALLS");
     cbm_store_close(cs);
 
-    cbm_store_t *ss = rh_index(server, "server/app.py", server_py);
+    cbm_store_t *ss = rh_index_files_in_cache(
+        server, &(RFile){"server/app.py", server_py}, 1, shared_cache);
     if (!ss) {
+        rh_cleanup(client, NULL);
+        th_rmtree(shared_cache);
         return false;
     }
     int server_routes = rh_count_label(ss, server->project, "Route");
@@ -264,6 +278,15 @@ static bool cr536_setup(RProj *client, const char *client_py, RProj *server,
     fprintf(stderr, "  [523] precondition: client HTTP_CALLS=%d server Routes=%d (both >=1)\n",
             client_http, server_routes);
     return client_http >= 1 && server_routes >= 1;
+}
+
+/* Both project DBs must be visible through the same configured cache directory
+ * for the cross-repository matcher. Tear down in reverse registration order so
+ * the harness restores MFA_CACHE_DIR to the caller's original value. */
+static void cr536_cleanup(RProj *client, RProj *server, const char *shared_cache) {
+    rh_cleanup(server, NULL);
+    rh_cleanup(client, NULL);
+    th_rmtree(shared_cache);
 }
 
 /* Count CROSS_HTTP_CALLS rows in a project DB (re-opened from the cache dir,
@@ -286,6 +309,7 @@ static int cr536_count_cross(RProj *proj) {
  */
 TEST(repro_issue523_scheme_stripped_url_match) {
     RProj client, server;
+    char shared_cache[256];
     bool ok = cr536_setup(&client,
                           "import requests\n"
                           "\n"
@@ -302,10 +326,10 @@ TEST(repro_issue523_scheme_stripped_url_match) {
                           "@app.get(\"/v2/orders\")\n"
                           "def list_orders():\n"
                           "    \"\"\"Return all orders.\"\"\"\n"
-                          "    return jsonify({\"orders\": []})\n");
+                          "    return jsonify({\"orders\": []})\n",
+                          shared_cache, sizeof(shared_cache));
     if (!ok) {
-        rh_cleanup(&client, NULL);
-        rh_cleanup(&server, NULL);
+        cr536_cleanup(&client, &server, shared_cache);
         FAIL("fixture precondition failed (client HTTP_CALLS / server Route missing)");
     }
 
@@ -313,8 +337,7 @@ TEST(repro_issue523_scheme_stripped_url_match) {
     cbm_cross_repo_result_t r = cbm_cross_repo_match(client.project, &tgt, 1);
     fprintf(stderr, "  [523] full-URL url_path: http_edges=%d (expected>=1)\n", r.http_edges);
 
-    rh_cleanup(&client, NULL);
-    rh_cleanup(&server, NULL);
+    cr536_cleanup(&client, &server, shared_cache);
     ASSERT_GTE(r.http_edges, 1);
     PASS();
 }
@@ -326,6 +349,7 @@ TEST(repro_issue523_scheme_stripped_url_match) {
  */
 TEST(repro_issue523_template_fuzzy_match) {
     RProj client, server;
+    char shared_cache[256];
     bool ok = cr536_setup(&client,
                           "import requests\n"
                           "\n"
@@ -342,10 +366,10 @@ TEST(repro_issue523_template_fuzzy_match) {
                           "@app.get(\"/v2/orders/{order_id}\")\n"
                           "def get_order(order_id):\n"
                           "    \"\"\"Return one order by id.\"\"\"\n"
-                          "    return jsonify({\"id\": order_id})\n");
+                          "    return jsonify({\"id\": order_id})\n",
+                          shared_cache, sizeof(shared_cache));
     if (!ok) {
-        rh_cleanup(&client, NULL);
-        rh_cleanup(&server, NULL);
+        cr536_cleanup(&client, &server, shared_cache);
         FAIL("fixture precondition failed (client HTTP_CALLS / server Route missing)");
     }
 
@@ -353,8 +377,7 @@ TEST(repro_issue523_template_fuzzy_match) {
     cbm_cross_repo_result_t r = cbm_cross_repo_match(client.project, &tgt, 1);
     fprintf(stderr, "  [523] concrete-vs-template: http_edges=%d (expected>=1)\n", r.http_edges);
 
-    rh_cleanup(&client, NULL);
-    rh_cleanup(&server, NULL);
+    cr536_cleanup(&client, &server, shared_cache);
     ASSERT_GTE(r.http_edges, 1);
     PASS();
 }
@@ -366,6 +389,7 @@ TEST(repro_issue523_template_fuzzy_match) {
  */
 TEST(repro_issue523_reverse_direction_match) {
     RProj client, server;
+    char shared_cache[256];
     bool ok = cr536_setup(&client,
                           "import requests\n"
                           "\n"
@@ -382,10 +406,10 @@ TEST(repro_issue523_reverse_direction_match) {
                           "@app.get(\"/v2/status\")\n"
                           "def get_status():\n"
                           "    \"\"\"Return service status.\"\"\"\n"
-                          "    return jsonify({\"status\": \"ok\"})\n");
+                          "    return jsonify({\"status\": \"ok\"})\n",
+                          shared_cache, sizeof(shared_cache));
     if (!ok) {
-        rh_cleanup(&client, NULL);
-        rh_cleanup(&server, NULL);
+        cr536_cleanup(&client, &server, shared_cache);
         FAIL("fixture precondition failed (client HTTP_CALLS / server Route missing)");
     }
 
@@ -396,8 +420,7 @@ TEST(repro_issue523_reverse_direction_match) {
     fprintf(stderr, "  [523] provider-side run: http_edges=%d client CROSS_HTTP_CALLS=%d\n",
             r.http_edges, client_cross);
 
-    rh_cleanup(&client, NULL);
-    rh_cleanup(&server, NULL);
+    cr536_cleanup(&client, &server, shared_cache);
     ASSERT_GTE(r.http_edges, 1);
     ASSERT_GTE(client_cross, 1);
     PASS();
@@ -415,6 +438,7 @@ TEST(repro_issue523_reverse_direction_match) {
  */
 TEST(repro_issue523_idempotent_cross_edges) {
     RProj client, server;
+    char shared_cache[256];
     bool ok = cr536_setup(&client,
                           "import requests\n"
                           "\n"
@@ -431,10 +455,10 @@ TEST(repro_issue523_idempotent_cross_edges) {
                           "@app.get(\"/v2/health\")\n"
                           "def get_health():\n"
                           "    \"\"\"Return health.\"\"\"\n"
-                          "    return jsonify({\"health\": \"ok\"})\n");
+                          "    return jsonify({\"health\": \"ok\"})\n",
+                          shared_cache, sizeof(shared_cache));
     if (!ok) {
-        rh_cleanup(&client, NULL);
-        rh_cleanup(&server, NULL);
+        cr536_cleanup(&client, &server, shared_cache);
         FAIL("fixture precondition failed (client HTTP_CALLS / server Route missing)");
     }
 
@@ -462,8 +486,7 @@ TEST(repro_issue523_idempotent_cross_edges) {
             r1.http_edges, client_1, server_1, r2.http_edges, client_2, server_2, r3.http_edges,
             client_3, server_3);
 
-    rh_cleanup(&client, NULL);
-    rh_cleanup(&server, NULL);
+    cr536_cleanup(&client, &server, shared_cache);
 
     ASSERT_EQ(client_1, 1);
     ASSERT_EQ(server_1, 1);

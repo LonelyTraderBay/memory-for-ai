@@ -9082,8 +9082,14 @@ static void install_editor_agent_configs(const cbm_detected_agents_t *agents, co
         char code_user[CLI_BUF_1K];
 #ifdef __APPLE__
         snprintf(code_user, sizeof(code_user), "%s/Library/Application Support/Code/User", home);
+#elif defined(_WIN32)
+        snprintf(code_user, sizeof(code_user), "%s/AppData/Roaming/Code/User", home);
 #else
-        snprintf(code_user, sizeof(code_user), "%s/Code/User", cbm_app_config_dir());
+        /* The install API accepts an explicit home so dry-run and real
+         * installs must resolve the same user-scoped path. Using the process
+         * environment here made synthetic homes, XDG overrides, and profile
+         * installs diverge from cbm_detect_agents(home). */
+        snprintf(code_user, sizeof(code_user), "%s/.config/Code/User", home);
 #endif
         char cp[CLI_BUF_1K];
         snprintf(cp, sizeof(cp), "%s/mcp.json", code_user);
@@ -11319,8 +11325,10 @@ static void uninstall_editor_agents(const cbm_detected_agents_t *agents, const c
         char cp[CLI_BUF_1K];
 #ifdef __APPLE__
         snprintf(code_user, sizeof(code_user), "%s/Library/Application Support/Code/User", home);
+#elif defined(_WIN32)
+        snprintf(code_user, sizeof(code_user), "%s/AppData/Roaming/Code/User", home);
 #else
-        snprintf(code_user, sizeof(code_user), "%s/Code/User", cbm_app_config_dir());
+        snprintf(code_user, sizeof(code_user), "%s/.config/Code/User", home);
 #endif
         snprintf(cp, sizeof(cp), "%s/mcp.json", code_user);
         uninstall_agent_mcp_instr((mcp_uninstall_args_t){"VS Code", cp, NULL}, dry_run,

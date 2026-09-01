@@ -4,16 +4,11 @@
  * Issue: #431 - "VSCode Profiles do not inherit the default mcp.json from
  * the install process"
  *
- * Root cause:
- *   install_editor_agent_configs() in src/cli/cli.c (around line 3217) writes
- *   exactly ONE mcp.json path for VS Code:
- *     macOS  - <home>/Library/Application Support/Code/User/mcp.json
- *     Linux  - <appconfig>/Code/User/mcp.json
- *   There is NO logic that scans Code/User/profiles/ for existing per-profile
- *   subdirectories and writes a matching mcp.json inside each one.
- *   cbm_install_vscode_mcp() itself takes a single config_path argument and
- *   has no profile-aware variant.  The install API does not support profile
- *   paths today.
+ * Fixed path:
+ *   install_editor_agent_configs() resolves the platform-specific Code/User
+ *   directory from the explicit installation home, installs the default
+ *   mcp.json, then scans Code/User/profiles/ and installs the same MCP entry in
+ *   each existing profile directory.
  *
  * Expected (correct) behaviour:
  *   When Code/User/profiles/<id>/ directories exist at install time, the
@@ -24,24 +19,12 @@
  *     Code/User/profiles/5552b383/mcp.json
  *   among its config_files_planned entries.
  *
- * Actual (buggy) behaviour:
- *   Only Code/User/mcp.json appears in the plan.
- *   Code/User/profiles/5552b383/mcp.json is absent.
+ * The regression guard below verifies that both the default and per-profile
+ * paths are present in the dry-run plan.
  *
- * Why RED on current code:
- *   The fixture creates the VSCode detection directory
- *     <home>/Library/Application Support/Code/User
- *   and also a profile subdirectory
- *     <home>/Library/Application Support/Code/User/profiles/5552b383/
- *   cbm_build_install_plan_json() runs the real install logic in dry-run mode.
- *   The assertion checks that the profile path appears in the JSON plan.
- *   On current code it does NOT appear, so ASSERT fires RED.
- *
- * Fix location (not implemented here):
- *   src/cli/cli.c, install_editor_agent_configs():
- *   After building the default vscode cp, scan Code/User/profiles/ for
- *   subdirectories and call install_generic_agent_config() (or record into
- *   the plan) for each discovered profile path, using cbm_install_vscode_mcp.
+ * The fixture uses a synthetic home and therefore also protects the explicit
+ * path resolution used by the real installer; a global machine config must not
+ * leak into the plan.
  */
 
 #include <foundation/compat.h>
@@ -131,10 +114,8 @@ TEST(repro_issue431_vscode_profile_inherits_mcp_json) {
     ASSERT(strstr(plan_json, "vscode") != NULL);
 
     /*
-     * RED assertion: the per-profile mcp.json path must appear in
-     * config_files_planned.  On buggy code ONLY the default
-     * "Code/User/mcp.json" is listed and "profiles/5552b383/mcp.json"
-     * is absent, so this ASSERT fires RED.
+     * The per-profile mcp.json path must appear in config_files_planned along
+     * with the default VS Code path.
      */
     int profile_path_found = (strstr(plan_json, profile_mcp_rel) != NULL);
 

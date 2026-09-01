@@ -33,6 +33,9 @@ typedef struct {
     char tmpdir[256];
     char cachedir[256];
     char dbpath[512];
+    char prior_cache_dir[512];
+    bool had_prior_cache_dir;
+    bool owns_cachedir;
     char *project;
     cbm_mcp_server_t *srv;
 } RProj;
@@ -60,12 +63,16 @@ static inline cbm_store_t *rh_open_indexed(RProj *lp) {
         if (!cbm_mkdtemp(lp->cachedir))
             return NULL;
         rh_to_fwd_slashes(lp->cachedir);
+        lp->owns_cachedir = true;
     }
     snprintf(lp->dbpath, sizeof(lp->dbpath), "%s/%s.db", lp->cachedir, lp->project);
     unlink(lp->dbpath);
 
     const char *prior_cache_dir = getenv("MFA_CACHE_DIR");
-    char *saved_cache_dir = prior_cache_dir ? cbm_strdup(prior_cache_dir) : NULL;
+    lp->had_prior_cache_dir = prior_cache_dir != NULL;
+    if (prior_cache_dir) {
+        snprintf(lp->prior_cache_dir, sizeof(lp->prior_cache_dir), "%s", prior_cache_dir);
+    }
     cbm_setenv("MFA_CACHE_DIR", lp->cachedir, 1);
 
     cbm_store_t *store = NULL;
@@ -81,12 +88,11 @@ static inline cbm_store_t *rh_open_indexed(RProj *lp) {
         store = cbm_store_open_path_query(lp->dbpath);
     }
 
-    if (saved_cache_dir) {
-        cbm_setenv("MFA_CACHE_DIR", saved_cache_dir, 1);
-        free(saved_cache_dir);
-    } else {
-        cbm_unsetenv("MFA_CACHE_DIR");
-    }
+    /* Keep the fixture cache selected until rh_cleanup. MCP calls made by the
+     * test (trace_path, list_projects, etc.) resolve their store through this
+     * environment variable, just like a real process configured for the
+     * fixture. Restoring it here made the subsequent MCP call inspect the
+     * user's unrelated cache and produced false "project not indexed" reds. */
     return store;
 }
 
@@ -94,12 +100,17 @@ static inline void rh_cleanup(RProj *lp, cbm_store_t *store);
 
 /* Write each fixture file into a fresh temp project, index it via the MCP
  * production flow, and open the resulting graph DB. Returns store (NULL on fail). */
-static inline cbm_store_t *rh_index_files(RProj *lp, const RFile *files, int nfiles) {
+static inline cbm_store_t *rh_index_files_in_cache(RProj *lp, const RFile *files, int nfiles,
+                                                    const char *cache_dir) {
     memset(lp, 0, sizeof(*lp));
     snprintf(lp->tmpdir, sizeof(lp->tmpdir), "/tmp/cbm_repro_XXXXXX");
     if (!cbm_mkdtemp(lp->tmpdir))
         return NULL;
     rh_to_fwd_slashes(lp->tmpdir);
+    if (cache_dir && cache_dir[0]) {
+        snprintf(lp->cachedir, sizeof(lp->cachedir), "%s", cache_dir);
+        rh_to_fwd_slashes(lp->cachedir);
+    }
     for (int i = 0; i < nfiles; i++) {
         char path[700];
         snprintf(path, sizeof(path), "%s/%s", lp->tmpdir, files[i].name);
@@ -124,6 +135,10 @@ static inline cbm_store_t *rh_index_files(RProj *lp, const RFile *files, int nfi
     return store;
 }
 
+static inline cbm_store_t *rh_index_files(RProj *lp, const RFile *files, int nfiles) {
+    return rh_index_files_in_cache(lp, files, nfiles, NULL);
+}
+
 static inline cbm_store_t *rh_index(RProj *lp, const char *filename, const char *content) {
     RFile f = {filename, content};
     return rh_index_files(lp, &f, 1);
@@ -139,7 +154,9 @@ static inline void rh_cleanup(RProj *lp, cbm_store_t *store) {
     free(lp->project);
     lp->project = NULL;
     th_rmtree(lp->tmpdir);
-    th_rmtree(lp->cachedir);
+    if (lp->owns_cachedir) {
+        th_rmtree(lp->cachedir);
+    }
     if (lp->dbpath[0]) {
         unlink(lp->dbpath);
         char wal[600], shm[600];
@@ -148,6 +165,13 @@ static inline void rh_cleanup(RProj *lp, cbm_store_t *store) {
         snprintf(shm, sizeof(shm), "%s-shm", lp->dbpath);
         unlink(shm);
     }
+    if (lp->had_prior_cache_dir) {
+        cbm_setenv("MFA_CACHE_DIR", lp->prior_cache_dir, 1);
+    } else {
+        cbm_unsetenv("MFA_CACHE_DIR");
+    }
+    lp->prior_cache_dir[0] = '\0';
+    lp->had_prior_cache_dir = false;
 }
 
 /* Count edges of a given type in the project graph. Returns -1 on query error. */

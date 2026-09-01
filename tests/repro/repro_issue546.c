@@ -219,10 +219,8 @@ TEST(repro_issue546_dts_split_caller_set) {
      * itself has a problem unrelated to #546. */
     ASSERT_NULL(strstr(resp, "function not found"));
 
-    /* "callers" key must appear (always emitted when direction is inbound).
-     * The response is the MCP envelope (inner json embedded as an escaped
-     * string), so the key appears as \"callers\" — match the escaped form. */
-    ASSERT_NOT_NULL(strstr(resp, "\\\"callers\\\""));
+    /* The default trace_path response is a compact tree table. */
+    ASSERT_NOT_NULL(strstr(resp, "callers:"));
 
     /* The callers array must not be empty — at least the internalConsumer
      * (whose relative-path import is reliably resolved) must appear.
@@ -232,7 +230,7 @@ TEST(repro_issue546_dts_split_caller_set) {
      *   externalConsumer is there; internalConsumer's edge is on the impl
      *   node, so this check fires RED immediately (callers:[]) or wrong name.
      */
-    ASSERT_NULL(strstr(resp, "\\\"callers\\\":[]")); /* empty = traversal totally wrong */
+    ASSERT_NULL(strstr(resp, "callers: 0")); /* empty = traversal totally wrong */
 
     /* ── PRIMARY ASSERTION: BOTH callers must appear in the response ─────
      *
