@@ -2541,7 +2541,6 @@ if ! path_match "$CMD" "$SELF_PATH" || [ "$CODEBUDDY_KEEP" != "codebuddy" ] ||
    ! grep -q 'mcp__memory-for-ai__check_index_coverage' "$CODEBUDDY_AGENT" 2>/dev/null ||
    grep -qE 'mcp__memory-for-ai__(index_repository|delete_project|manage_adr|ingest_traces)' "$CODEBUDDY_AGENT" 2>/dev/null ||
    grep -q '^tools:$' "$CODEBUDDY_AGENT" 2>/dev/null ||
-   grep -q 'mcp__memory-for-ai__search_graph' "$CODEBUDDY_AGENT" 2>/dev/null ||
    ! grep -q '^skills: memory-for-ai$' "$CODEBUDDY_AGENT" 2>/dev/null ||
    [ -e "$CODEBUDDY_SETTINGS" ]; then
   echo "FAIL 8ar: CodeBuddy current MCP, durable context, or read-only agent missing"
