@@ -1203,13 +1203,12 @@ static int agent_json_edit(cbm_agent_client_id_t id, const char *config_path,
         /* Never overwrite an entry left by a compatibility key. The escaped-key
          * form is decoded by agent_json_key_equals, so this also protects
          * configs that serialize a legacy hyphen as \u002d. */
-        for (size_t i = 0U; i < sizeof(agent_compat_entry_keys) / sizeof(agent_compat_entry_keys[0]);
-             i++) {
+        for (size_t i = 0U;
+             i < sizeof(agent_compat_entry_keys) / sizeof(agent_compat_entry_keys[0]); i++) {
             size_t legacy_start = 0U;
             size_t legacy_end = 0U;
-            int legacy_result = agent_json_find_entry(document, length, section,
-                                                      agent_compat_entry_keys[i], &legacy_start,
-                                                      &legacy_end);
+            int legacy_result = agent_json_find_entry(
+                document, length, section, agent_compat_entry_keys[i], &legacy_start, &legacy_end);
             if (legacy_result < 0) {
                 free(document);
                 free(canonical);

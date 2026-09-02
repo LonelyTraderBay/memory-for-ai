@@ -1082,8 +1082,8 @@ static int handle_subcommand(int argc, char **argv, cbm_project_lock_manager_t *
                  * the `cli` subcommand uses. */
                 const char *project_root = cbm_cli_project_install_root();
                 if (project_root) {
-                    char *index_argv[] = {"index_repository", "--repo-path",
-                                          (char *)project_root, NULL};
+                    char *index_argv[] = {"index_repository", "--repo-path", (char *)project_root,
+                                          NULL};
                     cbm_mem_init_with_cap(
                         cbm_mem_ram_fraction_for_total(cbm_system_info().total_ram),
                         cbm_index_worker_memory_budget_bytes());
@@ -1516,10 +1516,9 @@ static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const c
     } else if (!main_session_context(preferred_root, root, allowed, &allowed_ptr)) {
         return false;
     }
-    return cbm_daemon_application_client_set_context(client, root, allowed_ptr, tool_profile,
-                                                     hook_event, hook_dialect, scope_path != NULL,
-                                                     timeout_ms) ==
-           CBM_DAEMON_RUNTIME_APPLICATION_OK;
+    return cbm_daemon_application_client_set_context(
+               client, root, allowed_ptr, tool_profile, hook_event, hook_dialect,
+               scope_path != NULL, timeout_ms) == CBM_DAEMON_RUNTIME_APPLICATION_OK;
 }
 
 /* Parse a strict MAJOR.MINOR.PATCH triple; false for anything else (dev

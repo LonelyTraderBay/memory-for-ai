@@ -174,7 +174,7 @@ static char *join_and_strip(const char *dir, const char *entry) {
     }
     char buf[PKGMAP_PATH_BUF];
     int written = dir[0] == '\0' ? snprintf(buf, sizeof(buf), "%s", entry)
-                                  : snprintf(buf, sizeof(buf), "%s/%s", dir, entry);
+                                 : snprintf(buf, sizeof(buf), "%s/%s", dir, entry);
     if (written <= 0 || (size_t)written >= sizeof(buf)) {
         return NULL; /* never publish a truncated module path */
     }
@@ -376,8 +376,8 @@ static char *toml_extract_name(const char *section_start, const char *end) {
 static char *build_entry_path(const char *rel_path, const char *suffix) {
     char *dir = path_dirname(rel_path);
     char buf[PKGMAP_PATH_BUF];
-    int written = snprintf(buf, sizeof(buf), "%s%s%s", dir[0] ? dir : "", dir[0] ? "/" : "",
-                           suffix);
+    int written =
+        snprintf(buf, sizeof(buf), "%s%s%s", dir[0] ? dir : "", dir[0] ? "/" : "", suffix);
     free(dir);
     if (written <= 0 || (size_t)written >= sizeof(buf)) {
         return NULL; /* an unresolved/truncated entry is worse than no entry */

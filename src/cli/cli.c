@@ -10212,12 +10212,11 @@ static bool cli_project_server_name(const char *repo_root, const char *name_over
     memcpy(out, prefix, prefix_len + 1U);
     size_t used = prefix_len;
     bool pending_dash = false;
-    for (const char *cursor = suffix; *cursor && used - prefix_len < max_suffix &&
-                                   used + 1U < out_size;
-         cursor++) {
+    for (const char *cursor = suffix;
+         *cursor && used - prefix_len < max_suffix && used + 1U < out_size; cursor++) {
         char c = *cursor;
         bool valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                    c == '.' || c == '_' || c == '-';
+                     c == '.' || c == '_' || c == '-';
         if (!valid) {
             pending_dash = true;
             continue;
@@ -10241,10 +10240,8 @@ static bool cli_project_server_name(const char *repo_root, const char *name_over
 static int cli_install_project_entry(const char *repo_root, const char *bin_target,
                                      const char *name_override, bool dry_run) {
     char server_name[CLI_BUF_1K];
-    if (!cli_project_server_name(repo_root, name_override, server_name,
-                                 sizeof(server_name))) {
-        (void)fprintf(stderr,
-                      "error: cannot derive a server name from '%s' (pass --name=<name>)\n",
+    if (!cli_project_server_name(repo_root, name_override, server_name, sizeof(server_name))) {
+        (void)fprintf(stderr, "error: cannot derive a server name from '%s' (pass --name=<name>)\n",
                       repo_root);
         return CLI_ERR;
     }
@@ -10366,8 +10363,7 @@ int cbm_cmd_install(int argc, char **argv) {
     char project_repo_root[CLI_BUF_1K] = {0};
     if (project_mode) {
         if (!cbm_canonical_path(".", project_repo_root, sizeof(project_repo_root))) {
-            (void)fprintf(stderr,
-                          "error: --project could not resolve the current directory\n");
+            (void)fprintf(stderr, "error: --project could not resolve the current directory\n");
             return CLI_TRUE;
         }
         /* The repository's own .mcp.json is the agent surface; no global
@@ -10660,9 +10656,8 @@ int cbm_cmd_install(int argc, char **argv) {
         return CLI_TRUE;
     }
 
-    if (project_mode &&
-        cli_install_project_entry(project_repo_root, bin_target, project_name_override,
-                                  dry_run) != CLI_OK) {
+    if (project_mode && cli_install_project_entry(project_repo_root, bin_target,
+                                                  project_name_override, dry_run) != CLI_OK) {
         return CLI_TRUE;
     }
 
