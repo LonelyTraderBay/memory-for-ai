@@ -99,6 +99,7 @@ jobs:
           path-type: inherit
           install: >-
             mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-compiler-rt
             mingw-w64-clang-x86_64-zlib
             mingw-w64-clang-x86_64-python3
             mingw-w64-clang-x86_64-ccache

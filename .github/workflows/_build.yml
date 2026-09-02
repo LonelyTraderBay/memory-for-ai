@@ -123,6 +123,7 @@ jobs:
           path-type: inherit
           install: >-
             mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-compiler-rt
             mingw-w64-clang-x86_64-zlib
             make
             python
@@ -185,6 +186,7 @@ jobs:
           path-type: inherit
           install: >-
             mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-compiler-rt
             mingw-w64-clang-aarch64-zlib
             make
             python

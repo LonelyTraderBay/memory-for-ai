@@ -190,6 +190,53 @@ gnu_stack_flags() {
     esac
 }
 
+# PT_GNU_RELRO segment present? (yes/no)
+gnu_relro_present() {
+    case "$ELF_READER_KIND" in
+    readelf)
+        "$ELF_READER" -lW "$1" 2>/dev/null | grep -q GNU_RELRO && echo yes || echo no
+        ;;
+    objdump)
+        "$ELF_READER" -p "$1" 2>/dev/null | grep -q GNU_RELRO && echo yes || echo no
+        ;;
+    esac
+}
+
+# Are dynamic relocations bound at load (BIND_NOW / FLAGS_1 NOW)? (yes/no)
+# -z now lands as (BIND_NOW), as BIND_NOW inside (FLAGS), or as NOW inside
+# (FLAGS_1) depending on binutils vintage; cover all three spellings.
+binds_now() {
+    case "$ELF_READER_KIND" in
+    readelf)
+        "$ELF_READER" -dW "$1" 2>/dev/null |
+            grep -qE '\(BIND_NOW\)|\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' &&
+            echo yes || echo no
+        ;;
+    objdump)
+        "$ELF_READER" -p "$1" 2>/dev/null |
+            grep -qE '\(BIND_NOW\)|\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' &&
+            echo yes || echo no
+        ;;
+    esac
+}
+
+# Does the file carry a dynamic section at all? Fully static artifacts print
+# "There is no dynamic section in this file" and grep counts zero tags.
+has_dynamic_section() {
+    case "$ELF_READER_KIND" in
+    readelf)
+        [ "$("$ELF_READER" -dW "$1" 2>/dev/null |
+            grep -cE '\((NEEDED|SONAME|FLAGS|FLAGS_1|BIND_NOW)\)')" -gt 0 ] &&
+            echo yes || echo no
+        ;;
+    objdump)
+        [ "$("$ELF_READER" -p "$1" 2>/dev/null |
+            grep -cE '\((NEEDED|SONAME|FLAGS|FLAGS_1|BIND_NOW)\)')" -gt 0 ] &&
+            echo yes || echo no
+        ;;
+    esac
+}
+
 # ── Reporting ───────────────────────────────────────────────────────
 # PASS and FAIL both go to stdout so the per-assertion sequence stays in order
 # in a CI log (stderr would interleave nondeterministically); only the final
@@ -310,6 +357,38 @@ check_file() {
         fi
     else
         printf 'n/a  %-22s %s: segment-permission check is ELF-only\n' A1b-rodata-noexec "$token"
+    fi
+
+    # A1c — full RELRO on dynamically linked ELF artifacts: PT_GNU_RELRO must
+    # exist AND the dynamic flags must bind everything NOW (not lazily), so the
+    # GOT/PLT is resolved at startup and then made read-only. Partial RELRO
+    # (segment present, BIND_NOW absent) leaves .got.plt writable after startup.
+    # Fully static artifacts (no dynamic section) have no dynamic relocation
+    # table to protect — reported n/a, not failed. Added together with the
+    # -Wl,-z,relro,-z,now link flags in Makefile.cbm; this assertion is what
+    # keeps those flags from silently dropping out of a future link line.
+    if [ "$fmt" = elf ]; then
+        if ! resolve_elf_reader; then
+            echo "FAIL: no readelf/llvm-readelf/objdump available; cannot assert" \
+                "full RELRO for $token — refusing to skip it" >&2
+            exit 2
+        fi
+        if [ "$(has_dynamic_section "$file")" = yes ]; then
+            relro_seg=$(gnu_relro_present "$file")
+            bind_now=$(binds_now "$file")
+            if [ "$relro_seg" = yes ] && [ "$bind_now" = yes ]; then
+                report PASS A1c-full-relro "$token" \
+                    'PT_GNU_RELRO present and dynamic flags bind NOW (GOT read-only after startup)'
+            else
+                report FAIL A1c-full-relro "$token" \
+                    "GNU_RELRO=$relro_seg BIND_NOW=$bind_now — link with -Wl,-z,relro,-z,now (partial RELRO leaves .got.plt writable)"
+            fi
+        else
+            printf 'n/a  %-22s %s: static ELF (no dynamic section) — RELRO has nothing to protect\n' \
+                A1c-full-relro "$token"
+        fi
+    else
+        printf 'n/a  %-22s %s: full-RELRO check is ELF-only\n' A1c-full-relro "$token"
     fi
 
     # A2 — test-only seams.

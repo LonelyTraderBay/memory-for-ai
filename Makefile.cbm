@@ -5,6 +5,7 @@
 #   make -f Makefile.cbm test-foundation # Foundation tests only (fast)
 #   make -f Makefile.cbm test-tsan      # Thread sanitizer build
 #   make -f Makefile.cbm cbm            # Production binary
+#   make -f Makefile.cbm cbm LTO=1      # Experimental LTO build (see LTO_FLAGS below)
 #   make -f Makefile.cbm clean-c        # Remove build artifacts
 
 # Compiler selection — override via: make CC=gcc CXX=g++
@@ -75,9 +76,35 @@ endif
 # CBM_BIND_TS_ALLOCATOR=1: bind the tree-sitter runtime to mimalloc (#424). Only
 # the prod build uses mimalloc (MI_OVERRIDE=1); the test build is CRT+ASan, where
 # binding would create an alloc/free mismatch, so the guard is prod-only.
-CFLAGS_PROD = $(CFLAGS_COMMON) -O2 -DCBM_BIND_TS_ALLOCATOR=1 $(TEST_SEAM_DEFINE) \
+#
+# Runtime hardening (prod only): -fstack-protector-strong everywhere, plus
+# _FORTIFY_SOURCE=2 on glibc/darwin. Both flags change the BINARY, not the
+# sources — see the .build-config stamp below for why that matters. FORTIFY is
+# skipped on MinGW: mingw-w64's fortified-function coverage is partial and the
+# define can warn under -Werror there. It requires an optimizing build; prod is
+# -O2. Vendored objects (grammars, sqlite3, mimalloc, lz4, zstd) keep their own
+# pinned flag sets and are deliberately not re-flagged here.
+CFLAGS_PROD = $(CFLAGS_COMMON) -O2 $(PROD_HARDEN_FLAGS) $(LTO_FLAGS) \
+              -DCBM_BIND_TS_ALLOCATOR=1 $(TEST_SEAM_DEFINE) \
               $(GLOBAL_OVERRIDE_DEFINE) $(CFLAGS_EXTRA)
-CXXFLAGS_PROD = $(CXXFLAGS_COMMON) -O2
+CXXFLAGS_PROD = $(CXXFLAGS_COMMON) -O2 $(PROD_HARDEN_FLAGS) $(LTO_FLAGS)
+
+# Optional LTO lane (EXPERIMENTAL — not the default prod configuration).
+#   make -f Makefile.cbm cbm LTO=1
+# compiles the first-party sources with -flto=auto and links through the LTO
+# plugin; the prod recipe compiles+links in one driver invocation, so putting
+# the flag on CFLAGS_PROD covers both. Vendored objects stay regular objects,
+# so their strong symbols (mimalloc override, the --wrap shims) resolve exactly
+# as before. Benchmark against the plain build (scripts/benchmark-index.sh,
+# scripts/benchmark-search-graph.sh) before promoting anything: LTO re-inlines
+# across the whole first-party tree and can move the hot paths (worker pool,
+# extraction, store queries) either way, and the binary is no longer
+# comparable to a non-LTO ccache history. LTO=1 participates in the
+# .build-config signature so toggling it forces a rebuild.
+LTO_FLAGS :=
+ifeq ($(LTO),1)
+LTO_FLAGS := -flto=auto
+endif
 
 # Test flags: debug + sanitizers (override SANITIZE= to disable on Windows)
 SANITIZE = -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -128,6 +155,15 @@ CXXFLAGS_TSAN = $(CXXFLAGS_COMMON) -DCBM_SANITIZED_BUILD=1 -g -O1 \
 # --allow-multiple-definition (MinGW CRT symbol clashes).
 # Auto-detected via compiler; no manual override needed.
 IS_MINGW := $(shell echo | $(CC) -dM -E - 2>/dev/null | grep -q 'define _WIN32 ' && echo yes || echo no)
+
+# Prod hardening flag set (consumed by CFLAGS_PROD/CXXFLAGS_PROD above via
+# deferred expansion). Stack canaries work on every supported toolchain
+# (glibc, darwin, clang MinGW via compiler-rt). _FORTIFY_SOURCE=2 is
+# glibc/darwin only — see the comment at CFLAGS_PROD.
+PROD_HARDEN_FLAGS := -fstack-protector-strong
+ifneq ($(IS_MINGW),yes)
+PROD_HARDEN_FLAGS += -D_FORTIFY_SOURCE=2
+endif
 WIN32_LIBS :=
 # Route Windows allocations through mimalloc (#581). mimalloc's own static
 # override is gated on _MSC_VER, which clang/MinGW never defines, so it
@@ -181,10 +217,17 @@ endif
 # ~259 MB of tree-sitter parse tables was mapped executable at runtime while the
 # amd64 build of the same source mapped them R only. That is a large ROP gadget
 # surface for data that is never executed, and it is invisible to section flags.
+#
+# Full RELRO (-z relro -z now): resolve every dynamic relocation at startup and
+# then make the GOT/PLT read-only, closing the classic "overwrite a resolved
+# GOT entry" path. Partial RELRO (relro alone) leaves the .got.plt writable;
+# -z now pays it all up front. Together with the PIE default of the Ubuntu/darwin
+# toolchains this completes the standard ELF hardening trio that noexecstack
+# and separate-code started.
 ELF_HARDENING_FLAGS :=
 ifeq ($(IS_LINUX),yes)
 ifneq ($(IS_MINGW),yes)
-ELF_HARDENING_FLAGS := -Wl,-z,noexecstack -Wl,-z,separate-code
+ELF_HARDENING_FLAGS := -Wl,-z,noexecstack -Wl,-z,separate-code -Wl,-z,relro -Wl,-z,now
 endif
 endif
 
@@ -922,7 +965,7 @@ test-focused: $(BUILD_DIR)/test-runner
 # Mirrors test-runner's link line but uses repro_main.c (own main + counters)
 # and TEST_REPRO_SRCS instead of ALL_TEST_SRCS. Exits non-zero while any bug is
 # still reproduced (the expected state); bug-repro.yml surfaces it as a board.
-$(BUILD_DIR)/test-repro-runner: $(TEST_REPRO_SRCS) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_TEST) $(PROJECT_HDRS) | $(BUILD_DIR)
+$(BUILD_DIR)/test-repro-runner: $(TEST_REPRO_SRCS) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_TEST) $(PROJECT_HDRS) Makefile.cbm | $(BUILD_DIR)
 	$(CC) $(CFLAGS_TEST) -Itests -o $@ \
 		$(TEST_REPRO_SRCS) $(PROD_SRCS) \
 		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
@@ -982,7 +1025,7 @@ TSAN_OPTIONS ?= halt_on_error=1:report_thread_leaks=0
 # Normal ASan/native/soak paths remain uncapped. High-worker TSan diagnostics
 # invoke test-runner-tsan directly so release gates cannot drift accidentally.
 
-$(BUILD_DIR)/test-runner-tsan: $(ALL_TEST_SRCS) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_TSAN) $(PROJECT_HDRS) | $(BUILD_DIR)
+$(BUILD_DIR)/test-runner-tsan: $(ALL_TEST_SRCS) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_TSAN) $(PROJECT_HDRS) Makefile.cbm | $(BUILD_DIR)
 	$(CC) $(CFLAGS_TSAN) -Itests -Itests/repro -o $@ \
 		$(ALL_TEST_SRCS) $(PROD_SRCS) \
 		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
@@ -1052,7 +1095,7 @@ MAIN_SRC = src/main.c
 # for trap debugging -- silently re-run the previously instrumented binary,
 # which during this bisect produced a "crashes without sanitizers too" result
 # that was pure artifact and sent the investigation down the wrong path.
-BUILD_CONFIG_SIG := TEST_SEAMS=$(TEST_SEAMS)|CFLAGS_EXTRA=$(CFLAGS_EXTRA)|SANITIZE=$(SANITIZE)
+BUILD_CONFIG_SIG := TEST_SEAMS=$(TEST_SEAMS)|CFLAGS_EXTRA=$(CFLAGS_EXTRA)|SANITIZE=$(SANITIZE)|LTO=$(LTO)
 .PHONY: build-config-check
 build-config-check:
 $(BUILD_DIR)/.build-config: build-config-check | $(BUILD_DIR)
@@ -1061,7 +1104,7 @@ $(BUILD_DIR)/.build-config: build-config-check | $(BUILD_DIR)
 	else mv -f $@.tmp $@; rm -f $(BUILD_DIR)/memory-for-ai; \
 	echo "=== build config changed -> full rebuild: $(BUILD_CONFIG_SIG) ==="; fi
 
-$(BUILD_DIR)/memory-for-ai: $(MAIN_SRC) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_PROD) $(BUILD_DIR)/.build-config $(PROJECT_HDRS) | $(BUILD_DIR)
+$(BUILD_DIR)/memory-for-ai: $(MAIN_SRC) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_PROD) $(BUILD_DIR)/.build-config $(PROJECT_HDRS) Makefile.cbm | $(BUILD_DIR)
 	$(CC) $(CFLAGS_PROD) -o $@ \
 		$(MAIN_SRC) $(PROD_SRCS) \
 		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
