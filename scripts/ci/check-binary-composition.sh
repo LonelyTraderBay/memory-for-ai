@@ -85,8 +85,11 @@ SQLITE_LOADEXT_NEEDLES=(
 #   'HTTP/1.1 %d %s'                  httpd.c response-status writer
 #   'Request Header Fields Too Large'  httpd.c status-text table
 #   '/api/ui-config', '/api/processes' http_server.c route dispatch
-#   'ps -eo …' / '[c]odebase-memory-mcp'  the popen() process enumerator's
-#                                     shell pipeline, both halves
+#   'ps -eo …' / '[m]emory-for-ai'  the popen() process enumerator's
+#                                     shell pipeline, both halves. The bracketed
+#                                     grep pattern is grep-verified unique to
+#                                     src/ui/http_server.c — the plain name is
+#                                     the A0 canary and matches everywhere.
 # Verified unique to src/ui/ across src/, vendored/ and internal/ — the only
 # other occurrences in the repo are tests/test_httpd.c and scripts/, neither of
 # which is ever linked into a release binary.
@@ -96,7 +99,7 @@ UI_HTTP_NEEDLES=(
     '/api/ui-config'
     '/api/processes'
     'ps -eo pid,pcpu,rss,etime,comm'
-    '[c]odebase-memory-mcp'
+    '[m]emory-for-ai'
 )
 
 # Canary: proves the needle scan can actually see this file's strings. Without

@@ -665,7 +665,7 @@ static void handle_processes(cbm_http_conn_t *c) {
                  (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec / 1e6);
 
     FILE *fp = popen("LC_ALL=C ps -eo pid,pcpu,rss,etime,comm 2>/dev/null"
-                     " | grep '[c]odebase-memory-mcp'",
+                     " | grep '[m]emory-for-ai'",
                      "r");
     int proc_count = 0;
     if (fp) {
