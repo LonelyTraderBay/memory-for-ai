@@ -3673,6 +3673,41 @@ TEST(cypher_parse_union) {
     PASS();
 }
 
+TEST(cypher_parse_union_depth_capped) {
+    /* Each UNION clause re-enters the parser; before the recursion carried no
+     * accumulated depth, a long UNION chain (well under the 10 MB message
+     * cap) overflowed the worker stack and killed the daemon. The depth seed
+     * must refuse the chain with a parse error instead. */
+    const char *unit = "MATCH (f) RETURN f.name UNION ";
+    const char *tail = "MATCH (f) RETURN f.name";
+    enum { CHAIN_LEN = 400 }; /* > CYPHER_MAX_PARSE_DEPTH (256) */
+    size_t unit_len = strlen(unit);
+    size_t tail_len = strlen(tail);
+    size_t capacity = unit_len * CHAIN_LEN + tail_len + 1U;
+    char *query = malloc(capacity);
+    ASSERT_NOT_NULL(query);
+    size_t used = 0;
+    for (int i = 0; i < CHAIN_LEN; i++) {
+        memcpy(query + used, unit, unit_len);
+        used += unit_len;
+    }
+    memcpy(query + used, tail, tail_len);
+    used += tail_len;
+    query[used] = '\0';
+    ASSERT_EQ(used + 1U, capacity);
+
+    cbm_query_t *q = NULL;
+    char *err = NULL;
+    int rc = cbm_cypher_parse(query, &q, &err);
+    ASSERT_NEQ(rc, 0);
+    ASSERT_NULL(q);
+    ASSERT_NOT_NULL(err);
+    ASSERT_NOT_NULL(strstr(err, "deeper"));
+    free(err);
+    free(query);
+    PASS();
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  PHASE 9: UNWIND
  * ══════════════════════════════════════════════════════════════════ */
@@ -4220,6 +4255,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_exec_union);
     RUN_TEST(cypher_exec_union_all);
     RUN_TEST(cypher_parse_union);
+    RUN_TEST(cypher_parse_union_depth_capped);
     /* Phase 9: UNWIND */
     RUN_TEST(cypher_parse_unwind);
     RUN_TEST(cypher_parse_unwind_var);

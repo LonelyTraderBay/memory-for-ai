@@ -221,6 +221,151 @@ TEST(scope_list_projects_unpinned_reports_everything) {
     PASS();
 }
 
+/* ── index_repository's non-common project keys ─────────────────── */
+
+TEST(scope_guard_refuses_foreign_name_override) {
+    scope_fixture_t fx;
+    ASSERT_TRUE(scope_fixture_init(&fx, "scoped-repo"));
+    ASSERT_TRUE(cbm_mcp_server_pin_session_scope(fx.srv, true));
+
+    /* `name` re-targets the index at another project's store; the guard must
+     * refuse it before the tool runs. */
+    char *result =
+        cbm_mcp_handle_tool(fx.srv, "index_repository", "{\"name\":\"some-other-project\"}");
+    ASSERT_NOT_NULL(result);
+    ASSERT_NOT_NULL(strstr(result, "session is scoped"));
+    ASSERT_NOT_NULL(strstr(result, "some-other-project"));
+    free(result);
+
+    scope_fixture_free(&fx);
+    PASS();
+}
+
+TEST(scope_guard_accepts_session_name_override) {
+    scope_fixture_t fx;
+    ASSERT_TRUE(scope_fixture_init(&fx, "scoped-repo"));
+    const char *derived = cbm_mcp_server_session_project(fx.srv);
+    ASSERT_NOT_NULL(derived);
+    ASSERT_TRUE(cbm_mcp_server_pin_session_scope(fx.srv, true));
+
+    /* The session's own name passes the guard; the tool's own missing-path
+     * validation answers (no index side effect in the test process). */
+    char args[768];
+    snprintf(args, sizeof(args), "{\"name\":\"%s\"}", derived);
+    char *result = cbm_mcp_handle_tool(fx.srv, "index_repository", args);
+    ASSERT_NOT_NULL(result);
+    ASSERT_NULL(strstr(result, "session is scoped"));
+    free(result);
+
+    scope_fixture_free(&fx);
+    PASS();
+}
+
+TEST(scope_guard_refuses_target_projects_wildcard) {
+    scope_fixture_t fx;
+    ASSERT_TRUE(scope_fixture_init(&fx, "scoped-repo"));
+    ASSERT_TRUE(cbm_mcp_server_pin_session_scope(fx.srv, true));
+
+    /* The wildcard enumerates every project on the machine — the exact
+     * visibility a scoped session must not have. */
+    char *result = cbm_mcp_handle_tool(fx.srv, "index_repository",
+                                       "{\"mode\":\"cross-repo-intelligence\","
+                                       "\"target_projects\":[\"*\"]}");
+    ASSERT_NOT_NULL(result);
+    ASSERT_NOT_NULL(strstr(result, "session is scoped"));
+    free(result);
+
+    scope_fixture_free(&fx);
+    PASS();
+}
+
+TEST(scope_guard_refuses_foreign_target_project) {
+    scope_fixture_t fx;
+    ASSERT_TRUE(scope_fixture_init(&fx, "scoped-repo"));
+    const char *derived = cbm_mcp_server_session_project(fx.srv);
+    ASSERT_NOT_NULL(derived);
+    ASSERT_TRUE(cbm_mcp_server_pin_session_scope(fx.srv, true));
+
+    /* Any foreign element refuses the whole call, even alongside the right
+     * one. */
+    char args[768];
+    snprintf(args, sizeof(args),
+             "{\"mode\":\"cross-repo-intelligence\",\"target_projects\":[\"%s\","
+             "\"some-other-project\"]}",
+             derived);
+    char *result = cbm_mcp_handle_tool(fx.srv, "index_repository", args);
+    ASSERT_NOT_NULL(result);
+    ASSERT_NOT_NULL(strstr(result, "session is scoped"));
+    ASSERT_NOT_NULL(strstr(result, "some-other-project"));
+    free(result);
+
+    scope_fixture_free(&fx);
+    PASS();
+}
+
+TEST(scope_guard_accepts_session_target_project) {
+    scope_fixture_t fx;
+    ASSERT_TRUE(scope_fixture_init(&fx, "scoped-repo"));
+    const char *derived = cbm_mcp_server_session_project(fx.srv);
+    ASSERT_NOT_NULL(derived);
+    ASSERT_TRUE(cbm_mcp_server_pin_session_scope(fx.srv, true));
+
+    /* The session's own name passes the guard for every array element; the
+     * trailing non-string element then fails the tool's own validation, which
+     * proves the guard let the scoped element through without running the
+     * cross-repo pass in the test process. */
+    char args[768];
+    snprintf(args, sizeof(args),
+             "{\"mode\":\"cross-repo-intelligence\",\"target_projects\":[\"%s\",3]}", derived);
+    char *result = cbm_mcp_handle_tool(fx.srv, "index_repository", args);
+    ASSERT_NOT_NULL(result);
+    ASSERT_NULL(strstr(result, "session is scoped"));
+    free(result);
+
+    scope_fixture_free(&fx);
+    PASS();
+}
+
+#ifdef _WIN32
+TEST(scope_guard_accepts_case_variant_of_session_project) {
+    scope_fixture_t fx;
+    ASSERT_TRUE(scope_fixture_init(&fx, "scoped-repo"));
+    const char *derived = cbm_mcp_server_session_project(fx.srv);
+    ASSERT_NOT_NULL(derived);
+    ASSERT_TRUE(cbm_mcp_server_pin_session_scope(fx.srv, true));
+
+    /* Windows opens the store case-insensitively, so a case-variant spelling
+     * of the session's own project must stay inside the scope. */
+    char flipped[256];
+    size_t i = 0;
+    for (; derived[i] != '\0' && i < sizeof(flipped) - 1; i++) {
+        char c = derived[i];
+        flipped[i] = (char)(c >= 'a' && c <= 'z' ? c - ('a' - 'A')
+                                                 : (c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c));
+    }
+    flipped[i] = '\0';
+
+    char args[768];
+    snprintf(args, sizeof(args), "{\"project\":\"%s\",\"name_pattern\":\"x\"}", flipped);
+    char *result = cbm_mcp_handle_tool(fx.srv, "search_graph", args);
+    ASSERT_NOT_NULL(result);
+    ASSERT_NULL(strstr(result, "session is scoped"));
+    free(result);
+
+    /* list_projects still reports exactly the pinned project when the store
+     * file was created under a case-variant name. */
+    ASSERT_TRUE(scope_touch_db(&fx, flipped));
+    result = cbm_mcp_handle_tool(fx.srv, "list_projects", "{}");
+    ASSERT_NOT_NULL(result);
+    ASSERT_NOT_NULL(strstr(result, flipped));
+    ASSERT_NOT_NULL(strstr(result, "\"total\":1"));
+    free(result);
+
+    scope_fixture_free(&fx);
+    PASS();
+}
+#endif
+
 SUITE(mcp_project_scope) {
     RUN_TEST(scope_pin_requires_session_context);
     RUN_TEST(scope_guard_refuses_foreign_project);
@@ -230,4 +375,12 @@ SUITE(mcp_project_scope) {
     RUN_TEST(scope_guard_inactive_without_pin);
     RUN_TEST(scope_list_projects_reports_only_the_pinned_project);
     RUN_TEST(scope_list_projects_unpinned_reports_everything);
+    RUN_TEST(scope_guard_refuses_foreign_name_override);
+    RUN_TEST(scope_guard_accepts_session_name_override);
+    RUN_TEST(scope_guard_refuses_target_projects_wildcard);
+    RUN_TEST(scope_guard_refuses_foreign_target_project);
+    RUN_TEST(scope_guard_accepts_session_target_project);
+#ifdef _WIN32
+    RUN_TEST(scope_guard_accepts_case_variant_of_session_project);
+#endif
 }

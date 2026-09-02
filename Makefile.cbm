@@ -48,8 +48,14 @@ endif
 # build. Build-time entropy is how one identical source tree produced a new hash
 # on every compile (see the local patch in vendored/mimalloc/src/options.c) —
 # once removed, it must not creep back through a new call site.
+# YYJSON_READER_DEPTH_LIMIT: the vendored reader defaults to unlimited nesting,
+# but yyjson_mut_equals (used to match daemon index-job args) recurses once per
+# container level while worker threads run 256 KB stacks — a 10 MB request of
+# ~1M-deep arrays would overflow the stack and kill the daemon. 512 is far past
+# any document this codebase exchanges and bounds the recursion to a few KB.
 CFLAGS_COMMON = -std=c11 -D_DEFAULT_SOURCE -D_GNU_SOURCE -Wall -Wextra -Werror \
                 -Wno-unused-parameter -Wno-sign-compare -Wdate-time \
+                -DYYJSON_READER_DEPTH_LIMIT=512 \
                 $(GCC_ONLY_FLAGS) \
                 -Isrc -Ivendored -Ivendored/sqlite3 \
                 -Ivendored/mimalloc/include \
@@ -109,9 +115,10 @@ endif
 # Test flags: debug + sanitizers (override SANITIZE= to disable on Windows)
 SANITIZE = -fsanitize=address,undefined -fno-omit-frame-pointer
 EDITOR_TEST_DEFINES = -DCBM_JSON_LIKE_ENABLE_TEST_API=1 \
-	-DCBM_TOML_EDIT_ENABLE_TEST_API=1 -DCBM_YAML_ENABLE_TEST_API=1 \
-	-DCBM_TEXT_EDIT_ENABLE_TEST_API=1 -DCBM_CLI_ENABLE_TEST_API=1 \
-	-DCBM_DIAGNOSTICS_ENABLE_TEST_API=1 -DCBM_ENABLE_TEST_SEAMS=1
+		-DCBM_TOML_EDIT_ENABLE_TEST_API=1 -DCBM_YAML_ENABLE_TEST_API=1 \
+		-DCBM_TEXT_EDIT_ENABLE_TEST_API=1 -DCBM_CLI_ENABLE_TEST_API=1 \
+		-DCBM_DIAGNOSTICS_ENABLE_TEST_API=1 -DCBM_ENABLE_TEST_SEAMS=1 \
+		-DCBM_SQLITE_WRITER_ENABLE_TEST_API=1
 # The build system is the single source of truth for "is this binary
 # instrumented": compiler-specific probes (__SANITIZE_ADDRESS__) miss
 # clang's feature-check spelling and every non-ASan sanitizer, so the

@@ -1951,6 +1951,9 @@ static int parse_match_chain(parser_t *p, cbm_query_t *q, int *pat_cap) {
 }
 
 /* Parse post-WHERE clauses: additional MATCH, WITH, RETURN, UNION */
+static int parse_query_seeded(const cbm_token_t *tokens, int token_count, cbm_parse_result_t *out,
+                              int depth_seed);
+
 static int parse_post_where(parser_t *p, cbm_query_t *q, // NOLINT(misc-no-recursion)
                             int *pat_cap) {
     /* More MATCH / OPTIONAL MATCH after WHERE */
@@ -1982,7 +1985,8 @@ static int parse_post_where(parser_t *p, cbm_query_t *q, // NOLINT(misc-no-recur
         advance(p);
         q->union_all = match(p, TOK_ALL);
         cbm_parse_result_t sub = {0};
-        if (cbm_parse(&p->tokens[p->pos], p->count - p->pos, &sub) < 0) {
+        if (parse_query_seeded(&p->tokens[p->pos], p->count - p->pos, &sub, p->depth + SKIP_ONE) <
+            0) {
             if (sub.error) {
                 snprintf(p->error, sizeof(p->error), "%s", sub.error);
             }
@@ -1998,8 +2002,27 @@ static int parse_post_where(parser_t *p, cbm_query_t *q, // NOLINT(misc-no-recur
 
 int cbm_parse(const cbm_token_t *tokens, int token_count, // NOLINT(misc-no-recursion)
               cbm_parse_result_t *out) {
+    return parse_query_seeded(tokens, token_count, out, 0);
+}
+
+/* UNION chains re-enter the parser once per clause (parse_post_where calls
+ * back into here), so the depth seed is what bounds that recursion: without it
+ * every nested parse started at depth 0 again and a ~50 000-clause query —
+ * well under the 10 MB message cap — exhausted the 256 KB worker stack and
+ * killed the daemon. The seed carries the caller's accumulated depth into the
+ * sub-parser, so CYPHER_MAX_PARSE_DEPTH caps the whole chain. */
+static int parse_query_seeded(const cbm_token_t *tokens,
+                              int token_count, // NOLINT(misc-no-recursion)
+                              cbm_parse_result_t *out, int depth_seed) {
     memset(out, 0, sizeof(*out));
-    parser_t p = {.tokens = tokens, .count = token_count, .pos = 0};
+    if (depth_seed >= CYPHER_MAX_PARSE_DEPTH) {
+        char message[CBM_SZ_128];
+        snprintf(message, sizeof(message), "UNION chain nested deeper than %d levels",
+                 CYPHER_MAX_PARSE_DEPTH);
+        out->error = heap_strdup(message);
+        return CBM_NOT_FOUND;
+    }
+    parser_t p = {.tokens = tokens, .count = token_count, .pos = 0, .depth = depth_seed};
 
     /* Check for unsupported leading keywords */
     const char *unsup = unsupported_clause_error(peek(&p)->type);

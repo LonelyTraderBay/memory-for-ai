@@ -1825,6 +1825,33 @@ bool cbm_mcp_server_pin_session_scope(cbm_mcp_server_t *srv, bool pinned) {
 
 /* ── --scope enforcement ─────────────────────────────────────────── */
 
+/* Fold one byte of a project name for scope comparisons. Project names derive
+ * from filesystem paths, so on Windows — where the store file itself opens
+ * case-insensitively — any ASCII-case spelling of the session's own name must
+ * stay inside the scope (project_lock.c folds its lock keys the same way).
+ * Everywhere else project names are byte-exact. */
+static unsigned char scope_name_fold(unsigned char ch) {
+#ifdef _WIN32
+    return ch >= 'A' && ch <= 'Z' ? (unsigned char)(ch + ('a' - 'A')) : ch;
+#else
+    return ch;
+#endif
+}
+
+/* Equality between a passed project name and the pinned session project. */
+static bool scope_project_name_equals(const cbm_mcp_server_t *srv, const char *passed) {
+    const unsigned char *cursor = (const unsigned char *)passed;
+    const unsigned char *session = (const unsigned char *)srv->session_project;
+    while (*cursor && *session) {
+        if (scope_name_fold(*cursor) != scope_name_fold(*session)) {
+            return false;
+        }
+        cursor++;
+        session++;
+    }
+    return *cursor == *session;
+}
+
 /* Build the refusal result for an out-of-scope project name. Path follows the
  * same raw-in-message convention as build_project_list_error and friends. */
 static char *scoped_refusal_result(const char *key, const char *passed,
@@ -1838,19 +1865,52 @@ static char *scoped_refusal_result(const char *key, const char *passed,
     return cbm_mcp_text_result(message, true);
 }
 
+/* index_repository qualifies projects through two more shapes than the common
+ * keys: the explicit `name` override and the cross-repo `target_projects`
+ * list. The tool consumes both VERBATIM (no alias resolution), so the pinned
+ * session accepts only its own exact name — and a wildcard "*" is always
+ * refused, because it enumerates every project on the machine. Non-string
+ * array elements reach the tool's own validation error instead. */
+static char *scoped_index_repository_guard(const cbm_mcp_server_t *srv, const char *args_json) {
+    char *error = NULL;
+    char *name = cbm_mcp_get_string_arg(args_json, "name");
+    if (name && name[0] && !scope_project_name_equals(srv, name)) {
+        error = scoped_refusal_result("name", name, srv);
+    }
+    free(name);
+    yyjson_doc *doc = error ? NULL : yyjson_read(args_json, strlen(args_json), 0);
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *targets = root ? yyjson_obj_get(root, "target_projects") : NULL;
+    if (targets && yyjson_is_arr(targets)) {
+        size_t idx;
+        size_t max;
+        yyjson_val *val;
+        yyjson_arr_foreach(targets, idx, max, val) {
+            const char *target = yyjson_is_str(val) ? yyjson_get_str(val) : NULL;
+            if (target && target[0] && !scope_project_name_equals(srv, target)) {
+                error = scoped_refusal_result("target_projects", target, srv);
+                break;
+            }
+        }
+    }
+    yyjson_doc_free(doc);
+    return error;
+}
+
 /* Refuse project-qualifying arguments that name anything but the pinned
  * session project. The primary aliases resolve exactly like the tools do
  * (#640 keys, #1025 folder-name tail adoption), so an agent passing the repo
  * FOLDER name of the scoped repository still lands inside the scope; every
  * other name — however spelled — is refused before the tool runs. Returns an
  * owned error result, or NULL when the call may proceed. */
-static char *scoped_project_guard(cbm_mcp_server_t *srv, const char *args_json) {
+static char *scoped_project_guard(cbm_mcp_server_t *srv, const char *tool_name,
+                                  const char *args_json) {
     if (!srv || !srv->scope_pinned || !args_json || args_json[0] == '\0') {
         return NULL;
     }
     char *primary = get_project_arg(args_json);
     char *error = NULL;
-    if (primary && primary[0] && strcmp(primary, srv->session_project) != 0) {
+    if (primary && primary[0] && !scope_project_name_equals(srv, primary)) {
         error = scoped_refusal_result("project", primary, srv);
     }
     free(primary);
@@ -1862,10 +1922,13 @@ static char *scoped_project_guard(cbm_mcp_server_t *srv, const char *args_json) 
             continue;
         }
         char *resolved = resolve_project_tail(raw); /* takes ownership of raw */
-        if (resolved && strcmp(resolved, srv->session_project) != 0) {
+        if (resolved && !scope_project_name_equals(srv, resolved)) {
             error = scoped_refusal_result(keys[i], resolved, srv);
         }
         free(resolved);
+    }
+    if (!error && tool_name && strcmp(tool_name, "index_repository") == 0) {
+        error = scoped_index_repository_guard(srv, args_json);
     }
     return error;
 }
@@ -2876,11 +2939,20 @@ static char *handle_list_projects(cbm_mcp_server_t *srv, const char *args) {
             continue;
         }
         /* --scope: report only the pinned session project, so a scoped agent
-         * cannot even discover that other projects exist. */
+         * cannot even discover that other projects exist. The db filename stem
+         * compares through scope_name_fold, so a case-variant spelling of the
+         * pinned name (which Windows opens as the same store) still matches. */
         if (srv && srv->scope_pinned) {
             size_t stem = len - MCP_DB_EXT;
-            if (strncmp(name, srv->session_project, stem) != 0 ||
-                srv->session_project[stem] != '\0') {
+            if (strlen(srv->session_project) != stem) {
+                continue;
+            }
+            size_t k = 0;
+            while (k < stem && scope_name_fold((unsigned char)name[k]) ==
+                                   scope_name_fold((unsigned char)srv->session_project[k])) {
+                k++;
+            }
+            if (k != stem) {
                 continue;
             }
         }
@@ -13821,7 +13893,7 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
                  tool_name, mcp_tool_profile_name(srv->tool_profile));
         return cbm_mcp_text_result(message, true);
     }
-    char *scope_refusal = scoped_project_guard(srv, args_json);
+    char *scope_refusal = scoped_project_guard(srv, tool_name, args_json);
     if (scope_refusal) {
         return scope_refusal;
     }
