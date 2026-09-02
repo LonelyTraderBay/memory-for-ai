@@ -47,7 +47,10 @@
 #endif
 
 enum {
-    APPLICATION_CONTEXT_HEADER_SIZE = 19,
+    /* Byte 19 carries scope_pinned (--scope). Safe to extend in place: the
+     * admission barrier guarantees a frontend and its daemon share one exact
+     * executable build, so old/new frame layouts can never interoperate. */
+    APPLICATION_CONTEXT_HEADER_SIZE = 20,
     APPLICATION_TOOL_HEADER_SIZE = 5,
     APPLICATION_UI_CONFIG_REQUEST_SIZE = 7,
     APPLICATION_UI_READINESS_REQUEST_SIZE = 1 + CBM_SHA256_DIGEST_LEN,
@@ -2321,9 +2324,10 @@ static cbm_daemon_runtime_application_status_t application_set_context(
     uint8_t profile_value = request[10];
     uint32_t event_length = application_get_u32(request + 11);
     uint32_t dialect_length = application_get_u32(request + 15);
+    bool scope_pinned = request[19] == 1;
     uint64_t expected = (uint64_t)APPLICATION_CONTEXT_HEADER_SIZE + root_length + allowed_length +
                         event_length + dialect_length;
-    if (request[5] > 1 || root_length == 0 || expected != request_length ||
+    if (request[5] > 1 || request[19] > 1 || root_length == 0 || expected != request_length ||
         (!allowed_present && allowed_length != 0) ||
         profile_value > (uint8_t)CBM_MCP_TOOL_PROFILE_SCOUT ||
         (profile_value != (uint8_t)CBM_MCP_TOOL_PROFILE_ALL &&
@@ -2371,6 +2375,11 @@ static cbm_daemon_runtime_application_status_t application_set_context(
         return CBM_DAEMON_RUNTIME_APPLICATION_REJECTED;
     }
     cbm_mcp_server_set_tool_profile(session->mcp, tool_profile);
+    if (scope_pinned && !cbm_mcp_server_pin_session_scope(session->mcp, true)) {
+        free(hook_event);
+        free(hook_dialect);
+        return CBM_DAEMON_RUNTIME_APPLICATION_REJECTED;
+    }
     session->tool_profile = tool_profile;
     session->hook_event = hook_event;
     session->hook_dialect = hook_dialect;
@@ -3168,7 +3177,7 @@ static cbm_daemon_runtime_application_status_t application_client_exchange(
 cbm_daemon_runtime_application_status_t cbm_daemon_application_client_set_context(
     cbm_daemon_runtime_client_t *client, const char *session_root, const char *allowed_root,
     cbm_mcp_tool_profile_t tool_profile, const char *hook_event, const char *hook_dialect,
-    uint32_t timeout_ms) {
+    bool scope_pinned, uint32_t timeout_ms) {
     if (!client || !session_root || !session_root[0]) {
         return CBM_DAEMON_RUNTIME_APPLICATION_REJECTED;
     }
@@ -3196,6 +3205,7 @@ cbm_daemon_runtime_application_status_t cbm_daemon_application_client_set_contex
     request[10] = (uint8_t)tool_profile;
     application_put_u32(request + 11, (uint32_t)event_length);
     application_put_u32(request + 15, (uint32_t)dialect_length);
+    request[19] = scope_pinned ? 1U : 0U;
     memcpy(request + APPLICATION_CONTEXT_HEADER_SIZE, session_root, root_length);
     if (allowed_root) {
         memcpy(request + APPLICATION_CONTEXT_HEADER_SIZE + root_length, allowed_root,

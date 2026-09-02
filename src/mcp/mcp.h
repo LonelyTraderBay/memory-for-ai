@@ -182,6 +182,14 @@ const char *cbm_mcp_server_session_root(const cbm_mcp_server_t *srv);
 const char *cbm_mcp_server_session_project(const cbm_mcp_server_t *srv);
 const char *cbm_mcp_server_allowed_root(const cbm_mcp_server_t *srv);
 
+/* Pin the session to its derived session project (--scope). While pinned,
+ * every tool that names a project ("project", "base_project",
+ * "target_project") must name the session project or omit it; another
+ * project's name is refused with an explicit scope error instead of silently
+ * serving cross-project data. list_projects reports only the pinned project.
+ * Requires a session context set beforehand; returns false without one. */
+bool cbm_mcp_server_pin_session_scope(cbm_mcp_server_t *srv, bool pinned);
+
 /* Enable/disable per-server update checks and automatic indexing. Enabled by
  * default for standalone servers; daemon sessions disable these so the shared
  * coordinator owns background work. */

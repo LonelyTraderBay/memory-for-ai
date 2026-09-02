@@ -489,6 +489,12 @@ void cbm_cli_set_activation_runtime_parent_for_test(const char *runtime_parent);
  * Prompts to delete old indexes if any exist — rejects on "no". */
 int cbm_cmd_install(int argc, char **argv);
 
+/* Repository root configured by the last successful `install --project`
+ * (repo-local .mcp.json entry named after the repository, pinned with
+ * --scope), or NULL when the last install was a regular one. main.c uses it
+ * to index that repository immediately after activation. */
+const char *cbm_cli_project_install_root(void);
+
 /* uninstall: remove skills, remove editor MCP configs, remove binary. */
 int cbm_cmd_uninstall(int argc, char **argv);
 

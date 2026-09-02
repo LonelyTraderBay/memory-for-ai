@@ -88,9 +88,13 @@ function Invoke-CbmDownload {
 }
 
 $SkipConfig = $false
+$ProjectMode = $false
+$ProjectName = ""
 foreach ($arg in $args) {
     if ($arg -eq "--skip-config") { $SkipConfig = $true }
     if ($arg -like "--dir=*") { $InstallDir = $arg.Substring(6) }
+    if ($arg -eq "--project") { $ProjectMode = $true }
+    if ($arg -like "--name=*") { $ProjectName = $arg.Substring(7) }
 }
 
 # Detect the OS architecture. RuntimeInformation.OSArchitecture reports the real
@@ -332,6 +336,8 @@ Get-ChildItem -LiteralPath $InstallDir -Filter "$BinName.retired-*" -ErrorAction
 
 $InstallArgs = @("install", "-y", "--force", "--dir=$InstallDir")
 if ($SkipConfig) { $InstallArgs += "--skip-config" }
+if ($ProjectMode) { $InstallArgs += "--project" }
+if ($ProjectName -ne "") { $InstallArgs += "--name=$ProjectName" }
 & $DownloadedBinary @InstallArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host "error: installation failed (exit code $LASTEXITCODE)" -ForegroundColor Red

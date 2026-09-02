@@ -3659,10 +3659,10 @@ TEST(daemon_runtime_disconnect_cancels_blocked_non_index_child_and_preserves_oth
     bool contexts_set =
         first && second &&
         cbm_daemon_application_client_set_context(first, root, root, CBM_MCP_TOOL_PROFILE_ALL, NULL,
-                                                  NULL, RUNTIME_TEST_TIMEOUT_MS) ==
+                                                  NULL, false, RUNTIME_TEST_TIMEOUT_MS) ==
             CBM_DAEMON_RUNTIME_APPLICATION_OK &&
         cbm_daemon_application_client_set_context(second, root, root, CBM_MCP_TOOL_PROFILE_ALL,
-                                                  NULL, NULL, RUNTIME_TEST_TIMEOUT_MS) ==
+                                                  NULL, NULL, false, RUNTIME_TEST_TIMEOUT_MS) ==
             CBM_DAEMON_RUNTIME_APPLICATION_OK;
     bool second_usable_before =
         contexts_set && runtime_real_application_ingest_probe(second) &&

@@ -25,6 +25,7 @@
 #include "cli/client_adapter.h"
 #include "mcp/mcp.h" // cbm_mcp_tool_input_schema — CLI flag parser + per-tool --help
 #include "mcp/index_supervisor.h"
+#include "pipeline/pipeline.h" // cbm_project_name_from_path — install --project summary
 
 /* CLI buffer size constants. */
 enum {
@@ -10173,6 +10174,112 @@ static int cli_install_activate(void *opaque) {
     return CLI_OK;
 }
 
+/* ── install --project: one repository, one named scoped server ── */
+
+/* Root of the repository configured by the last successful `install
+ * --project`; main.c uses it to index that repository right after the
+ * activation returns. */
+static char g_cli_project_install_root[CLI_BUF_1K] = {0};
+
+const char *cbm_cli_project_install_root(void) {
+    return g_cli_project_install_root[0] ? g_cli_project_install_root : NULL;
+}
+
+/* Per-project MCP server name: "memory-for-ai-" + sanitized repository
+ * directory name (invalid characters collapse into one '-', edges trim,
+ * suffix capped at 60 so the whole name stays well inside client limits).
+ * An explicit --name= override skips the derivation. */
+static bool cli_project_server_name(const char *repo_root, const char *name_override, char *out,
+                                    size_t out_size) {
+    const char prefix[] = "memory-for-ai-";
+    const size_t prefix_len = sizeof(prefix) - 1U;
+    const size_t max_suffix = 60U;
+    char fallback[CLI_BUF_1K];
+    const char *suffix = (name_override && name_override[0]) ? name_override : NULL;
+    if (!suffix) {
+        const char *base = repo_root;
+        for (const char *cursor = repo_root; cursor && *cursor; cursor++) {
+            if (*cursor == '/' || *cursor == '\\') {
+                base = cursor + 1;
+            }
+        }
+        snprintf(fallback, sizeof(fallback), "%s", base);
+        suffix = fallback;
+    }
+    if (!suffix || !suffix[0] || !out || out_size <= prefix_len + 1U) {
+        return false;
+    }
+    memcpy(out, prefix, prefix_len + 1U);
+    size_t used = prefix_len;
+    bool pending_dash = false;
+    for (const char *cursor = suffix; *cursor && used - prefix_len < max_suffix &&
+                                   used + 1U < out_size;
+         cursor++) {
+        char c = *cursor;
+        bool valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                    c == '.' || c == '_' || c == '-';
+        if (!valid) {
+            pending_dash = true;
+            continue;
+        }
+        if (pending_dash && used > prefix_len) {
+            out[used++] = '-';
+        }
+        pending_dash = false;
+        out[used++] = c;
+    }
+    out[used] = '\0';
+    while (used > prefix_len && out[used - 1] == '-') {
+        out[--used] = '\0';
+    }
+    return used > prefix_len;
+}
+
+/* Write the project-scoped MCP entry into the repository's .mcp.json, so
+ * agents with project-local servers (Claude Code and compatible) see exactly
+ * one server named after this repository, pinned to it with --scope. */
+static int cli_install_project_entry(const char *repo_root, const char *bin_target,
+                                     const char *name_override, bool dry_run) {
+    char server_name[CLI_BUF_1K];
+    if (!cli_project_server_name(repo_root, name_override, server_name,
+                                 sizeof(server_name))) {
+        (void)fprintf(stderr,
+                      "error: cannot derive a server name from '%s' (pass --name=<name>)\n",
+                      repo_root);
+        return CLI_ERR;
+    }
+    char scope_argument[CLI_BUF_1K];
+    int scope_len = snprintf(scope_argument, sizeof(scope_argument), "--scope=%s", repo_root);
+    if (scope_len <= 0 || (size_t)scope_len >= sizeof(scope_argument)) {
+        (void)fprintf(stderr, "error: repository path is too long for a scope argument\n");
+        return CLI_ERR;
+    }
+    char mcp_json[CLI_BUF_1K];
+    int mcp_len = snprintf(mcp_json, sizeof(mcp_json), "%s/.mcp.json", repo_root);
+    if (mcp_len <= 0 || (size_t)mcp_len >= sizeof(mcp_json)) {
+        (void)fprintf(stderr, "error: repository path is too long for a project entry\n");
+        return CLI_ERR;
+    }
+    static const char *const object_path[] = {"mcpServers"};
+    if (dry_run) {
+        printf("Project MCP entry (dry-run): '%s' in %s (scoped to %s)\n", server_name, mcp_json,
+               repo_root);
+        return CLI_OK;
+    }
+    if (cbm_upsert_json_named_mcp(bin_target, mcp_json, object_path, 1U, CBM_JSON_MCP_STANDARD,
+                                  server_name, scope_argument) != CLI_OK) {
+        (void)fprintf(stderr, "error: could not write the project MCP entry in %s\n", mcp_json);
+        return CLI_ERR;
+    }
+    char *project_name = cbm_project_name_from_path(repo_root);
+    printf("Project MCP server '%s' configured in %s\n", server_name, mcp_json);
+    printf("Scoped to repository: %s (project '%s')\n", repo_root,
+           project_name ? project_name : "?");
+    free(project_name);
+    snprintf(g_cli_project_install_root, sizeof(g_cli_project_install_root), "%s", repo_root);
+    return CLI_OK;
+}
+
 int cbm_cmd_install(int argc, char **argv) {
     parse_auto_answer(argc, argv);
     bool dry_run = false;
@@ -10182,6 +10289,8 @@ int cbm_cmd_install(int argc, char **argv) {
     bool skip_config = false;
     bool skip_binary = false;
     bool force_binary = false;
+    bool project_mode = false;
+    const char *project_name_override = NULL;
     const char *requested_clients = NULL;
     const char *requested_bin_dir = NULL;
     for (int i = 0; i < argc; i++) {
@@ -10195,6 +10304,17 @@ int cbm_cmd_install(int argc, char **argv) {
             reset_indexes = true;
         } else if (strcmp(argv[i], "--skip-config") == 0) {
             skip_config = true;
+        } else if (strcmp(argv[i], "--project") == 0) {
+            /* One repository, one named scoped server: agent configuration
+             * goes to the repository's project-local .mcp.json instead of
+             * every global client config. */
+            project_mode = true;
+        } else if (strncmp(argv[i], "--name=", SLEN("--name=")) == 0) {
+            project_name_override = argv[i] + SLEN("--name=");
+            if (!project_name_override[0]) {
+                (void)fprintf(stderr, "error: --name requires a value\n");
+                return CLI_TRUE;
+            }
         } else if (strncmp(argv[i], "--clients=", SLEN("--clients=")) == 0) {
             requested_clients = argv[i] + SLEN("--clients=");
             if (!requested_clients[0]) {
@@ -10236,6 +10356,23 @@ int cbm_cmd_install(int argc, char **argv) {
     if (!home) {
         (void)fprintf(stderr, "error: HOME not set (use USERPROFILE on Windows)\n");
         return CLI_TRUE;
+    }
+
+    if (project_mode && requested_clients) {
+        (void)fprintf(stderr, "error: --project cannot be combined with --clients (project mode "
+                              "configures the repository's .mcp.json, not global clients)\n");
+        return CLI_TRUE;
+    }
+    char project_repo_root[CLI_BUF_1K] = {0};
+    if (project_mode) {
+        if (!cbm_canonical_path(".", project_repo_root, sizeof(project_repo_root))) {
+            (void)fprintf(stderr,
+                          "error: --project could not resolve the current directory\n");
+            return CLI_TRUE;
+        }
+        /* The repository's own .mcp.json is the agent surface; no global
+         * client configuration is touched in project mode. */
+        skip_config = true;
     }
 
     char bin_dir[CLI_BUF_1K];
@@ -10523,6 +10660,12 @@ int cbm_cmd_install(int argc, char **argv) {
         return CLI_TRUE;
     }
 
+    if (project_mode &&
+        cli_install_project_entry(project_repo_root, bin_target, project_name_override,
+                                  dry_run) != CLI_OK) {
+        return CLI_TRUE;
+    }
+
     printf("\nInstall complete. Please restart your coding-agent sessions to "
            "properly take this into account.\n");
 #ifndef _WIN32
@@ -10530,6 +10673,8 @@ int cbm_cmd_install(int argc, char **argv) {
 #endif
     if (dry_run) {
         printf("\n(dry-run — no files were modified)\n");
+    } else if (project_mode) {
+        printf("Indexing the configured repository...\n");
     }
     return 0;
 }

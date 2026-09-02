@@ -1668,6 +1668,7 @@ struct cbm_mcp_server {
     bool session_detected;            /* true after first detection attempt */
     char *allowed_root;               /* explicit per-session boundary (heap, nullable) */
     bool allowed_root_policy_set;     /* true even when explicit policy is unrestricted */
+    bool scope_pinned;                /* --scope: refuse any project but the session's */
     bool background_tasks;            /* per-server update/auto-index work enabled */
     struct cbm_watcher *watcher;      /* external watcher ref (not owned) */
     struct cbm_config *config;        /* external config ref (not owned) */
@@ -1812,6 +1813,61 @@ const char *cbm_mcp_server_session_project(const cbm_mcp_server_t *srv) {
 
 const char *cbm_mcp_server_allowed_root(const cbm_mcp_server_t *srv) {
     return srv ? srv->allowed_root : NULL;
+}
+
+bool cbm_mcp_server_pin_session_scope(cbm_mcp_server_t *srv, bool pinned) {
+    if (!srv || !srv->session_detected || srv->session_project[0] == '\0') {
+        return false;
+    }
+    srv->scope_pinned = pinned;
+    return true;
+}
+
+/* ── --scope enforcement ─────────────────────────────────────────── */
+
+/* Build the refusal result for an out-of-scope project name. Path follows the
+ * same raw-in-message convention as build_project_list_error and friends. */
+static char *scoped_refusal_result(const char *key, const char *passed,
+                                   const cbm_mcp_server_t *srv) {
+    char message[CBM_SZ_2K];
+    snprintf(message, sizeof(message),
+             "{\"error\":\"session is scoped: '%s' is not this session's project\",\"scoped_to\":"
+             "\"%s\",\"scope_root\":\"%s\",\"hint\":\"This server serves one repository only "
+             "(--scope). Pass \\\"%s\\\" for \\\"%s\\\", or omit the argument.\"}",
+             passed, srv->session_project, srv->session_root, srv->session_project, key);
+    return cbm_mcp_text_result(message, true);
+}
+
+/* Refuse project-qualifying arguments that name anything but the pinned
+ * session project. The primary aliases resolve exactly like the tools do
+ * (#640 keys, #1025 folder-name tail adoption), so an agent passing the repo
+ * FOLDER name of the scoped repository still lands inside the scope; every
+ * other name — however spelled — is refused before the tool runs. Returns an
+ * owned error result, or NULL when the call may proceed. */
+static char *scoped_project_guard(cbm_mcp_server_t *srv, const char *args_json) {
+    if (!srv || !srv->scope_pinned || !args_json || args_json[0] == '\0') {
+        return NULL;
+    }
+    char *primary = get_project_arg(args_json);
+    char *error = NULL;
+    if (primary && primary[0] && strcmp(primary, srv->session_project) != 0) {
+        error = scoped_refusal_result("project", primary, srv);
+    }
+    free(primary);
+    for (size_t i = 0; !error && i < 2; i++) {
+        static const char *const keys[2] = {"base_project", "target_project"};
+        char *raw = cbm_mcp_get_string_arg(args_json, keys[i]);
+        if (!raw || !raw[0]) {
+            free(raw);
+            continue;
+        }
+        char *resolved = resolve_project_tail(raw); /* takes ownership of raw */
+        if (resolved && strcmp(resolved, srv->session_project) != 0) {
+            error = scoped_refusal_result(keys[i], resolved, srv);
+        }
+        free(resolved);
+    }
+    return error;
 }
 
 void cbm_mcp_server_set_background_tasks(cbm_mcp_server_t *srv, bool enabled) {
@@ -2766,7 +2822,6 @@ static int project_db_name_cmp(const void *a, const void *b) {
 /* list_projects: scan cache directory for .db files.
  * Each project is a single .db file — no central registry needed. */
 static char *handle_list_projects(cbm_mcp_server_t *srv, const char *args) {
-    (void)srv;
     int offset = cbm_mcp_get_int_arg(args, "offset", 0);
     int limit = cbm_mcp_get_int_arg(args, "limit", 50);
     bool include_details = cbm_mcp_get_bool_arg(args, "include_details");
@@ -2819,6 +2874,15 @@ static char *handle_list_projects(cbm_mcp_server_t *srv, const char *args) {
         size_t len = strlen(name);
         if (!is_project_db_file(name, len)) {
             continue;
+        }
+        /* --scope: report only the pinned session project, so a scoped agent
+         * cannot even discover that other projects exist. */
+        if (srv && srv->scope_pinned) {
+            size_t stem = len - MCP_DB_EXT;
+            if (strncmp(name, srv->session_project, stem) != 0 ||
+                srv->session_project[stem] != '\0') {
+                continue;
+            }
         }
         if (db_count == db_cap) {
             size_t next_cap = db_cap ? db_cap * 2 : 64;
@@ -13756,6 +13820,10 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
         snprintf(message, sizeof(message), "tool '%s' is not available in the %s tool profile",
                  tool_name, mcp_tool_profile_name(srv->tool_profile));
         return cbm_mcp_text_result(message, true);
+    }
+    char *scope_refusal = scoped_project_guard(srv, args_json);
+    if (scope_refusal) {
+        return scope_refusal;
     }
 
     if (strcmp(tool_name, "list_projects") == 0) {

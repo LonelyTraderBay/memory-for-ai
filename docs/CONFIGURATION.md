@@ -139,6 +139,50 @@ Notes:
 - `MFA_CACHE_DIR` changes both the UI config location and the runtime settings database location.
 - CBM resolves `MFA_CACHE_DIR` to one canonical per-account cache root. A process configured with a different root fails while any CBM session or command is active; close them before switching roots.
 
+## 3b. Per-Project Scoped Sessions (`--scope`, `install --project`)
+
+One binary still serves any number of repositories, but a **scoped session**
+serves exactly one:
+
+```bash
+memory-for-ai --scope=/path/to/repo        # MCP server pinned to that repo
+```
+
+While pinned:
+
+- Every tool argument that names a project (`project`, `base_project`,
+  `target_project`) must name the session's derived project or be omitted;
+  any other name is refused with an explicit scope error before the tool
+  runs. The repository FOLDER name still resolves to the full derived
+  project name (the `list_projects` alias rule), so an agent naturally
+  spelling "my-repo" stays inside the scope.
+- `list_projects` reports only the pinned project — other indexed projects
+  are not even visible.
+- Indexing is confined to paths inside the scoped repository (the scope path
+  is also the session's `CBM_ALLOWED_ROOT` boundary).
+
+`install --project` (run from the repository root) wires this up end to end:
+it installs/refreshes the shared binary WITHOUT touching global agent
+configs, writes a project-local `.mcp.json` entry named
+`memory-for-ai-<repo-directory>` (invalid characters collapse to `-`; pass
+`--name=<suffix>` to override) whose command is the installed binary with
+`--scope=<repository>`, and indexes the repository immediately. The shell and
+PowerShell installers forward the same flag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh | bash -s -- --project
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 --project
+```
+
+Result: an agent opened in that repository sees one MCP server named after
+it, serving only its graph; an agent opened in a different repository sees
+its own server. `uninstall` removes the shared binary and global config as
+before; a project-local `.mcp.json` entry is the repository's own file and
+is not touched by it.
+
 ## 4. Environment Variables
 
 These environment variables affect runtime behavior.

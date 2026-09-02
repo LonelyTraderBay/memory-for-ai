@@ -129,7 +129,7 @@ cbm_daemon_runtime_application_callbacks_t cbm_daemon_application_runtime_callba
 cbm_daemon_runtime_application_status_t cbm_daemon_application_client_set_context(
     cbm_daemon_runtime_client_t *client, const char *session_root, const char *allowed_root,
     cbm_mcp_tool_profile_t tool_profile, const char *hook_event, const char *hook_dialect,
-    uint32_t timeout_ms);
+    bool scope_pinned, uint32_t timeout_ms);
 
 /* Persist a masked UI configuration mutation in the daemon. A zero/unknown
  * mask, an invalid port, or a non-canonical unused field is rejected before

@@ -21,6 +21,8 @@ INSTALL_DIR="$HOME/.local/bin"
 SKIP_CONFIG=false
 CLIENTS_SET=false
 CLIENTS=""
+PROJECT_MODE=false
+PROJECT_NAME=""
 CBM_DOWNLOAD_URL="${CBM_DOWNLOAD_URL:-https://github.com/${REPO}/releases/latest/download}"
 
 # Security: every remote hop must remain HTTPS. Plain HTTP is accepted only
@@ -104,11 +106,23 @@ while [ "$#" -gt 0 ]; do
             SKIP_CONFIG=true
             shift
             ;;
+        --project)
+            PROJECT_MODE=true
+            shift
+            ;;
+        --name=*)
+            PROJECT_NAME="${1#--name=}"
+            shift
+            ;;
         --help|-h)
-            echo "Usage: install.sh [--dir=<path>] [--clients=<list>] [--skip-config]"
+            echo "Usage: install.sh [--dir=<path>] [--clients=<list>] [--skip-config] [--project] [--name=<name>]"
             echo "  --dir PATH       Install directory (default: ~/.local/bin)"
             echo "  --clients LIST   Configure only comma-separated clients"
             echo "  --skip-config    Skip automatic agent configuration"
+            echo "  --project        Configure THIS repository (cwd) instead of global clients:"
+            echo "                   writes .mcp.json here with a server named memory-for-ai-<repo>,"
+            echo "                   pinned to this repository with --scope, then indexes it"
+            echo "  --name NAME      Override the per-project server name suffix (--project only)"
             exit 0
             ;;
         -*)
@@ -341,6 +355,12 @@ if [ "$CLIENTS_SET" = true ]; then
 fi
 if [ "$SKIP_CONFIG" = true ]; then
     INSTALL_ARGS+=(--skip-config)
+fi
+if [ "$PROJECT_MODE" = true ]; then
+    INSTALL_ARGS+=(--project)
+fi
+if [ -n "$PROJECT_NAME" ]; then
+    INSTALL_ARGS+=("--name=$PROJECT_NAME")
 fi
 "$DLBIN" install "${INSTALL_ARGS[@]}"
 

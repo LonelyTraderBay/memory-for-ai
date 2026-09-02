@@ -168,12 +168,15 @@ static cbm_daemon_runtime_application_status_t app_test_request(
 static bool app_test_context_request_options(const char *root, const char *allowed,
                                              cbm_mcp_tool_profile_t tool_profile,
                                              const char *hook_event, const char *hook_dialect,
-                                             uint8_t **request_out, uint32_t *length_out) {
+                                             bool scope_pinned, uint8_t **request_out,
+                                             uint32_t *length_out) {
     size_t root_length = strlen(root);
     size_t allowed_length = allowed ? strlen(allowed) : 0;
     size_t event_length = hook_event ? strlen(hook_event) : 0;
     size_t dialect_length = hook_dialect ? strlen(hook_dialect) : 0;
-    size_t total = 19U + root_length + allowed_length + event_length + dialect_length;
+    /* Byte 19 carries scope_pinned — mirrors the production packer in
+     * application.c (APPLICATION_CONTEXT_HEADER_SIZE). */
+    size_t total = 20U + root_length + allowed_length + event_length + dialect_length;
     if (root_length == 0 || root_length > UINT32_MAX || allowed_length > UINT32_MAX ||
         event_length > UINT32_MAX || dialect_length > UINT32_MAX || total > UINT32_MAX) {
         return false;
@@ -201,15 +204,16 @@ static bool app_test_context_request_options(const char *root, const char *allow
     request[16] = (uint8_t)(dialect_length >> 16);
     request[17] = (uint8_t)(dialect_length >> 8);
     request[18] = (uint8_t)dialect_length;
-    memcpy(request + 19, root, root_length);
+    request[19] = scope_pinned ? 1U : 0U;
+    memcpy(request + 20, root, root_length);
     if (allowed_length > 0) {
-        memcpy(request + 19 + root_length, allowed, allowed_length);
+        memcpy(request + 20 + root_length, allowed, allowed_length);
     }
     if (event_length > 0) {
-        memcpy(request + 19 + root_length + allowed_length, hook_event, event_length);
+        memcpy(request + 20 + root_length + allowed_length, hook_event, event_length);
     }
     if (dialect_length > 0) {
-        memcpy(request + 19 + root_length + allowed_length + event_length, hook_dialect,
+        memcpy(request + 20 + root_length + allowed_length + event_length, hook_dialect,
                dialect_length);
     }
     *request_out = request;
@@ -220,7 +224,7 @@ static bool app_test_context_request_options(const char *root, const char *allow
 static bool app_test_context_request(const char *root, const char *allowed, uint8_t **request_out,
                                      uint32_t *length_out) {
     return app_test_context_request_options(root, allowed, CBM_MCP_TOOL_PROFILE_ALL, NULL, NULL,
-                                            request_out, length_out);
+                                            false, request_out, length_out);
 }
 
 static bool app_test_text_request(cbm_daemon_application_request_kind_t kind, const char *text,
@@ -714,6 +718,43 @@ TEST(daemon_application_requires_immutable_explicit_context) {
     PASS();
 }
 
+TEST(daemon_application_scope_pinned_context_is_accepted) {
+    cbm_daemon_application_t *application = cbm_daemon_application_new(NULL);
+    cbm_daemon_runtime_application_callbacks_t callbacks =
+        cbm_daemon_application_runtime_callbacks(application);
+    cbm_daemon_runtime_application_session_t *session = app_test_open(&callbacks, 1);
+    char root[APP_TEST_PATH_CAP];
+    snprintf(root, sizeof(root), "%s/cbm-app-scope-XXXXXX", cbm_tmpdir());
+    bool root_ok = cbm_mkdtemp(root) != NULL;
+    uint8_t *context = NULL;
+    uint32_t context_length = 0;
+    uint8_t *response = NULL;
+    uint32_t response_length = 0;
+    /* Byte 19 set: the --scope pin must travel the same frame and be applied
+     * to the session's server (a rejected pin would surface as REJECTED —
+     * OK proves the pin landed on a valid session context). */
+    bool encoded = root_ok && app_test_context_request_options(
+                                  root, root, CBM_MCP_TOOL_PROFILE_ALL, NULL, NULL, true, &context,
+                                  &context_length);
+    cbm_daemon_runtime_application_status_t status =
+        encoded ? app_test_request(&callbacks, session, context, context_length, &response,
+                                   &response_length)
+                : CBM_DAEMON_RUNTIME_APPLICATION_TRANSPORT_ERROR;
+
+    callbacks.session_close(callbacks.context, session);
+    (void)cbm_daemon_application_shutdown(application, APP_TEST_TIMEOUT_MS);
+    cbm_daemon_application_free(application);
+    free(context);
+    free(response);
+    (void)cbm_rmdir(root);
+
+    ASSERT_TRUE(application != NULL);
+    ASSERT_TRUE(session != NULL);
+    ASSERT_TRUE(encoded);
+    ASSERT_EQ(status, CBM_DAEMON_RUNTIME_APPLICATION_OK);
+    PASS();
+}
+
 TEST(daemon_application_mcp_notification_has_no_response) {
     cbm_daemon_application_t *application = cbm_daemon_application_new(NULL);
     cbm_daemon_runtime_application_callbacks_t callbacks =
@@ -835,7 +876,7 @@ TEST(daemon_application_restricted_profile_owns_no_background_surfaces) {
     bool encoded =
         db_ok && session &&
         app_test_context_request_options(root, root, CBM_MCP_TOOL_PROFILE_SCOUT, NULL, NULL,
-                                         &context, &context_length) &&
+                                         false, &context, &context_length) &&
         app_test_text_request(
             CBM_DAEMON_APPLICATION_REQUEST_MCP,
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", &initialize,
@@ -939,7 +980,7 @@ TEST(daemon_application_hook_context_preserves_event_and_dialect) {
     bool encoded =
         root_ok && session &&
         app_test_context_request_options(root, root, CBM_MCP_TOOL_PROFILE_ALL, "SessionStart",
-                                         "copilot", &context, &context_length) &&
+                                         "copilot", false, &context, &context_length) &&
         app_test_text_request(CBM_DAEMON_APPLICATION_REQUEST_HOOK_AUGMENT, input, &hook,
                               &hook_length);
     uint8_t *response = NULL;
@@ -1884,8 +1925,8 @@ static bool app_test_initialize_profile(const cbm_daemon_runtime_application_cal
     uint32_t initialize_length = 0;
     bool encoded =
         session &&
-        app_test_context_request_options(root, root, profile, hook_event, hook_dialect, &context,
-                                         &context_length) &&
+        app_test_context_request_options(root, root, profile, hook_event, hook_dialect, false,
+                                         &context, &context_length) &&
         app_test_text_request(CBM_DAEMON_APPLICATION_REQUEST_MCP,
                               "{\"jsonrpc\":\"2.0\",\"id\":4100,\"method\":\"initialize\","
                               "\"params\":{}}",
@@ -5350,6 +5391,7 @@ SUITE(daemon_application) {
     RUN_TEST(daemon_application_new_session_does_not_retain_initial_store);
     RUN_TEST(daemon_application_request_cancel_is_scoped_to_exact_token);
     RUN_TEST(daemon_application_requires_immutable_explicit_context);
+    RUN_TEST(daemon_application_scope_pinned_context_is_accepted);
     RUN_TEST(daemon_application_ui_config_updates_are_masked_and_serialized);
     RUN_TEST(daemon_application_ui_config_rejects_noncanonical_frames);
     RUN_TEST(daemon_application_ui_readiness_proof_is_generation_bound_before_context);

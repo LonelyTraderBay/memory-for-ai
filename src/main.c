@@ -9,6 +9,10 @@
  *   --ui=true/false Enable/disable HTTP UI server (persisted)
  *   --port=N        Set HTTP UI port (persisted, default 9749)
  *   --tool-profile=analysis|scout  Expose a restricted agent tool surface
+ *   --scope=<repo>       Pin this session to one repository's project: every
+ *                        project-qualifying tool argument must name it (or be
+ *                        omitted), list_projects reports only it, and indexing
+ *                        is confined to paths inside it
  *
  * Long-lived MCP and hook frontends are thin clients of one mandatory
  * per-account daemon. One-shot CLI tool calls run in an isolated local server
@@ -913,6 +917,7 @@ static void print_help(void) {
     printf("  --ui=false   Disable HTTP graph visualization (persisted)\n");
     printf("  --port=N     Set UI port (default 9749, persisted)\n");
     printf("  --tool-profile=analysis|scout  Expose a restricted inspection surface\n");
+    printf("  --scope=<repo>  Pin this session to one repository's project only\n");
     printf("\nSupported automatic/conditional client surfaces (45):\n");
     printf("  Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode,\n");
     printf("  Antigravity, Aider, KiloCode, VS Code, Cursor, Windsurf,\n");
@@ -1070,7 +1075,28 @@ static int handle_subcommand(int argc, char **argv, cbm_project_lock_manager_t *
             return cbm_cmd_hook_augment(argc - i - SKIP_ONE, argv + i + SKIP_ONE);
         }
         if (strcmp(argv[i], "install") == 0) {
-            return cbm_cmd_install(argc - i - SKIP_ONE, argv + i + SKIP_ONE);
+            int install_status = cbm_cmd_install(argc - i - SKIP_ONE, argv + i + SKIP_ONE);
+            if (install_status == 0) {
+                /* `install --project` finishes by indexing the repository it
+                 * just configured, through the same isolated local tool path
+                 * the `cli` subcommand uses. */
+                const char *project_root = cbm_cli_project_install_root();
+                if (project_root) {
+                    char *index_argv[] = {"index_repository", "--repo-path",
+                                          (char *)project_root, NULL};
+                    cbm_mem_init_with_cap(
+                        cbm_mem_ram_fraction_for_total(cbm_system_info().total_ram),
+                        cbm_index_worker_memory_budget_bytes());
+                    if (run_cli(3, index_argv, project_locks, maintenance_context) != 0) {
+                        (void)fprintf(stderr,
+                                      "warning: the post-install index of %s failed; run "
+                                      "`memory-for-ai cli index_repository --repo-path %s` "
+                                      "manually\n",
+                                      project_root, project_root);
+                    }
+                }
+            }
+            return install_status;
         }
         if (strcmp(argv[i], "uninstall") == 0) {
             return cbm_cmd_uninstall(argc - i - SKIP_ONE, argv + i + SKIP_ONE);
@@ -1435,17 +1461,64 @@ static bool main_session_context(const char *preferred_root, char root_out[MAIN_
     return true;
 }
 
+/* --scope=<repo>: pin this MCP session to one repository. Accepts both
+ * "--scope=X" and "--scope X". Sets *scope_path to the argument (NULL when
+ * the flag is absent) and canonicalizes it against THIS process's cwd so the
+ * daemon-side canonicalization cannot resolve a relative path against the
+ * long-lived daemon's cwd instead. Returns 0 on success, -1 on a usage error
+ * or a path that does not canonicalize. */
+static int main_parse_scope_arg(int argc, const char *const argv[], char *scope_out,
+                                const char **scope_out_ptr) {
+    const char *scope = NULL;
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (!arg) {
+            continue;
+        }
+        if (strncmp(arg, "--scope=", SLEN("--scope=")) == 0) {
+            scope = arg + SLEN("--scope=");
+        } else if (strcmp(arg, "--scope") == 0) {
+            if (i + 1 >= argc || !argv[i + 1] || !argv[i + 1][0]) {
+                return -1;
+            }
+            scope = argv[++i];
+        }
+    }
+    if (!scope) {
+        scope_out[0] = '\0';
+        *scope_out_ptr = NULL;
+        return 0;
+    }
+    if (!scope[0] || !cbm_canonical_path(scope, scope_out, MAIN_PATH_CAP)) {
+        return -1;
+    }
+    *scope_out_ptr = scope_out;
+    return 0;
+}
+
 static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const char *preferred_root,
                                     cbm_mcp_tool_profile_t tool_profile, const char *hook_event,
-                                    const char *hook_dialect, uint32_t timeout_ms) {
+                                    const char *hook_dialect, const char *scope_path,
+                                    uint32_t timeout_ms) {
     char root[MAIN_PATH_CAP];
     char allowed[MAIN_PATH_CAP];
     const char *allowed_ptr = NULL;
-    if (!main_session_context(preferred_root, root, allowed, &allowed_ptr)) {
+    if (scope_path && scope_path[0]) {
+        /* --scope: this session serves exactly one repository. The scope path
+         * is both the session root and the indexing boundary, so no tool of
+         * this session can touch anything outside the scoped repo. */
+        if (strlen(scope_path) >= sizeof(root) || strlen(scope_path) >= sizeof(allowed)) {
+            return false;
+        }
+        snprintf(root, sizeof(root), "%s", scope_path);
+        snprintf(allowed, sizeof(allowed), "%s", scope_path);
+        allowed_ptr = allowed;
+    } else if (!main_session_context(preferred_root, root, allowed, &allowed_ptr)) {
         return false;
     }
     return cbm_daemon_application_client_set_context(client, root, allowed_ptr, tool_profile,
-                                                     hook_event, hook_dialect, timeout_ms) ==
+                                                     hook_event, hook_dialect, scope_path != NULL,
+                                                     timeout_ms) ==
            CBM_DAEMON_RUNTIME_APPLICATION_OK;
 }
 
@@ -1621,7 +1694,7 @@ static char *main_local_cli_daemon_execute(const char *tool_name, const char *ar
     bool context_ok =
         main_session_context(NULL, session_root, allowed_root, &allowed_root_ptr) &&
         main_set_client_context(bootstrap.client, session_root, CBM_MCP_TOOL_PROFILE_ALL, NULL,
-                                NULL, MAIN_CONNECT_TIMEOUT_MS);
+                                NULL, NULL, MAIN_CONNECT_TIMEOUT_MS);
     if (context_ok &&
         cbm_daemon_application_client_tool(bootstrap.client, tool_name, args_json, &response,
                                            &response_length, MAIN_REQUEST_TIMEOUT_MS) ==
@@ -1739,7 +1812,7 @@ static int main_run_hook_frontend(cbm_daemon_runtime_client_t *client, const cha
     char *hook_cwd = main_hook_cwd(input);
     bool context_set =
         main_set_client_context(client, hook_cwd, CBM_MCP_TOOL_PROFILE_ALL, hook_event,
-                                hook_dialect, MAIN_HOOK_CONNECT_TIMEOUT_MS);
+                                hook_dialect, NULL, MAIN_HOOK_CONNECT_TIMEOUT_MS);
     free(hook_cwd);
     if (!context_set) {
         free(input);
@@ -2387,7 +2460,7 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
         uint8_t update_mask = 0x03U; /* enabled + port */
         bool context_set =
             main_set_client_context(start_result.client, ".", CBM_MCP_TOOL_PROFILE_ALL, NULL, NULL,
-                                    MAIN_CONNECT_TIMEOUT_MS);
+                                    NULL, MAIN_CONNECT_TIMEOUT_MS);
         if (!context_set || cbm_daemon_application_client_set_ui_config(
                                 start_result.client, update_mask, true, ui_port,
                                 MAIN_CONNECT_TIMEOUT_MS) != CBM_DAEMON_RUNTIME_APPLICATION_OK) {
@@ -2466,6 +2539,14 @@ int main(int argc, char **argv) {
         cbm_mcp_parse_tool_profile_args(argc, (const char *const *)argv, &tool_profile) != 0) {
         (void)fprintf(stderr, "memory-for-ai: --tool-profile requires the supported value "
                               "'analysis' or 'scout'\n");
+        return 2;
+    }
+    char scope_canonical[MAIN_PATH_CAP];
+    const char *scope_path = NULL;
+    if (role == CBM_DAEMON_PROCESS_MCP_CLIENT &&
+        main_parse_scope_arg(argc, (const char *const *)argv, scope_canonical, &scope_path) != 0) {
+        (void)fprintf(stderr, "memory-for-ai: --scope requires an existing directory path "
+                              "(--scope=<repo> or --scope <repo>)\n");
         return 2;
     }
     const char *hook_event = NULL;
@@ -2966,7 +3047,7 @@ int main(int argc, char **argv) {
     g_daemon_client = bootstrap_result.client;
 
     if (role == CBM_DAEMON_PROCESS_MCP_CLIENT &&
-        !main_set_client_context(g_daemon_client, NULL, tool_profile, NULL, NULL,
+        !main_set_client_context(g_daemon_client, NULL, tool_profile, NULL, NULL, scope_path,
                                  MAIN_CONNECT_TIMEOUT_MS)) {
         (void)fprintf(stderr, "memory-for-ai: daemon session context was rejected\n");
         (void)cbm_daemon_runtime_client_close(g_daemon_client, MAIN_CLOSE_TIMEOUT_MS);
