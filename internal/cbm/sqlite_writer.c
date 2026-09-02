@@ -54,8 +54,23 @@
 #define CBM_PENDING_BYTE (0x40000000u)
 #define CBM_PENDING_BYTE_PAGE ((CBM_PENDING_BYTE / CBM_PAGE_SIZE) + 1)
 
+#if defined(CBM_SQLITE_WRITER_ENABLE_TEST_API) && CBM_SQLITE_WRITER_ENABLE_TEST_API
+/* Test seam: relocate the reserved page the allocators must skip, so a tiny
+ * dump crosses it (the production location needs a real 1 GiB store). Zero
+ * restores the production location. Test builds only — never in prod. */
+static uint32_t g_test_pending_page = 0U;
+void cbm_sqlite_writer_set_test_pending_page(uint32_t page) {
+    g_test_pending_page = page;
+}
+#endif
+
 /* Skip the pending byte page if allocation lands on it. */
 static inline uint32_t cbm_skip_pending_byte(uint32_t pgno) {
+#if defined(CBM_SQLITE_WRITER_ENABLE_TEST_API) && CBM_SQLITE_WRITER_ENABLE_TEST_API
+    if (g_test_pending_page != 0U) {
+        return pgno == g_test_pending_page ? pgno + SKIP_ONE : pgno;
+    }
+#endif
     return pgno == CBM_PENDING_BYTE_PAGE ? pgno + SKIP_ONE : pgno;
 }
 #define SCHEMA_FORMAT 4
@@ -879,6 +894,10 @@ static uint32_t write_overflow_pages(FILE *fp, uint32_t *next_page, const uint8_
 
     int offset = 0;
     while (offset < data_len) {
+        // Same pending-byte-page rule as every other allocator here (see
+        // cbm_skip_pending_byte): a spilled payload crossing the 1 GiB
+        // boundary must never land on SQLite's reserved locking page.
+        *next_page = cbm_skip_pending_byte(*next_page);
         uint32_t pnum = (*next_page)++;
         if (first_page == 0) {
             first_page = pnum;

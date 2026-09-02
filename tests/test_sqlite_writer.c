@@ -681,6 +681,134 @@ TEST(sw_oversized_node) {
     PASS();
 }
 
+/* Read one 64 KiB writer page (1-based) from a dump file. */
+static bool sw_read_page(FILE *fp, long page_num, uint8_t *out) {
+    if (fseek(fp, (page_num - 1) * 65536L, SEEK_SET) != 0) {
+        return false;
+    }
+    return fread(out, 1, 65536, fp) == 65536;
+}
+
+static bool sw_page_has_data(const uint8_t *page) {
+    for (size_t i = 0; i < 65536; i++) {
+        if (page[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The reserved pending-byte page (the 1 GiB locking offset) must never be
+ * allocated. The test seam relocates it to page 4 so a tiny dump crosses it
+ * for real: one node with a ~500 KB property spills a multi-page overflow
+ * chain right through the relocated page. Regression for write_overflow_pages
+ * — the one allocator that forgot the skip and corrupted >1 GiB stores.
+ * sw_oversized_node above is the no-seam control: the same spill without a
+ * relocated pending page must be (and is) fully "ok". */
+TEST(sw_overflow_skips_pending_byte_page) {
+    char path[256];
+    ASSERT_EQ(make_temp_db(path, sizeof(path)), 0);
+
+    int prop_len = 500000;
+    char *big_props = (char *)malloc(prop_len + 1);
+    ASSERT_NOT_NULL(big_props);
+    memset(big_props, 'x', prop_len);
+    big_props[0] = '"';
+    big_props[prop_len - 1] = '"';
+    big_props[prop_len] = '\0';
+
+    CBMDumpNode nodes[1] = {{
+        .id = 1,
+        .project = "test",
+        .label = "Function",
+        .name = "pending_byte_fn",
+        .qualified_name = "test.pending_byte_fn",
+        .file_path = "huge.go",
+        .start_line = 1,
+        .end_line = 9999,
+        .properties = big_props,
+    }};
+
+    cbm_sqlite_writer_set_test_pending_page(4);
+    int rc = cbm_write_db(path, "test", "/tmp/test", "2026-03-28T00:00:00Z", nodes, 1, NULL, 0,
+                          NULL, 0, NULL, 0);
+    cbm_sqlite_writer_set_test_pending_page(0);
+    ASSERT_EQ(rc, 0);
+
+    /* The relocated pending page must be untouched while its neighbours carry
+     * overflow data — the chain really jumped over it, not around it. */
+    FILE *fp = cbm_fopen(path, "rb");
+    ASSERT_NOT_NULL(fp);
+    uint8_t *page_bytes = (uint8_t *)malloc(65536);
+    ASSERT_NOT_NULL(page_bytes);
+    ASSERT_TRUE(sw_read_page(fp, 4, page_bytes));
+    bool page4_zero = !sw_page_has_data(page_bytes);
+    ASSERT_TRUE(sw_read_page(fp, 3, page_bytes));
+    bool page3_data = sw_page_has_data(page_bytes);
+    ASSERT_TRUE(sw_read_page(fp, 5, page_bytes));
+    bool page5_data = sw_page_has_data(page_bytes);
+    free(page_bytes);
+    fclose(fp);
+    ASSERT_TRUE(page4_zero);
+    ASSERT_TRUE(page3_data);
+    ASSERT_TRUE(page5_data);
+
+    sqlite3 *db = NULL;
+    rc = sqlite3_open(path, &db);
+    ASSERT_EQ(rc, SQLITE_OK);
+
+    /* SQLite must see no corruption. Findings may arrive one row per message
+     * or packed into a single newline-separated row, so judge per line: the
+     * only legitimate finding is the intentionally unreferenced page 4 —
+     * anything else (a "2nd reference", a broken chain, a short read) is the
+     * skip failing. */
+    sqlite3_stmt *stmt = NULL;
+    bool never_used_page4 = false;
+    bool integrity_bad = false;
+    sqlite3_prepare_v2(db, "PRAGMA integrity_check", -1, &stmt, NULL);
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *segment = (const char *)sqlite3_column_text(stmt, 0);
+        while (segment != NULL && segment[0] != '\0') {
+            const char *newline = strchr(segment, '\n');
+            size_t segment_len = newline != NULL ? (size_t)(newline - segment) : strlen(segment);
+            while (segment_len > 0 &&
+                   (segment[segment_len - 1] == '\r' || segment[segment_len - 1] == ' ')) {
+                segment_len--;
+            }
+            if ((segment_len == 2 && memcmp(segment, "ok", 2) == 0) ||
+                (segment_len == 24 && memcmp(segment, "*** in database main ***", 24) == 0)) {
+                /* banner / clean marker */
+            } else if (segment_len == 18 && memcmp(segment, "Page 4: never used", 18) == 0) {
+                never_used_page4 = true;
+            } else {
+                fprintf(stderr, "sw_overflow_skips_pending_byte_page: integrity finding=[%.*s]\n",
+                        (int)segment_len, segment);
+                integrity_bad = true;
+            }
+            segment = newline != NULL ? newline + 1 : NULL;
+        }
+    }
+    sqlite3_finalize(stmt);
+    ASSERT_FALSE(integrity_bad);
+    ASSERT_TRUE(never_used_page4);
+
+    /* The spilled property itself must round-trip byte-exact through the chain
+     * that jumped the pending page. */
+    sqlite3_prepare_v2(db, "SELECT properties FROM nodes WHERE id=1", -1, &stmt, NULL);
+    rc = sqlite3_step(stmt);
+    ASSERT_EQ(rc, SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_bytes(stmt, 0), prop_len);
+    const void *blob = sqlite3_column_blob(stmt, 0);
+    ASSERT_NOT_NULL(blob);
+    ASSERT_EQ(memcmp(blob, big_props, (size_t)prop_len), 0);
+    sqlite3_finalize(stmt);
+
+    sqlite3_close(db);
+    free(big_props);
+    unlink(path);
+    PASS();
+}
+
 TEST(sw_stream_open_does_not_truncate_destination) {
     char path[256];
     ASSERT_EQ(make_temp_db(path, sizeof(path)), 0);
@@ -885,6 +1013,7 @@ SUITE(sqlite_writer) {
     RUN_TEST(sw_empty);
     RUN_TEST(sw_multi_page);
     RUN_TEST(sw_oversized_node);
+    RUN_TEST(sw_overflow_skips_pending_byte_page);
     RUN_TEST(sw_stream_open_does_not_truncate_destination);
     RUN_TEST(sw_publish_removes_destination_sidecars);
     RUN_TEST(sw_publish_failure_preserves_destination_sidecars);

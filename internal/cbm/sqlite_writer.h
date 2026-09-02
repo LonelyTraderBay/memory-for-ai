@@ -90,4 +90,12 @@ int cbm_writer_finalize(cbm_db_writer_t *w, const char *project, const char *roo
                         CBMDumpEdge *edges, int edge_count, CBMDumpVector *vectors,
                         int vector_count, CBMDumpTokenVec *token_vecs, int token_vec_count);
 
+#if defined(CBM_SQLITE_WRITER_ENABLE_TEST_API) && CBM_SQLITE_WRITER_ENABLE_TEST_API
+/* Test-only seam: relocate the reserved pending-byte page that every page
+ * allocator must skip (production location: the 1 GiB offset, reachable only
+ * with a real 1 GiB store). Pass a small page number to make a tiny dump
+ * exercise the skip logic; pass 0 to restore the production location. */
+void cbm_sqlite_writer_set_test_pending_page(uint32_t page);
+#endif
+
 #endif // CBM_SQLITE_WRITER_H

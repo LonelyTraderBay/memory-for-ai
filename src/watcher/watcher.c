@@ -626,7 +626,7 @@ static uint64_t sig_fold_path_stat(uint64_t h, const char *root_path, const char
  * the discovery result; directory enumeration order can vary across filesystems
  * without causing a false change. */
 static bool non_git_filesystem_signature(const char *root_path, uint64_t *signature_out,
-                                        int *file_count_out) {
+                                         int *file_count_out) {
     if (!root_path || !signature_out || !file_count_out) {
         return false;
     }
@@ -666,8 +666,7 @@ static bool non_git_filesystem_signature(const char *root_path, uint64_t *signat
         xorsum ^= record;
     }
     cbm_discover_free(files, file_count);
-    uint64_t h = sum ^ ((xorsum << 17U) | (xorsum >> 47U)) ^
-                 ((uint64_t)file_count * SIG_FNV_PRIME);
+    uint64_t h = sum ^ ((xorsum << 17U) | (xorsum >> 47U)) ^ ((uint64_t)file_count * SIG_FNV_PRIME);
     *signature_out = file_count > 0 ? (h ? h : 1U) : 0;
     *file_count_out = file_count;
     return true;
@@ -691,12 +690,23 @@ static watcher_git_status_t git_dirty_signature(cbm_watcher_t *w, project_state_
      * watched at a sub-package of a monorepo reindexes whenever any SIBLING
      * package changes, because git reports the whole repository's dirty state
      * regardless of -C. Paths stay repository-relative either way, which is
-     * what repo_cdup is for. */
-    const char *status_argv[] = {"git",    "--no-optional-locks",
-                                 "-C",     state->root_path,
-                                 "status", "--porcelain",
-                                 "-uall",  "-z",
-                                 "--",     ".",
+     * what repo_cdup is for.
+     *
+     * `:(exclude).memory-for-ai` mirrors the exporter's own probes
+     * (artifact.c): every index run rewrites the exported artifact under that
+     * directory, so counting it here would dirty the signature right after
+     * each publish and reindex forever. */
+    const char *status_argv[] = {"git",
+                                 "--no-optional-locks",
+                                 "-C",
+                                 state->root_path,
+                                 "status",
+                                 "--porcelain",
+                                 "-uall",
+                                 "-z",
+                                 "--",
+                                 ".",
+                                 ":(exclude).memory-for-ai",
                                  NULL};
     watcher_git_output_t output;
     watcher_git_status_t status =
