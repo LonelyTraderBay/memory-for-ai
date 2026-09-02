@@ -541,8 +541,13 @@ PROJECT_HDRS = $(wildcard src/*.h src/*/*.h $(CBM_DIR)/*.h $(CBM_DIR)/lsp/*.h te
 
 # ── Test sources ─────────────────────────────────────────────────
 
-TEST_FOUNDATION_SRCS = \
-    tests/test_foundation_main.c \
+# Foundation SUITE sources (no main). TEST_FOUNDATION_SRCS adds the
+# foundation-only main; ALL_TEST_SRCS adds tests/test_main.c instead, which
+# registers every suite in the tree. The two lanes shared one variable until
+# 098d1d13 swapped its main to test_foundation_main.c — silently reducing
+# the FULL test-runner to the 14 foundation suites (main(void) ignores
+# argv, so suite selection and every non-foundation suite stopped running).
+TEST_FOUNDATION_SUITE_SRCS = \
     tests/test_arena.c \
     tests/test_hash_table.c \
     tests/test_dyn_array.c \
@@ -557,6 +562,10 @@ TEST_FOUNDATION_SRCS = \
     tests/test_subprocess.c \
     tests/test_private_file_lock.c \
     tests/test_lock_registry.c
+
+TEST_FOUNDATION_SRCS = \
+    tests/test_foundation_main.c \
+    $(TEST_FOUNDATION_SUITE_SRCS)
 
 TEST_EXTRACTION_SRCS = \
     tests/test_extraction.c \
@@ -748,7 +757,7 @@ TEST_REPRO_SRCS = \
     tests/repro/repro_lsp_java_cs.c \
     tests/repro/repro_lsp_kt_php_rust.c
 
-ALL_TEST_SRCS =$(TEST_FOUNDATION_SRCS) $(TEST_EXTRACTION_SRCS) $(TEST_STORE_SRCS) $(TEST_CYPHER_SRCS) $(TEST_MCP_SRCS) $(TEST_DAEMON_SRCS) $(TEST_DISCOVER_SRCS) $(TEST_GRAPH_BUFFER_SRCS) $(TEST_PIPELINE_SRCS) $(TEST_WATCHER_SRCS) $(TEST_LZ4_SRCS) $(TEST_ZSTD_SRCS) $(TEST_ARTIFACT_SRCS) $(TEST_SQLITE_WRITER_SRCS) $(TEST_GO_LSP_SRCS) $(TEST_C_LSP_SRCS) $(TEST_PHP_LSP_SRCS) $(TEST_CS_LSP_SRCS) $(TEST_CS_LSP_BENCH_SRCS) $(TEST_PERL_LSP_SRCS) $(TEST_SCOPE_SRCS) $(TEST_TYPE_REP_SRCS) $(TEST_PY_LSP_SRCS) $(TEST_PY_LSP_BENCH_SRCS) $(TEST_PY_LSP_STRESS_SRCS) $(TEST_PY_LSP_SCALE_SRCS) $(TEST_TS_LSP_SRCS) $(TEST_JAVA_LSP_SRCS) $(TEST_KOTLIN_LSP_SRCS) $(TEST_RUST_LSP_SRCS) $(TEST_TRACES_SRCS) $(TEST_CLI_SRCS) $(TEST_MEM_SRCS) $(TEST_UI_SRCS) $(TEST_HTTPD_SRCS) $(TEST_SECURITY_SRCS) $(TEST_YAML_SRCS) $(TEST_SEMANTIC_SRCS) $(TEST_AST_PROFILE_SRCS) $(TEST_SLAB_ALLOC_SRCS) $(TEST_SIMHASH_SRCS) $(TEST_STACK_OVERFLOW_SRCS) $(TEST_INTEGRATION_SRCS)
+ALL_TEST_SRCS = tests/test_main.c $(TEST_FOUNDATION_SUITE_SRCS) $(TEST_EXTRACTION_SRCS) $(TEST_STORE_SRCS) $(TEST_CYPHER_SRCS) $(TEST_MCP_SRCS) $(TEST_DAEMON_SRCS) $(TEST_DISCOVER_SRCS) $(TEST_GRAPH_BUFFER_SRCS) $(TEST_PIPELINE_SRCS) $(TEST_WATCHER_SRCS) $(TEST_LZ4_SRCS) $(TEST_ZSTD_SRCS) $(TEST_ARTIFACT_SRCS) $(TEST_SQLITE_WRITER_SRCS) $(TEST_GO_LSP_SRCS) $(TEST_C_LSP_SRCS) $(TEST_PHP_LSP_SRCS) $(TEST_CS_LSP_SRCS) $(TEST_CS_LSP_BENCH_SRCS) $(TEST_PERL_LSP_SRCS) $(TEST_SCOPE_SRCS) $(TEST_TYPE_REP_SRCS) $(TEST_PY_LSP_SRCS) $(TEST_PY_LSP_BENCH_SRCS) $(TEST_PY_LSP_STRESS_SRCS) $(TEST_PY_LSP_SCALE_SRCS) $(TEST_TS_LSP_SRCS) $(TEST_JAVA_LSP_SRCS) $(TEST_KOTLIN_LSP_SRCS) $(TEST_RUST_LSP_SRCS) $(TEST_TRACES_SRCS) $(TEST_CLI_SRCS) $(TEST_MEM_SRCS) $(TEST_UI_SRCS) $(TEST_HTTPD_SRCS) $(TEST_SECURITY_SRCS) $(TEST_YAML_SRCS) $(TEST_SEMANTIC_SRCS) $(TEST_AST_PROFILE_SRCS) $(TEST_SLAB_ALLOC_SRCS) $(TEST_SIMHASH_SRCS) $(TEST_STACK_OVERFLOW_SRCS) $(TEST_INTEGRATION_SRCS)
 
 
 # ── Build directories ────────────────────────────────────────────
