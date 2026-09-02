@@ -141,7 +141,9 @@ Notes:
 
 ## 4. Environment Variables
 
-These environment variables affect runtime behavior:
+These environment variables affect runtime behavior.
+
+### General
 
 | Variable | Default | Description |
 |---|---|---|
@@ -150,8 +152,63 @@ These environment variables affect runtime behavior:
 | `CBM_DIAGNOSTICS` | `false` | Enable periodic `snapshot.json` and retained `trajectory.ndjson` below a fresh owner-private directory in the system temp directory. The daemon records the randomized paths in the `diagnostics.start` discovery record (a single JSON line) in `${MFA_CACHE_DIR}/logs/memory-for-ai-daemon.log`; that one record is emitted even when `CBM_LOG_LEVEL` suppresses ordinary logging, so the paths always remain discoverable. |
 | `CBM_DOWNLOAD_URL` | GitHub releases | Override the update download URL. |
 | `CBM_LOG_LEVEL` | `info` | Set the log level to `debug`, `info`, `warn`, `error`, or `none` (or `0`-`4`). Thin-frontend messages use that session's stderr; detached daemon events use `${MFA_CACHE_DIR}/logs/memory-for-ai-daemon.log`. |
+| `CBM_LOG_FORMAT` | `text` | Log output format: `text` or `json`. Unrecognized values are ignored. |
 | `MFA_RUNTIME_DIR` | `%LOCALAPPDATA%` (Windows), `/private/tmp` (macOS), `/tmp` (other) | Parent directory for the daemon/CLI rendezvous directory, which CBM creates inside it as `memory-for-ai-daemon-<uid>` (`memory-for-ai-daemon-<key>` on Windows). Set it when the default ancestry cannot pass the private-directory check — see below. `MFA_CACHE_DIR` does **not** move the rendezvous. |
+
+### Indexing pipeline
+
+| Variable | Default | Description |
+|---|---|---|
 | `CBM_WORKERS` | auto-detected | Override the indexing worker count. |
+| `CBM_MEM_BUDGET_MB` | auto (fraction of system RAM) | Override the indexing memory budget in MiB. Oversized requests clamp to total RAM; invalid values fall back to the auto-detected budget. |
+| `CBM_MAX_FILE_BYTES` | `536870912` (512 MiB) | Per-file read cap in bytes. Files over the cap are reported as oversized and skipped, never silently dropped or read unbounded. Non-positive or unparseable values fall back to the default. |
+| `CBM_DISABLE_LSP_CROSS` | *(unset)* | Set to `1` to skip the LSP cross-pass phase — the most expensive pipeline phase. Also the documented workaround if a language resolver misbehaves on your codebase (see `docs/RUNTIME_TRACE_MODEL.md`). |
+| `CBM_SEMANTIC_ENABLED` | *(unset)* | Set to `1` to opt in to the semantic embedding edges pass (nomic-embed-code vectors, shipped in the binary). Off by default. |
+| `CBM_SEMANTIC_THRESHOLD` | `0.75` | Similarity threshold for semantic edges, in `(0, 1]`. Values outside the range or non-numeric are ignored and the default applies. |
+| `CBM_DUMP_VERIFY_MIN_RATIO` | `0.5` | Minimum verification ratio for store dump verification, in `[0, 1]`. Set `0` to disable the check. |
+| `CBM_SQLITE_MMAP_SIZE` | `67108864` (64 MiB) | `PRAGMA mmap_size` override (bytes) for the graph store's SQLite connection. |
+
+### Index supervision and hooks
+
+| Variable | Default | Description |
+|---|---|---|
+| `CBM_INDEX_SUPERVISOR` | *(enabled)* | Set to `0` to request in-process indexing instead of a supervised worker. Under the mandatory coordination daemon this is a fail-closed refusal — the supervisor is a safety boundary, not a preference. |
+| `CBM_INDEX_WORKER_TIMEOUT_S` | `900` (15 min) | Quiet-timeout for a supervised indexing worker, in seconds. This is a **no-progress** timeout: any new log line (per-batch progress, pass boundaries) resets it, so a large repository that keeps making progress is never killed. A genuinely stuck file emits nothing and is killed and reported as a hang. |
+| `CBM_INDEX_MAX_RESTARTS` | `100` | Maximum restarts of a failed indexing job by the daemon application. Invalid values fall back to the default. |
+| `CBM_HOOK_DEADLINE_MS` | `2000` | In-process budget (ms) for the agent `PreToolUse` hook augmenter. Values below the internal minimum (50 ms) are clamped. |
+| `CBM_HOOK_TIMEOUT_LOG` | *(built-in path)* | Override the path of the hook timeout crumb log (tests and power users). |
+
+### LSP debugging
+
+| Variable | Default | Description |
+|---|---|---|
+| `CBM_LSP_DISABLED` | *(unset)* | Set to `1` to skip the Hybrid-LSP resolvers entirely — a diagnostic/benchmarking knob that isolates tree-sitter-only behavior. |
+| `CBM_LSP_DEBUG` | *(unset)* | Enable debug mode in the language resolvers (shared across all language LSPs). |
+| `CBM_LSP_KOTLIN_AST` | *(unset)* | Set to `1` to enable the Kotlin debug AST dumper. |
+
+### Memory diagnostics
+
+All of these are off by default and exist for troubleshooting memory behaviour;
+they add instrumentation, not behavior changes.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CBM_MEM_CENSUS` | *(unset)* | Set to `1` to log a per-phase allocation census readable from the daemon log. |
+| `CBM_MEM_PHASES` | *(unset)* | Set to `1` to include per-phase memory records in diagnostics output. |
+| `CBM_MEM_STATS` | *(unset)* | Set to `1` to record allocator statistics that committed-byte counters cannot distinguish. |
+| `CBM_MEM_STATS_OUT` | *(unset)* | File path for the mimalloc allocator stats dump written at session exit. |
+| `CBM_MEM_PROFILE` | *(unset)* | Set to `1` to enable fixed-capacity allocation profiling tables. |
+| `CBM_MEM_PROFILE_MIN` | *(unset)* | Minimum allocation size (bytes) recorded by `CBM_MEM_PROFILE`. |
+| `CBM_PROFILE` | *(unset)* | Any non-empty value other than `0` marks a profiling run (e.g. keeps the supervised worker log). |
+
+### Internal and test-only variables
+
+`CBM_INDEX_MARKER_FILE`, `CBM_INDEX_QUARANTINE_FILE`, and
+`CBM_INDEX_SINGLE_THREAD` are set **by the index supervisor into its worker**
+—they are plumbing between the two processes, not user configuration. The
+`CBM_TEST_*` family and `CBM_MI_THREAD_DONE` exist for the test harness and
+demonstration builds; release binaries must not honour them (enforced by the
+binary composition gate).
 
 ### Relocating the daemon rendezvous directory
 
