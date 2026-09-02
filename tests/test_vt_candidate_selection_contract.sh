@@ -14,6 +14,28 @@ for tool in "$STAGE" "$SELECT" "$VERIFY"; do
     [[ -x "$tool" ]] || { echo "FAIL: missing executable candidate-boundary tool: $tool" >&2; exit 1; }
 done
 
+# Venue capability probe, same contract as tests/test_build_dir_safety.sh: the
+# adversarial fixtures below stage escape attempts as real FILE symlinks, and
+# creating those on Windows needs SeCreateSymbolicLinkPrivilege (an elevated
+# token or Developer Mode). A venue without that capability cannot exercise
+# this contract — SKIP loudly instead of crashing mid-fixture, exactly like
+# the build-dir safety contract skips its symlink traversal cases.
+if ! python3 - <<'PROBE' >/dev/null 2>&1; then
+import os
+import sys
+import tempfile
+
+link = os.path.join(tempfile.mkdtemp(), "probe-link")
+try:
+    os.symlink("probe-target", link)
+except OSError:
+    sys.exit(1)
+sys.exit(0)
+PROBE
+    echo "SKIP: no symlink creation privilege on this venue (Windows needs an elevated token or Developer Mode); candidate-selection adversarial fixtures not exercisable"
+    exit 0
+fi
+
 python3 - "$ROOT" "$FIX" <<'PY'
 from __future__ import annotations
 
