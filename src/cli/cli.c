@@ -1774,6 +1774,13 @@ bool cbm_mcp_command_path_probe_safe_for_testing(const char *command, bool windo
 
 void cbm_set_mcp_command_path_probe_counter_for_testing(int *counter) {
     g_mcp_command_path_probe_counter = counter;
+#ifndef _WIN32
+    /* Only the Windows probe path reads the pointer; POSIX never probes, so
+     * newer toolchains (Homebrew LLVM rolling) flag the test-only global as
+     * set-but-unused there. The load keeps that diagnosis quiet while the
+     * cross-platform tests keep asserting zero probes. */
+    (void)g_mcp_command_path_probe_counter;
+#endif
 }
 #endif
 
