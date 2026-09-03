@@ -141,7 +141,7 @@
           "name": "Which programming languages does memory-for-ai support?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "It supports 162 languages through vendored tree-sitter grammars compiled into the binary, including Python, Go, JavaScript, TypeScript, Rust, Java, C, C++, C#, PHP, Ruby, Kotlin, Swift, and many more. Eleven language families — Python, TypeScript/JavaScript, PHP, C#, Go, C/C++, Java, Kotlin, Rust, and Perl — additionally get Hybrid LSP semantic type resolution."
+            "text": "It supports 162 languages through vendored tree-sitter grammars compiled into the binary, including Python, Go, JavaScript, TypeScript, Rust, Java, C, C++, C#, PHP, Ruby, Kotlin, Swift, and many more. Ten language families — Python, TypeScript/JavaScript, PHP, C#, Go, C/C++, Java, Kotlin, Rust, and Perl — additionally get Hybrid LSP semantic type resolution."
           }
         },
         {
@@ -440,8 +440,8 @@
             The design and evaluation are described in
             <a href="https://arxiv.org/abs/2603.27277"><em>Codebase-Memory: Tree-Sitter-Based Knowledge Graphs
             for LLM Code Exploration via MCP</em></a>. Evaluated across 31 real-world repositories:
-            <strong>83% answer quality, 10× fewer tokens, and 2.1× fewer tool calls</strong> versus
-            file-by-file exploration.
+            <strong>10× fewer tokens and 2.1× fewer tool calls</strong> than file-by-file exploration,
+            at 83% answer quality (92% for the file-by-file baseline).
         </p>
     </aside>
 
@@ -576,6 +576,16 @@
         Cursor, VS Code, Windsurf, Kiro, Qwen Code, GitHub Copilot CLI, and about 34 more. Only documented
         MCP entries, instructions, skills, and hooks are written; no experimental flags or permission
         bypasses. Preview with <code>memory-for-ai install --dry-run</code>.</p>
+        <details>
+            <summary>All 45 configured surfaces</summary>
+            <p>Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode, VS Code,
+            Cursor, Windsurf, Augment / Auggie, OpenClaw, Kiro, Junie, Hermes, OpenHands, Cline, Warp,
+            Qwen Code, GitHub Copilot CLI, Factory Droid, Crush, Goose, Mistral Vibe, Grok Build,
+            Qoder CLI, Kimi Code CLI, GitLab Duo CLI, Rovo Dev CLI, Amp, Devin CLI / Local, Tabnine,
+            Continue / cn (conditional), Visual Studio (conditional, Windows), TRAE (conditional),
+            Roo Code (conditional), Amazon Q Developer IDE, CodeBuddy Code CLI, IBM Bob IDE (conditional),
+            IBM Bob Shell, Pochi, Pi, Sourcegraph Cody (explicit opt-in), Oh My Pi (omp).</p>
+        </details>
 
         <h3>Does it send my code anywhere?</h3>
         <p>No. All indexing and querying are local; there is no embedded LLM, no API key, no telemetry,

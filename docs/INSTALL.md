@@ -79,7 +79,7 @@ brew install memory-for-ai          # Homebrew
 scoop install memory-for-ai         # Windows Scoop
 winget install memory-for-ai        # Windows Winget
 choco install memory-for-ai         # Chocolatey
-yay -S memory-for-ai-bin            # Arch AUR (or paru)
+yay -S codebase-memory-mcp-bin     # Arch AUR — community package under the previous product name (or paru)
 go install github.com/LonelyTraderBay/memory-for-ai/pkg/go/cmd/memory-for-ai@latest
 ```
 
@@ -115,7 +115,7 @@ The full per-client matrix (which surface gets MCP entry / skills / hooks / agen
 <details>
 <summary>All 45 configured surfaces</summary>
 
-Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode, VS Code, Cursor, Windsurf, Augment/Auggie, OpenClaw, Kiro, Junie, Hermes, OpenHands, Cline, Warp, Qwen Code, GitHub Copilot CLI, Factory Droid, Crush, Goose, Mistral Vibe, Grok Build, Qoder CLI, Kimi Code CLI, GitLab Duo CLI, Rovo Dev CLI, Amp, Devin CLI/Local, Tabnine, Continue/cn, Visual Studio (conditional, Windows), TRAE (conditional), Roo Code (conditional), Amazon Q Developer IDE, CodeBuddy Code CLI, IBM Bob Shell, Pochi, Pi, IBM Bob IDE (conditional), Oh My Pi (omp), Sourcegraph Cody (explicit opt-in).
+Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode, VS Code, Cursor, Windsurf, Augment / Auggie, OpenClaw, Kiro, Junie, Hermes, OpenHands, Cline, Warp, Qwen Code, GitHub Copilot CLI, Factory Droid, Crush, Goose, Mistral Vibe, Grok Build, Qoder CLI, Kimi Code CLI, GitLab Duo CLI, Rovo Dev CLI, Amp, Devin CLI / Local, Tabnine, Continue / cn (conditional), Visual Studio (conditional, Windows), TRAE (conditional), Roo Code (conditional), Amazon Q Developer IDE, CodeBuddy Code CLI, IBM Bob IDE (conditional), IBM Bob Shell, Pochi, Pi, Sourcegraph Cody (explicit opt-in), Oh My Pi (omp).
 </details>
 
 ## Manual MCP configuration

@@ -23,8 +23,14 @@ The runtime set for your platform is downloaded and verified automatically at in
 Then configure your coding agents and index:
 
 ```bash
-memory-for-ai install      # configures every detected agent (45 surfaces; --dry-run previews)
+memory-for-ai install      # configures all 45 supported automatic/conditional client surfaces (--dry-run previews)
 ```
+
+<details>
+<summary>All 45 configured surfaces</summary>
+
+Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode, VS Code, Cursor, Windsurf, Augment / Auggie, OpenClaw, Kiro, Junie, Hermes, OpenHands, Cline, Warp, Qwen Code, GitHub Copilot CLI, Factory Droid, Crush, Goose, Mistral Vibe, Grok Build, Qoder CLI, Kimi Code CLI, GitLab Duo CLI, Rovo Dev CLI, Amp, Devin CLI / Local, Tabnine, Continue / cn (conditional), Visual Studio (conditional, Windows), TRAE (conditional), Roo Code (conditional), Amazon Q Developer IDE, CodeBuddy Code CLI, IBM Bob IDE (conditional), IBM Bob Shell, Pochi, Pi, Sourcegraph Cody (explicit opt-in), Oh My Pi (omp).
+</details>
 
 Restart your agent. Say **"Index this project"** — done.
 

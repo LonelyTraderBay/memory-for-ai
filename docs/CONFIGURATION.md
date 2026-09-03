@@ -62,6 +62,25 @@ Notes:
 - Missing files are ignored.
 - If the same extension appears in both files, the per-project file wins.
 
+### Accepted language names
+
+All names below are accepted as mapping targets (case-insensitive; aliases in parentheses):
+
+```text
+arkts, bash (sh), c, c# (csharp), c++ (cpp), chialisp, clojure, cmake, cobol,
+common lisp (commonlisp, lisp), css, cuda, dart, dockerfile, elm, elixir,
+emacs lisp (emacslisp), erlang, f# (fsharp), form, fortran, glsl, go, graphql,
+groovy, haskell, hcl (terraform), html, ini, java, javascript, json, julia,
+kotlin, lean, lua, magma, makefile, markdown, matlab, meson, mojo, nix,
+objective-c (objc), ocaml, perl, php, plsql, protobuf, python, r, ruby, rust,
+scala, scss, sql, svelte, swift, toml, tsx, typescript, verilog, vimscript,
+vue, wolfram, xml, yaml, zig
+```
+
+The authoritative table lives in the `LANG_NAME_TABLE` in
+[`src/discover/userconfig.c`](../src/discover/userconfig.c); extending it requires
+a rebuild.
+
 ## 2. CLI-Managed Runtime Settings
 
 The `config` subcommand stores runtime settings in a small SQLite database:

@@ -30,4 +30,4 @@ Allow: /
 User-agent: Bingbot
 Allow: /
 
-Sitemap: https://github.com/LonelyTraderBay/memory-for-ai/sitemap.xml
+Sitemap: https://lonelytraderbay.github.io/memory-for-ai/sitemap.xml

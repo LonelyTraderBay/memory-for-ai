@@ -16,7 +16,7 @@ One self-contained native executable. 162 languages via vendored tree-sitter gra
 - **Installing for a specific project?** Jump to [Per-project install](#per-project-install) — one command, zero global config, one isolated graph named after the repo.
 - **Want proof it pays off before adopting?** [docs/MEASURING.md](docs/MEASURING.md) — a 15-minute spot check and a full A/B protocol to measure token and tool-call savings on your own repository.
 
-> **Research** — design and evaluation are described in [*Codebase-Memory: Tree-Sitter-Based Knowledge Graphs for LLM Code Exploration via MCP*](https://arxiv.org/abs/2603.27277) (arXiv:2603.27277): across 31 real repositories, 83% answer quality, 10× fewer tokens, 2.1× fewer tool calls vs. file-by-file exploration.
+> **Research** — design and evaluation are described in [*Codebase-Memory: Tree-Sitter-Based Knowledge Graphs for LLM Code Exploration via MCP*](https://arxiv.org/abs/2603.27277) (arXiv:2603.27277): across 31 real repositories, 10× fewer tokens and 2.1× fewer tool calls vs. file-by-file exploration, at 83% answer quality (92% for the file-by-file baseline).
 
 ## Quick start
 
@@ -129,11 +129,17 @@ Full type-aware resolution for **Python, TypeScript/JavaScript/JSX/TSX, PHP, C#,
 | **Good** (75–89%) | | Python, TypeScript, TSX, Go, Rust, Java, R, Dart, JavaScript, Erlang, Elixir, Scala, Ruby, PHP, C#, SQL |
 | **Functional** (<75%) | | OCaml, Haskell |
 
-Also parsed (not yet benchmarked): Ada, Agda, Apex, Assembly, Astro, AWK, Beancount, BibTeX, Bicep, Bitbake, Blade, Cairo, Cap'n Proto, Clojure, CMake, COBOL, Common Lisp, Crystal, CUDA, D, Devicetree, Elm, Emacs Lisp, F#, Fortran, GDScript, Gleam, GLSL, GN, GraphQL, Hare, HLSL, INI, ISPC, Janet, Jinja2, JSON, JSON5, Jsonnet, Julia, Just, KDL, Lean 4, Linker Script, Liquid, LLVM IR, Luau, Makefile, Markdown, MATLAB, Mermaid, Meson, Move, Nickel, Nix, Odin, Pascal, Pkl, PO, Pony, PowerShell, Prisma, Protobuf, Puppet, PureScript, Racket, Regex, ReScript, RON, reStructuredText, Scheme, Slang, Smali, Smithy, Solidity, Squirrel, SSH config, Starlark, Svelte, Sway, SystemVerilog, TableGen, Tcl, Teal, Templ, Thrift, TLA+, Typst, Verilog, VHDL, Vim script, Vue, WGSL, WIT, Wolfram, XML, Zsh.
+Also parsed (not yet benchmarked): Ada, Agda, Apex, ArkTS, Assembly, Astro, AWK, Beancount, BibTeX, Bicep, Bitbake, Blade, Cairo, Cap'n Proto, CFML, CFScript, Chialisp, Clojure, CMake, COBOL, Common Lisp, Crystal, CSV, CUDA, D, Devicetree, Diff, Dotenv, Elm, Emacs Lisp, F#, Fennel, Fish, Form, Fortran, Func, GDScript, Git Attributes, Gitignore, Gleam, GLSL, GN, Go Module, Go Template, GraphQL, Hare, HLSL, Hyprlang, INI, ISPC, Janet, Jinja2, JSDoc, JSON, JSON5, Jsonnet, Julia, Just, Kconfig, KDL, Lean 4, Linker Script, Liquid, LLVM IR, Luau, Magma, Makefile, Markdown, MATLAB, Mermaid, Meson, Mojo, Move, NASM, Nickel, Nix, ObjectScript Routine, ObjectScript UDL, Odin, Pascal, Pine Script, Pkl, PL/SQL, PO, Pony, PowerShell, Prisma, Properties, Protobuf, Puppet, PureScript, QML, Racket, Regex, Requirements, ReScript, RON, reStructuredText, Scheme, Slang, Smali, Smithy, Solidity, SOQL, SOSL, Squirrel, SSH config, Starlark, Svelte, Sway, SystemVerilog, TableGen, Tcl, Teal, Templ, Thrift, TLA+, Typst, Verilog, VHDL, Vim script, Vue, WGSL, WIT, Wolfram, XML, Zsh.
 
 ## Multi-agent support
 
-`install` auto-detects and configures **45 client surfaces** (39 automatic + 6 conditional/explicit) — Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Cursor, VS Code, Windsurf, Kiro, Qwen Code, GitHub Copilot CLI, Junie, Factory Droid, Grok Build, Amp, Devin, and the rest of the matrix in [docs/INSTALL.md](docs/INSTALL.md#what-install-writes-surfaces). It writes only documented MCP entries plus durable instructions, skills, and lifecycle hooks where the client documents a safe contract; it never enables experimental flags, plugins, or permission bypasses. Custom-agent formats receive three tiered graph profiles — **Scout** (fast provisional discovery), **Verify** (default, evidence-checked), **Auditor** (bounded exhaustive verification) — each biased to prove graph evidence against source via `check_index_coverage`. Preview exactly what would be written on your machine with `memory-for-ai install --dry-run`.
+`install` auto-detects and configures **45 supported automatic/conditional client surfaces** (39 automatic + 6 conditional/explicit) — Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Cursor, VS Code, Windsurf, Kiro, Qwen Code, GitHub Copilot CLI, Junie, Factory Droid, Grok Build, Amp, Devin, and the rest of the matrix in [docs/INSTALL.md](docs/INSTALL.md#what-install-writes). It writes only documented MCP entries plus durable instructions, skills, and lifecycle hooks where the client documents a safe contract; it never enables experimental flags, plugins, or permission bypasses. Custom-agent formats receive three tiered graph profiles — **Scout** (fast provisional discovery), **Verify** (default, evidence-checked), **Auditor** (bounded exhaustive verification) — each biased to prove graph evidence against source via `check_index_coverage`. Preview exactly what would be written on your machine with `memory-for-ai install --dry-run`.
+
+<details>
+<summary>All 45 configured surfaces</summary>
+
+Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode, VS Code, Cursor, Windsurf, Augment / Auggie, OpenClaw, Kiro, Junie, Hermes, OpenHands, Cline, Warp, Qwen Code, GitHub Copilot CLI, Factory Droid, Crush, Goose, Mistral Vibe, Grok Build, Qoder CLI, Kimi Code CLI, GitLab Duo CLI, Rovo Dev CLI, Amp, Devin CLI / Local, Tabnine, Continue / cn (conditional), Visual Studio (conditional, Windows), TRAE (conditional), Roo Code (conditional), Amazon Q Developer IDE, CodeBuddy Code CLI, IBM Bob IDE (conditional), IBM Bob Shell, Pochi, Pi, Sourcegraph Cody (explicit opt-in), Oh My Pi (omp).
+</details>
 
 ## Architecture
 
@@ -151,6 +157,9 @@ src/
   traces/             Runtime trace ingestion
   ui/                 Local HTTP server + verified external 3D-UI asset pack
   foundation/         Platform abstractions (threads, filesystem, logging, memory)
+  git/                Git context (worktree/detached state, HEAD for freshness checks)
+  graph_buffer/       In-memory graph assembly during indexing, dumped to SQLite
+  simhash/            MinHash/LSH near-clone fingerprints (SIMILAR_TO edges)
 internal/cbm/         Vendored tree-sitter grammars (162 languages) + AST extraction engine
 ```
 

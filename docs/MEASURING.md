@@ -53,7 +53,7 @@ If either count is zero, report "N/A" for that line — do not add pseudocounts.
 
 - One question is a **smoke signal, not a benchmark**. Repeat with 5–10 questions of different shapes (discovery, callers, impact, architecture, cross-service) before making any claim about "your repo".
 - Structural questions are where the graph wins by an order of magnitude. Pure text-lookup questions ("where is this error string printed?") may show little or no advantage — that's expected, and `search_code` exists for that class.
-- **Count the fixed cost**: the tool manifest (`tools/list`) is roughly 7K tokens of per-session overhead in a client that lists all tools. A one-question session can lose to grep on pure tokens; the win amortizes over a real working session. For short sessions, scoped tool profiles (Scout/Analysis) or CLI mode shrink this cost.
+- **Count the fixed cost**: the tool manifest (`tools/list`) is roughly 7K tokens of per-session overhead in a client that lists all tools. A one-question session can lose to grep on pure tokens; the win amortizes over a real working session. For short sessions, scoped tool profiles (Scout/Verify/Auditor) or CLI mode shrink this cost.
 
 ## 2. Built-in measurement surfaces
 
@@ -127,7 +127,7 @@ Publish: raw paired counts, per-pair quality scores, run count, aggregation meth
 
 | Source | Result | Scope |
 |---|---|---|
-| [arXiv:2603.27277](https://arxiv.org/abs/2603.27277) | 83% answer quality, 10× fewer tokens, 2.1× fewer tool calls vs. file-by-file exploration | 31 real repositories, blinded grading |
+| [arXiv:2603.27277](https://arxiv.org/abs/2603.27277) | 10× fewer tokens, 2.1× fewer tool calls vs. file-by-file exploration, at 83% answer quality (92% for the file-by-file baseline) | 31 real repositories, blinded grading |
 | README performance table | Linux kernel full index 3 min; Cypher <1 ms; five structural queries ~3,400 vs ~412,000 tokens | Single machine (Apple M3 Pro); exact reproduction needs the original inputs |
 | Maintainer dogfood (2026-09) | Callers query: ~250 tokens / 1 call vs ~33,000 tokens of reading, 66 callers complete vs grep's incomplete picture | One repository, one question class |
 
