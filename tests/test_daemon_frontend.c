@@ -939,15 +939,15 @@ static int frontend_backpressure_frontend_run(const char *parent, int input_fd, 
 static bool frontend_backpressure_run_isolated(bool maintenance) {
     char parent[FRONTEND_TEST_PATH_CAP];
     char build[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};
-    int path_written = snprintf(parent, sizeof(parent),
-                                maintenance ? "%s/cbm-frontend-maintenance-backpressure-XXXXXX"
-                                            : "%s/cbm-frontend-backpressure-XXXXXX",
-                                cbm_tmpdir());
+    /* The forked daemon and frontend re-resolve this parent into a POSIX
+     * rendezvous socket address, so the shared helper's sun_path budget
+     * applies here exactly as for in-process fixtures. */
+    bool directory_ready = th_secure_runtime_parent_new(parent, sizeof(parent),
+                                                        maintenance ? "backpressure-maint"
+                                                                    : "backpressure");
     int ready_pipe[2] = {-1, -1};
     int cancel_pipe[2] = {-1, -1};
     int control_pipe[2] = {-1, -1};
-    bool directory_ready =
-        path_written > 0 && path_written < (int)sizeof(parent) && cbm_mkdtemp(parent);
     bool identity_ready =
         directory_ready && cbm_daemon_runtime_process_build_fingerprint((uint64_t)getpid(), build);
     bool prepared = identity_ready && pipe(ready_pipe) == 0 && pipe(cancel_pipe) == 0 &&

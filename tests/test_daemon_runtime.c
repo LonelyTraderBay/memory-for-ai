@@ -4539,6 +4539,16 @@ TEST(daemon_runtime_process_fingerprint_never_hashes_replacement_path) {
     bool fingerprinted =
         setup && cbm_daemon_runtime_process_build_fingerprint((uint64_t)child, observed);
 
+    /* Captured while the child is still alive: the path the kernel reports
+     * for a process whose executable vnode was unlinked by the replacement
+     * rename is the deciding datum when the fail-closed contract is
+     * violated, and it cannot be queried after the child is reaped. */
+    char reported_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    int reported_path_length = 0;
+#ifdef __APPLE__
+    reported_path_length =
+        child > 0 ? proc_pidpath((int)child, reported_path, sizeof(reported_path)) : 0;
+#endif
     runtime_test_stop_blocked_executable(child, release_fd);
     (void)unlink(replacement_path);
     (void)unlink(image_path);
@@ -4554,6 +4564,10 @@ TEST(daemon_runtime_process_fingerprint_never_hashes_replacement_path) {
     /* macOS exposes mapped vnode identity but not a public handle to the
      * mapped executable. If the old vnode no longer has an openable path we
      * must fail closed; resolving and hashing the new path is forbidden. */
+    if (fingerprinted && strcmp(observed, original) != 0) {
+        printf("  fingerprint replacement diagnostics: observed=%.64s original=%.64s replacement=%.64s child_pid=%d reported_path=%.1023s reported_length=%d\n",
+               observed, original, replacement, (int)child, reported_path, reported_path_length);
+    }
     ASSERT_TRUE(!fingerprinted || strcmp(observed, original) == 0);
 #endif
     ASSERT_TRUE(!fingerprinted || strcmp(observed, replacement) != 0);

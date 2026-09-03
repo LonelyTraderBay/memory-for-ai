@@ -67,9 +67,7 @@ static cbm_daemon_build_identity_t version_cohort_identity(const char *version, 
 
 static bool version_cohort_fixture_start(version_cohort_fixture_t *fixture, const char *tag) {
     memset(fixture, 0, sizeof(*fixture));
-    int written = snprintf(fixture->parent, sizeof(fixture->parent),
-                           "%s/mfa-version-cohort-%s-XXXXXX", cbm_tmpdir(), tag);
-    if (written <= 0 || written >= (int)sizeof(fixture->parent) || !cbm_mkdtemp(fixture->parent)) {
+    if (!th_secure_runtime_parent_new(fixture->parent, sizeof(fixture->parent), tag)) {
         return false;
     }
     fixture->endpoint = cbm_daemon_ipc_endpoint_new("0123456789abcdef", fixture->parent);

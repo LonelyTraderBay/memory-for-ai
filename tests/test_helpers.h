@@ -22,6 +22,8 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include "../src/foundation/win_utf8.h"
+#else
+#include <unistd.h>
 #endif
 
 /* ── Path building ────────────────────────────────────────────── */
@@ -186,14 +188,47 @@ static inline bool th_secure_runtime_parent_new(char *out, size_t out_cap, const
     }
 #ifdef _WIN32
     const char *base = cbm_app_local_dir();
-#else
-    const char *base = cbm_tmpdir();
-#endif
     if (!base || !base[0]) {
         out[0] = '\0';
         return false;
     }
+    /* Named-pipe IPC addresses carry no sun_path limit; keep the full tag. */
     int written = snprintf(out, out_cap, "%s/cbm-runtime-%s-XXXXXX", base, tag);
+#else
+    const char *base = cbm_tmpdir();
+    if (!base || !base[0]) {
+        out[0] = '\0';
+        return false;
+    }
+    /* The POSIX rendezvous address is
+     *   <canonical parent>/memory-for-ai-daemon-<uid>/mfa-<key>.sock
+     * and sockaddr_un::sun_path holds at most 104 bytes on macOS (108 on
+     * Linux), while /tmp canonicalizes to /private/tmp on macOS (+8 bytes).
+     * A fixture tag long enough to push the composed address to the cap makes
+     * cbm_daemon_ipc_endpoint_new fail its unix_address_set check, so clip the
+     * tag — debug-only decoration that cbm_mkdtemp's random suffix already
+     * disambiguates — to the largest length that fits on this platform. */
+    char uid_text[24];
+    int uid_length = snprintf(uid_text, sizeof(uid_text), "%lu", (unsigned long)geteuid());
+    size_t canonical_base = strlen(base);
+    size_t sun_cap = 108;
+#ifdef __APPLE__
+    canonical_base += strlen("private/");
+    sun_cap = 104;
+#endif
+    size_t fixed = strlen("/cbm-runtime--XXXXXX") + strlen("/memory-for-ai-daemon-") +
+                   (uid_length > 0 ? (size_t)uid_length : (size_t)1) +
+                   strlen("/mfa-0123456789abcdef.sock");
+    size_t tag_cap = sun_cap - 1 - canonical_base - fixed;
+    size_t tag_length = strlen(tag);
+    if (tag_cap < 1) {
+        tag_cap = 1;
+    }
+    if (tag_length > tag_cap) {
+        tag_length = tag_cap;
+    }
+    int written = snprintf(out, out_cap, "%s/cbm-runtime-%.*s-XXXXXX", base, (int)tag_length, tag);
+#endif
     if (written <= 0 || (size_t)written >= out_cap) {
         out[0] = '\0';
         return false;
