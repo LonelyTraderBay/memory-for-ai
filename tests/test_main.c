@@ -503,9 +503,23 @@ static int tf_maybe_run_runtime_image_holder(int argc, char **argv) {
     Sleep(INFINITE);
     return 25;
 #else
-    (void)argc;
-    (void)argv;
-    return -1;
+    /* POSIX mirror of the Windows holder, driven by the replacement-path
+     * fingerprint test: exec'd from a copied image, the holder keeps the
+     * replaced inode mapped by blocking on stdin until the parent closes its
+     * write end. System binaries are unusable for that fixture — /bin/sh on
+     * macOS Catalina+ is a stub that re-execs /bin/bash (so the child
+     * legitimately fingerprints as bash), and cat-style tools fail to start
+     * under sanitized parents on macOS runners — while the copied runner is
+     * proven spawnable on every lane. */
+    if (argc != 2 || strcmp(argv[1], "__cbm_runtime_image_holder") != 0) {
+        return -1;
+    }
+    char sink[512];
+    ssize_t count;
+    do {
+        count = read(STDIN_FILENO, sink, sizeof(sink));
+    } while (count > 0 || (count < 0 && errno == EINTR));
+    return 0;
 #endif
 }
 

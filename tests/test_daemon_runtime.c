@@ -382,7 +382,8 @@ static bool runtime_test_copy_executable(const char *source, const char *destina
     return ok;
 }
 
-static pid_t runtime_test_spawn_blocked_executable(const char *path, int *release_fd_out) {
+static pid_t runtime_test_spawn_blocked_executable(const char *path, const char *argument,
+                                                   int *release_fd_out) {
     int ready[2] = {-1, -1};
     int input[2] = {-1, -1};
     if (!path || !release_fd_out || pipe(ready) != 0 || pipe(input) != 0) {
@@ -427,7 +428,7 @@ static pid_t runtime_test_spawn_blocked_executable(const char *path, int *releas
     if (input[0] != STDIN_FILENO) {
         (void)posix_spawn_file_actions_addclose(&actions, input[0]);
     }
-    char *const child_argv[] = {(char *)path, NULL};
+    char *const child_argv[] = {(char *)path, (char *)argument, NULL};
     pid_t child = -1;
     if (posix_spawn(&child, path, &actions, NULL, child_argv, environ) != 0) {
         child = -1;
@@ -4520,29 +4521,39 @@ TEST(daemon_runtime_process_fingerprint_never_hashes_replacement_path) {
               : -1;
     setup = setup && image_written > 0 && image_written < (int)sizeof(image_path) &&
             replacement_written > 0 && replacement_written < (int)sizeof(replacement_path) &&
-            /* The image must be a real standalone binary that blocks reading
-             * the held stdin pipe and never re-execs. /bin/sh on macOS is a
-             * Catalina+ stub that re-execs /bin/bash: a spawned sh-copy
-             * reports /bin/bash as its executable and legitimately
-             * fingerprints as bash — byte-identical to a bash-copy
-             * replacement, which made the fail-closed contract untestable
-             * (CI diagnostics: reported_path=/bin/bash, observed hash ==
-             * replacement hash). cat keeps the copied file as its image on
-             * every supported platform. The replacement only needs different
-             * content; /bin/bash is a real standalone binary on macOS and on
-             * the Linux runners. */
-            runtime_test_copy_executable("/usr/bin/cat", image_path) &&
-            runtime_test_copy_executable("/bin/bash", replacement_path);
+            /* Mirror the Windows variant of this test: the image is a copy of
+             * this test-runner — a real standalone binary that never re-execs
+             * and is proven spawnable under sanitized builds on every lane —
+             * and the replacement is a tiny file with different content.
+             * System binaries are unusable here: /bin/sh on macOS Catalina+
+             * is a stub that re-execs /bin/bash, so a spawned sh-copy reports
+             * /bin/bash and legitimately fingerprints as bash (CI
+             * diagnostics: reported_path=/bin/bash, observed hash ==
+             * replacement hash), while cat-style tools fail to even start
+             * under sanitized parents on macOS runners. The copied image
+             * blocks in the __cbm_runtime_image_holder stdin loop. */
+            runtime_test_copy_self_image(image_path);
+
+    FILE *replacement_file = setup ? cbm_fopen(replacement_path, "wb") : NULL;
+    bool replacement_written_ok =
+        replacement_file && fputs("cbm-posix-replacement-image", replacement_file) >= 0;
+    if (replacement_file) {
+        replacement_written_ok = fclose(replacement_file) == 0 && replacement_written_ok;
+    }
+    setup = setup && replacement_written_ok;
 
     char original[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};
     char replacement[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};
     char observed[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};
-    setup = setup && cbm_daemon_build_fingerprint_file(image_path, original);
-    int release_fd = -1;
-    pid_t child = setup ? runtime_test_spawn_blocked_executable(image_path, &release_fd) : -1;
-    setup = setup && child > 0 && rename(replacement_path, image_path) == 0 &&
-            cbm_daemon_build_fingerprint_file(image_path, replacement) &&
+    setup = setup && cbm_daemon_build_fingerprint_file(image_path, original) &&
+            cbm_daemon_build_fingerprint_file(replacement_path, replacement) &&
             strcmp(original, replacement) != 0;
+    int release_fd = -1;
+    pid_t child =
+        setup ? runtime_test_spawn_blocked_executable(image_path, "__cbm_runtime_image_holder",
+                                                      &release_fd)
+              : -1;
+    setup = setup && child > 0 && rename(replacement_path, image_path) == 0;
     bool fingerprinted =
         setup && cbm_daemon_runtime_process_build_fingerprint((uint64_t)child, observed);
 
