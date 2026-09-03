@@ -28,10 +28,18 @@ static const char keep[] = "memory-for-ai OMIT_LOAD_EXTENSION";
 int main(void) { puts(keep); return 0; }
 EOF
 SELECTED="$BUILD_DIR/memory-for-ai"
+# Full RELRO on ELF: the composition gate requires GNU_RELRO + BIND_NOW, and
+# distro compilers default to partial RELRO (-z relro without -z now), which
+# fails the gate on CI Linux. macOS and Windows targets never run the ELF
+# checks, and their linkers reject these flags outright.
+STUB_LDFLAGS=""
 case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN*) SELECTED="${SELECTED}.exe" ;;
+Darwin) ;;
+*) STUB_LDFLAGS="-Wl,-z,relro,-z,now" ;;
 esac
-"${CC:-cc}" -O0 -o "$SELECTED" "$FIX/stub.c"
+# shellcheck disable=SC2086 # single token, no spaces — see comment above
+"${CC:-cc}" -O0 $STUB_LDFLAGS -o "$SELECTED" "$FIX/stub.c"
 [ -f "$SELECTED" ] || {
     echo "MCPB contract compiler produced no selected-binary fixture" >&2
     exit 1
