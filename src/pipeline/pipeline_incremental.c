@@ -2924,10 +2924,42 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
      * re-parsed files have no codec output, and publishing a stale row
      * would satisfy a future closure plan with yesterday's surface; an
      * empty table just routes the next incremental to a full rebuild. */
+    /* Second half of the additive-merge contract find_deleted_files documents
+     * (see its comment): mode-skipped hash rows — files that exist on disk but
+     * this mode's discovery didn't visit — must be carried forward into the
+     * published manifest, or the next reindex sees a real on-disk deletion of
+     * such a file as "never existed" → noop → orphaned graph nodes forever.
+     * The two sets are disjoint by construction (mode-skipped = stored rows
+     * absent from current discovery). Publish consumes the manifest
+     * synchronously and does not free it, so a shallow merged array is safe. */
+    cbm_file_hash_t *publish_manifest = NULL;
+    int publish_manifest_count = manifest_count;
+    if (mode_skipped_count > 0) {
+        publish_manifest = malloc(((size_t)manifest_count + (size_t)mode_skipped_count) *
+                                  sizeof(*publish_manifest));
+        if (!publish_manifest) {
+            cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
+            free(saved_adr);
+            free(cov);
+            cbm_store_free_coverage(old_cov, old_cov_count);
+            free_mode_skipped(mode_skipped, mode_skipped_count);
+            cbm_gbuf_free(existing);
+            cbm_log_error("incremental.err", "msg", "merge_mode_skipped_oom");
+            return CBM_PIPELINE_ABORT_PRESERVE_DB;
+        }
+        if (manifest_count > 0) {
+            memcpy(publish_manifest, manifest, (size_t)manifest_count * sizeof(*publish_manifest));
+        }
+        memcpy(publish_manifest + manifest_count, mode_skipped,
+               (size_t)mode_skipped_count * sizeof(*publish_manifest));
+        publish_manifest_count = manifest_count + mode_skipped_count;
+    }
     int persist_rc =
-        dump_and_persist(existing, db_path, project, cbm_pipeline_cancelled_ptr(p), manifest,
-                         manifest_count, saved_adr, cov, cov_n, &coverage_meta, NULL, 0,
-                         cbm_pipeline_repo_path(p), cbm_pipeline_persistence_enabled(p));
+        dump_and_persist(existing, db_path, project, cbm_pipeline_cancelled_ptr(p),
+                         publish_manifest ? publish_manifest : manifest, publish_manifest_count,
+                         saved_adr, cov, cov_n, &coverage_meta, NULL, 0, cbm_pipeline_repo_path(p),
+                         cbm_pipeline_persistence_enabled(p));
+    free(publish_manifest);
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
     free(saved_adr);
     free(cov);

@@ -6,6 +6,9 @@
 #include "test_framework.h"
 #include <semantic/ast_profile.h>
 
+#include "cbm.h"        /* CBM_LANG_PYTHON, TSParser via tree-sitter api */
+#include "lang_specs.h" /* cbm_ts_language */
+
 #include <string.h>
 
 /* ── Helper ──────────────────────────────────────────────────────── */
@@ -161,6 +164,57 @@ TEST(ast_profile_to_vector_saturates) {
     PASS();
 }
 
+/* ── Compute path: data-flow dimensions must actually fire ───────── */
+
+/* Regression for the dead data-flow signal: the walk's in_return /
+ * in_condition flags were cleared before the (LIFO) children were processed,
+ * so params_in_returns / params_in_conditions serialized as constant zeros
+ * for every function and two similarity dimensions contributed nothing.
+ * Flags now ride on the frame; parse a real Python function and assert both
+ * counters see the parameters. */
+TEST(ast_profile_data_flow_alive) {
+    const char *src = "def f(alpha, beta, gamma):\n"
+                      "    if alpha:\n"
+                      "        return beta\n"
+                      "    return gamma + 1\n";
+    const TSLanguage *lang = cbm_ts_language(CBM_LANG_PYTHON);
+    ASSERT_NOT_NULL(lang);
+    TSParser *parser = ts_parser_new();
+    ASSERT_NOT_NULL(parser);
+    ASSERT(ts_parser_set_language(parser, lang));
+    TSTree *tree = ts_parser_parse_string(parser, NULL, src, (uint32_t)strlen(src));
+    ASSERT_NOT_NULL(tree);
+
+    /* Locate the function_definition's body node. */
+    TSNode root = ts_tree_root_node(tree);
+    TSNode body = {0};
+    for (uint32_t i = 0; i < ts_node_named_child_count(root); i++) {
+        TSNode child = ts_node_named_child(root, i);
+        if (strcmp(ts_node_type(child), "function_definition") == 0) {
+            TSNode b = ts_node_child_by_field_name(child, "body", strlen("body"));
+            if (!ts_node_is_null(b)) {
+                body = b;
+            }
+        }
+    }
+    ASSERT(!ts_node_is_null(body));
+
+    const char *params[3] = {"alpha", "beta", "gamma"};
+    cbm_ast_profile_t p;
+    ASSERT_TRUE(cbm_ast_profile_compute(body, src, params, 3, &p));
+
+    /* beta and gamma are returned; alpha (and beta, nested under the if) sit
+     * inside a condition subtree. Both counters were 0 before the fix. */
+    ASSERT_GTE(p.params_in_returns, 2);
+    ASSERT_GTE(p.params_in_conditions, 1);
+    ASSERT_GTE(p.return_count, 2);
+    ASSERT_GTE(p.if_count, 1);
+
+    ts_tree_delete(tree);
+    ts_parser_delete(parser);
+    PASS();
+}
+
 /* ── Suite ───────────────────────────────────────────────────────── */
 
 SUITE(ast_profile) {
@@ -174,4 +228,5 @@ SUITE(ast_profile) {
     RUN_TEST(ast_profile_to_vector_zero);
     RUN_TEST(ast_profile_to_vector_null);
     RUN_TEST(ast_profile_to_vector_saturates);
+    RUN_TEST(ast_profile_data_flow_alive);
 }

@@ -33,6 +33,8 @@ enum {
 typedef struct {
     TSNode node;
     int depth;
+    bool in_return;
+    bool in_condition;
 } profile_frame_t;
 
 static bool is_control_if(const char *k) {
@@ -142,7 +144,7 @@ static bool is_param_name(const char *ident, const char *source, const char **pa
 /* ── Main computation ────────────────────────────────────────────── */
 
 /* Count control-flow statement kinds (if/for/while/switch/try/return). */
-static void accumulate_control_flow(const char *kind, cbm_ast_profile_t *out, bool *in_return) {
+static void accumulate_control_flow(const char *kind, cbm_ast_profile_t *out) {
     if (is_control_if(kind)) {
         out->if_count++;
     }
@@ -160,7 +162,6 @@ static void accumulate_control_flow(const char *kind, cbm_ast_profile_t *out, bo
     }
     if (is_return(kind)) {
         out->return_count++;
-        *in_return = true;
     }
 }
 
@@ -256,12 +257,17 @@ bool cbm_ast_profile_compute(TSNode func_body, const char *source, const char **
 
     int total_depth = 0;
     int node_count = 0;
-    bool in_return = false;
-    bool in_condition = false;
 
+    /* Data-flow context rides on the frame, not on walk locals: the stack is
+     * LIFO, so children are always processed after this iteration — flags
+     * reset before the children pop (the old shape) were always false at the
+     * identifier leaves accumulate_data_flow looks for, and the two
+     * params_in_* dimensions serialized as constant zeros. Each frame carries
+     * its inherited context; a return/if/while frame ORs its scope in for the
+     * children it pushes. */
     profile_frame_t stack[WALK_STACK_CAP];
     int top = 0;
-    stack[top++] = (profile_frame_t){func_body, 0};
+    stack[top++] = (profile_frame_t){func_body, 0, false, false};
 
     while (top > 0) {
         profile_frame_t frame = stack[--top];
@@ -282,29 +288,24 @@ bool cbm_ast_profile_compute(TSNode func_body, const char *source, const char **
             out->max_nesting_depth = (uint16_t)depth;
         }
 
-        accumulate_control_flow(kind, out, &in_return);
+        accumulate_control_flow(kind, out);
         accumulate_expressions(kind, out);
         accumulate_halstead(kind, child_count, op_set, operand_set, out);
-        accumulate_data_flow(node, kind, child_count, source, param_names, param_count, in_return,
-                             in_condition, out);
-
-        /* Track context for data flow: are we inside a condition? */
-        if (is_control_if(kind) || is_control_while(kind)) {
-            in_condition = true;
-        }
+        accumulate_data_flow(node, kind, child_count, source, param_names, param_count,
+                             frame.in_return, frame.in_condition, out);
 
     push_children:
-        /* Reset context flags when leaving return/condition scope */
-        if (is_return(kind)) {
-            in_return = false;
-        }
-        if (child_count > 0 && (is_control_if(kind) || is_control_while(kind))) {
-            in_condition = false;
-        }
-
-        /* Push children in reverse order */
-        for (int i = (int)child_count - SKIP_ONE; i >= 0 && top < WALK_STACK_CAP; i--) {
-            stack[top++] = (profile_frame_t){ts_node_child(node, (uint32_t)i), depth + SKIP_ONE};
+        /* Children inherit this frame's context, plus the scope this node
+         * opens (return expression / if-while subtree). */
+        {
+            bool child_in_return = frame.in_return || is_return(kind);
+            bool child_in_condition =
+                frame.in_condition || is_control_if(kind) || is_control_while(kind);
+            /* Push children in reverse order */
+            for (int i = (int)child_count - SKIP_ONE; i >= 0 && top < WALK_STACK_CAP; i--) {
+                stack[top++] = (profile_frame_t){ts_node_child(node, (uint32_t)i), depth + SKIP_ONE,
+                                                 child_in_return, child_in_condition};
+            }
         }
     }
 

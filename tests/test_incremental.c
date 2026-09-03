@@ -233,7 +233,7 @@ static int incremental_setup(void) {
         th_rmtree(cache_stage);
         snprintf(cmd, sizeof(cmd),
                  "git clone --depth=1 --branch 0.99.1 --quiet "
-                 "https://github.com/fastapi/fastapi.git '%s' 2>&1",
+                 "https://github.com/fastapi/fastapi.git \"%s\" 2>&1",
                  cache_stage);
         int fetch_rc = system(cmd);
         if (fetch_rc != 0 || rename(cache_stage, cache_repo) != 0) {
@@ -244,7 +244,12 @@ static int incremental_setup(void) {
             }
         }
     }
-    snprintf(cmd, sizeof(cmd), "git clone --quiet '%s' '%s' 2>&1", cache_repo, g_repodir);
+    /* Double quotes: system() runs this through cmd.exe on Windows, which
+     * does not treat single quotes as quoting — the old single-quoted form
+     * handed git literal quote characters as path bytes, so the fixture clone
+     * always failed there and the whole suite soft-skipped (pass=0) on every
+     * Windows lane without anyone noticing. */
+    snprintf(cmd, sizeof(cmd), "git clone --quiet \"%s\" \"%s\" 2>&1", cache_repo, g_repodir);
     int rc = system(cmd);
     if (rc != 0) {
         printf("  fixture local clone failed (rc=%d)\n", rc);
@@ -582,6 +587,71 @@ TEST(incr_delete_file) {
     ASSERT(has_function("incr_test_injected")); /* others survive */
     ASSERT_LT(get_node_count(), nodes_before);
 
+    PASS();
+}
+
+TEST(incr_mode_skipped_hash_rows_carried) {
+    /* tools/ is a FAST_SKIP_DIRS entry: full mode indexes it, fast mode skips
+     * it. The additive-merge contract (find_deleted_files): the fast pass must
+     * PRESERVE the file's graph nodes AND keep its hash row known, so a later
+     * real on-disk deletion still classifies as deleted and purges. The hash
+     * rows are carried by the delta route's patch semantics and by the
+     * closure publish's merged manifest (pipeline_incremental re-upserts the
+     * mode-skipped rows); this test locks the user-visible contract end to
+     * end. */
+    write_file_at("tools/incr_ms_target.py", "def incr_ms_function():\n    return 1\n");
+
+    char *resp =
+        call_tool("index_repository", "{\"repo_path\":\"%s\",\"mode\":\"full\"}", g_repodir);
+    ASSERT_NOT_NULL(resp);
+    ASSERT(strstr(resp, "indexed") != NULL);
+    free(resp);
+    ASSERT(has_function("incr_ms_function"));
+
+    /* Touch a fast-visible file so the fast pass actually publishes (a
+     * no-change pass routes to noop and proves nothing). */
+    {
+        char routing[512];
+        snprintf(routing, sizeof(routing), "%s/fastapi/routing.py", g_repodir);
+        FILE *f = fopen(routing, "a");
+        ASSERT_NOT_NULL(f);
+        fprintf(f, "\ndef incr_ms_trigger():\n    return 2\n");
+        fclose(f);
+    }
+    resp = call_tool("index_repository", "{\"repo_path\":\"%s\",\"mode\":\"fast\"}", g_repodir);
+    ASSERT_NOT_NULL(resp);
+    ASSERT(strstr(resp, "indexed") != NULL);
+    free(resp);
+    /* Nodes survive the fast pass that did not visit tools/. */
+    ASSERT(has_function("incr_ms_function"));
+
+    /* The hash row is still known after the fast publish. */
+    cbm_store_t *s = open_store();
+    ASSERT_NOT_NULL(s);
+    cbm_file_hash_t row;
+    int got = cbm_store_get_file_hash(s, g_project, "tools/incr_ms_target.py", &row);
+    if (got == CBM_STORE_OK) {
+        cbm_store_clear_file_hash(&row);
+    }
+    cbm_store_close(s);
+    ASSERT_EQ(got, CBM_STORE_OK);
+
+    /* End-to-end: deleting the on-disk file and reindexing (fast) purges both
+     * the nodes and the hash row — the deletion is SEEN, not orphaned. */
+    delete_file_at("tools/incr_ms_target.py");
+    resp = call_tool("index_repository", "{\"repo_path\":\"%s\",\"mode\":\"fast\"}", g_repodir);
+    ASSERT_NOT_NULL(resp);
+    free(resp);
+    ASSERT(!has_function("incr_ms_function"));
+
+    s = open_store();
+    ASSERT_NOT_NULL(s);
+    got = cbm_store_get_file_hash(s, g_project, "tools/incr_ms_target.py", &row);
+    if (got == CBM_STORE_OK) {
+        cbm_store_clear_file_hash(&row);
+    }
+    cbm_store_close(s);
+    ASSERT_NEQ(got, CBM_STORE_OK);
     PASS();
 }
 
@@ -3078,6 +3148,7 @@ SUITE(incremental) {
     RUN_TEST(incr_formatter_run);
     RUN_TEST(incr_add_file);
     RUN_TEST(incr_delete_file);
+    RUN_TEST(incr_mode_skipped_hash_rows_carried);
     RUN_TEST(incr_simultaneous_changes);
 
     /* Phase 4: Adversarial */
