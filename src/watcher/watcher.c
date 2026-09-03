@@ -936,6 +936,31 @@ static root_status_t root_status(const char *root_path, int *out_errno) {
     if (!root_path) {
         return ROOT_UNCERTAIN;
     }
+#ifdef _WIN32
+    /* stat() interprets char* through the ANSI code page, so a UTF-8 root
+     * path with non-ASCII bytes probes the wrong name and reports ENOENT —
+     * which the prune path would then treat as a deleted repository and drop
+     * the DB (#286 fail-safe hole). Probe through the wide API instead and
+     * map only true not-found errors onto the ENOENT semantics; every other
+     * failure (access denied, sharing violation, transient I/O) stays
+     * UNCERTAIN so it never counts toward pruning. */
+    wchar_t *wide_root = cbm_path_to_wide(root_path);
+    if (!wide_root) {
+        return ROOT_UNCERTAIN;
+    }
+    DWORD attributes = GetFileAttributesW(wide_root);
+    free(wide_root);
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? ROOT_PRESENT : ROOT_MISSING;
+    }
+    DWORD probe_error = GetLastError();
+    if (probe_error == ERROR_FILE_NOT_FOUND || probe_error == ERROR_PATH_NOT_FOUND) {
+        *out_errno = ENOENT;
+        return ROOT_MISSING;
+    }
+    *out_errno = probe_error == ERROR_ACCESS_DENIED ? EACCES : EIO;
+    return ROOT_UNCERTAIN;
+#else
     struct stat st;
     if (stat(root_path, &st) == 0) {
         /* Exists but is no longer a directory → the root directory is gone. */
@@ -943,6 +968,7 @@ static root_status_t root_status(const char *root_path, int *out_errno) {
     }
     *out_errno = errno;
     return cbm_watcher_root_missing_errno(errno) ? ROOT_MISSING : ROOT_UNCERTAIN;
+#endif
 }
 
 /* Sustained-absence window (seconds) before a missing root may be pruned.

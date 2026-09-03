@@ -354,6 +354,46 @@ TEST(watcher_prunes_sustained_missing_root) {
     PASS();
 }
 
+TEST(watcher_existing_non_ascii_root_is_never_pruned) {
+    /* Regression: a UTF-8 root path with non-ASCII bytes used to be probed
+     * with ANSI stat(), which resolves the wrong name and reports ENOENT —
+     * counting as a missing root toward prune deletion even though the
+     * directory exists on disk. The probe must classify such a root as
+     * PRESENT on every poll, so no watch is pruned and no DB file is
+     * deleted. */
+    prune_fixture_t f;
+    if (!prune_fixture_setup(&f, "0")) {
+        FAIL("prune fixture setup failed");
+    }
+
+    /* "dự-án" (Vietnamese for "project"), spelled as UTF-8 bytes so the
+     * source stays plain ASCII. */
+    static const char non_ascii_name[] = "d\xE1\xBB\xB1-"
+                                         "\xC3\xA1n";
+    char unicode_root[512];
+    snprintf(unicode_root, sizeof(unicode_root), "%s/%s", f.rootdir, non_ascii_name);
+    ASSERT_TRUE(cbm_mkdir_p(unicode_root, 0755));
+
+    cbm_store_t *store = cbm_store_open_memory();
+    cbm_watcher_t *w = cbm_watcher_new(store, index_callback, NULL);
+    cbm_watcher_watch(w, "stale-project", unicode_root);
+    ASSERT_EQ(cbm_watcher_watch_count(w), 1);
+
+    /* The root exists on every poll: repeated touches must never accumulate
+     * a missing-root streak, prune the watch, or delete the cached DB. */
+    for (int poll = 0; poll < 4; poll++) {
+        cbm_watcher_touch(w, "stale-project");
+        cbm_watcher_poll_once(w);
+        ASSERT_EQ(cbm_watcher_watch_count(w), 1);
+        ASSERT_EQ(access(f.db_path, F_OK), 0);
+    }
+
+    cbm_watcher_free(w);
+    cbm_store_close(store);
+    prune_fixture_teardown(&f);
+    PASS();
+}
+
 TEST(watcher_prune_waits_for_daemon_project_mutation) {
     /* The daemon application owns project-operation coordination. Supplying
      * its watcher must route destructive stale-root pruning through that
@@ -3161,6 +3201,7 @@ SUITE(watcher) {
     RUN_TEST(watcher_poll_no_projects);
     RUN_TEST(watcher_poll_nonexistent_path);
     RUN_TEST(watcher_prunes_sustained_missing_root);
+    RUN_TEST(watcher_existing_non_ascii_root_is_never_pruned);
     RUN_TEST(watcher_prune_waits_for_daemon_project_mutation);
     RUN_TEST(watcher_prune_guard_denial_and_success_are_balanced);
     RUN_TEST(watcher_prune_restats_root_after_guard_acquisition);
