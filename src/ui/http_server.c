@@ -527,6 +527,22 @@ static void handle_logs(cbm_http_conn_t *c, const cbm_http_req_t *req) {
             } else if (ch == '\n') {
                 buf[pos++] = '\\';
                 buf[pos++] = 'n';
+            } else if (ch == '\r') {
+                buf[pos++] = '\\';
+                buf[pos++] = 'r';
+            } else if (ch == '\t') {
+                buf[pos++] = '\\';
+                buf[pos++] = 't';
+            } else if ((unsigned char)ch < 0x20) {
+                /* Raw control bytes are illegal inside a JSON string; emit the
+                 * \u00XX form (filenames reaching the log can carry them). */
+                static const char hex[] = "0123456789abcdef";
+                buf[pos++] = '\\';
+                buf[pos++] = 'u';
+                buf[pos++] = '0';
+                buf[pos++] = '0';
+                buf[pos++] = hex[(unsigned char)ch >> 4];
+                buf[pos++] = hex[(unsigned char)ch & 0xF];
             } else {
                 buf[pos++] = ch;
             }
@@ -765,7 +781,12 @@ static void handle_browse(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     /* Build JSON response */
     char buf[32768];
     int pos = 0;
-    http_appendf(buf, sizeof(buf), &pos, "{\"path\":\"%s\",\"dirs\":[", path);
+    /* path comes from the (decoded) query param and may contain quotes or
+     * backslashes — escape it like the dirs below, or the response is not
+     * valid JSON for such paths. */
+    char esc_path[2048];
+    cbm_json_escape(esc_path, (int)sizeof(esc_path), path);
+    http_appendf(buf, sizeof(buf), &pos, "{\"path\":\"%s\",\"dirs\":[", esc_path);
 
     struct dirent *ent;
     int count = 0;
@@ -868,6 +889,17 @@ static void handle_adr_get(cbm_http_conn_t *c, const cbm_http_req_t *req) {
                 } else if (ch == '\t') {
                     buf[pos++] = '\\';
                     buf[pos++] = 't';
+                } else if ((unsigned char)ch < 0x20) {
+                    /* ADR content is user-controlled; raw control bytes are
+                     * illegal inside a JSON string and make browsers reject
+                     * the whole response. Emit the \u00XX form. */
+                    static const char hex[] = "0123456789abcdef";
+                    buf[pos++] = '\\';
+                    buf[pos++] = 'u';
+                    buf[pos++] = '0';
+                    buf[pos++] = '0';
+                    buf[pos++] = hex[(unsigned char)ch >> 4];
+                    buf[pos++] = hex[(unsigned char)ch & 0xF];
                 } else {
                     buf[pos++] = ch;
                 }
@@ -1221,8 +1253,12 @@ static void handle_index_start(cbm_http_server_t *server, cbm_http_conn_t *c,
     }
     job->thread_started = true;
 
+    /* root_path is caller-supplied and may contain quotes/backslashes —
+     * escape it exactly like handle_index_status does below. */
+    char esc_root[2048];
+    cbm_json_escape(esc_root, (int)sizeof(esc_root), job->root_path);
     cbm_http_replyf(c, 202, g_cors_json, "{\"status\":\"indexing\",\"slot\":%d,\"path\":\"%s\"}",
-                    slot, job->root_path);
+                    slot, esc_root);
 }
 
 /* GET /api/index-status — returns status of all index jobs */

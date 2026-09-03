@@ -664,7 +664,18 @@ cbm_layout_result_t *cbm_layout_compute(cbm_store_t *store, const char *project,
                                     es = ts;
                                 if (td)
                                     ed = td;
-                                free_edge_array(te + e, tc - e);
+                                /* The loop already moved or freed te[0..e)'s
+                                 * strings; free the remaining ones, then the
+                                 * array from its BASE. The old call passed the
+                                 * interior pointer te+e to free_edge_array,
+                                 * whose trailing free() is an invalid-pointer
+                                 * heap corruption under any allocator. */
+                                for (int k = e; k < tc; k++) {
+                                    free((void *)te[k].project);
+                                    free((void *)te[k].type);
+                                    free((void *)te[k].properties_json);
+                                }
+                                free(te);
                                 goto edges_done;
                             }
                             all_edges = te2;
