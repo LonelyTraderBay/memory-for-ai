@@ -66,7 +66,16 @@ int main(int argc, char **argv) {
     encoding="utf-8",
 )
 PY
-"${CC:-cc}" -g -O0 -o "$INPUT" "$FIX/stub.c"
+# Full RELRO on ELF hosts: the composition gate requires GNU_RELRO + BIND_NOW,
+# and distro compilers default to partial RELRO (-z relro without -z now).
+# macOS and Windows hosts never run the ELF checks and reject these flags.
+STUB_LDFLAGS=""
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN* | Darwin) ;;
+*) STUB_LDFLAGS="-Wl,-z,relro,-z,now" ;;
+esac
+# shellcheck disable=SC2086 # single token, no spaces — see comment above
+"${CC:-cc}" -g -O0 $STUB_LDFLAGS -o "$INPUT" "$FIX/stub.c"
 INPUT_SHA="$(python3 - "$INPUT" <<'PY'
 import hashlib, pathlib, sys
 print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
