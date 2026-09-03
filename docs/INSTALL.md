@@ -68,6 +68,8 @@ What it does, exactly:
 
 Guarantees while pinned with `--scope`: any tool argument naming a different project is refused before the tool runs; `list_projects` shows only the pinned project; indexing is confined to paths inside the repository. An agent opened in a different repo sees its own server. `uninstall` removes the shared binary and global config but never touches a repo's own `.mcp.json` (the repository owns that file).
 
+**Which clients see the per-project server.** The entry lands in the standard repo-root `.mcp.json`, so every client that documents project-scope `.mcp.json` support picks it up — Claude Code and VS Code among them. Clients that keep project MCP config under their own filename (Cursor: `.cursor/mcp.json`; Gemini CLI: `.gemini/settings.json`) or read only global config will not adopt the entry on their own. For those, either run the regular global `install` as well (it configures all detected clients; the one shared binary then serves both the global unscooped server and this repo's scoped one), or copy the entry into that client's own project config — `install --project --dry-run` previews exactly what would be written.
+
 Semantics and test coverage for scoped sessions: [CONFIGURATION.md §3b](CONFIGURATION.md#3b-per-project-scoped-sessions---scope-install---project). Agent-facing usage: [AGENT_GUIDE.md §9](AGENT_GUIDE.md#9-project-isolation--team-sharing).
 
 ## Package managers
