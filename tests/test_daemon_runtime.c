@@ -4520,11 +4520,18 @@ TEST(daemon_runtime_process_fingerprint_never_hashes_replacement_path) {
               : -1;
     setup = setup && image_written > 0 && image_written < (int)sizeof(image_path) &&
             replacement_written > 0 && replacement_written < (int)sizeof(replacement_path) &&
-            /* Use standalone shell binaries rather than /bin/cat and
-             * /bin/echo: some Linux distributions provide those names through
-             * a multi-call coreutils binary, which rejects the copied argv[0]
-             * "image" before the fingerprint fixture can observe it. */
-            runtime_test_copy_executable("/bin/sh", image_path) &&
+            /* The image must be a real standalone binary that blocks reading
+             * the held stdin pipe and never re-execs. /bin/sh on macOS is a
+             * Catalina+ stub that re-execs /bin/bash: a spawned sh-copy
+             * reports /bin/bash as its executable and legitimately
+             * fingerprints as bash — byte-identical to a bash-copy
+             * replacement, which made the fail-closed contract untestable
+             * (CI diagnostics: reported_path=/bin/bash, observed hash ==
+             * replacement hash). cat keeps the copied file as its image on
+             * every supported platform. The replacement only needs different
+             * content; /bin/bash is a real standalone binary on macOS and on
+             * the Linux runners. */
+            runtime_test_copy_executable("/usr/bin/cat", image_path) &&
             runtime_test_copy_executable("/bin/bash", replacement_path);
 
     char original[CBM_DAEMON_BUILD_FINGERPRINT_SIZE] = {0};
