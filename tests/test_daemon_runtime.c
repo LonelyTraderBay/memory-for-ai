@@ -4549,11 +4549,12 @@ TEST(daemon_runtime_process_fingerprint_never_hashes_replacement_path) {
     /* Captured while the child is still alive: the path the kernel reports
      * for a process whose executable vnode was unlinked by the replacement
      * rename is the deciding datum when the fail-closed contract is
-     * violated, and it cannot be queried after the child is reaped. */
-    char reported_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    int reported_path_length = 0;
+     * violated, and it cannot be queried after the child is reaped.
+     * Apple-only: libproc (proc_pidpath, PROC_PIDPATHINFO_MAXSIZE) is not
+     * available on Linux, whose /proc link needs no such capture. */
 #ifdef __APPLE__
-    reported_path_length =
+    char reported_path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    int reported_path_length =
         child > 0 ? proc_pidpath((int)child, reported_path, sizeof(reported_path)) : 0;
 #endif
     runtime_test_stop_blocked_executable(child, release_fd);
