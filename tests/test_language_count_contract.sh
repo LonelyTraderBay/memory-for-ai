@@ -60,8 +60,6 @@ SURFACES=(
 # product's registry size. Each entry states what its number actually counts,
 # so an unexplained exemption cannot hide here.
 EXEMPT=(
-    'docs/EVALUATION_PLAN.md'                  # historical plan, pinned to its authoring date
-    'docs/BENCHMARK.md'                        # benchmark corpus subsets (63/17 scored)
     'scripts/clone-bench-repos.sh'             # bench repo tiers (44 + 22)
     'tests/repro/repro_invariant_breadth.c'    # breadth of one invariant (27/27)
     'tests/repro/repro_grammar_scripting.c'    # scripting-grammar probe scope (12)

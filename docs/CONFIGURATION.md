@@ -206,7 +206,7 @@ These environment variables affect runtime behavior.
 | `CBM_WORKERS` | auto-detected | Override the indexing worker count. |
 | `CBM_MEM_BUDGET_MB` | auto (fraction of system RAM) | Override the indexing memory budget in MiB. Oversized requests clamp to total RAM; invalid values fall back to the auto-detected budget. |
 | `CBM_MAX_FILE_BYTES` | `536870912` (512 MiB) | Per-file read cap in bytes. Files over the cap are reported as oversized and skipped, never silently dropped or read unbounded. Non-positive or unparseable values fall back to the default. |
-| `CBM_DISABLE_LSP_CROSS` | *(unset)* | Set to `1` to skip the LSP cross-pass phase — the most expensive pipeline phase. Also the documented workaround if a language resolver misbehaves on your codebase (see `docs/RUNTIME_TRACE_MODEL.md`). |
+| `CBM_DISABLE_LSP_CROSS` | *(unset)* | Set to `1` to skip the LSP cross-pass phase — the most expensive pipeline phase. Also the documented workaround if a language resolver misbehaves on your codebase (see [AGENT_GUIDE.md](AGENT_GUIDE.md#8-tuning-the-index-to-your-project)). |
 | `CBM_SEMANTIC_ENABLED` | *(unset)* | Set to `1` to opt in to the semantic embedding edges pass (nomic-embed-code vectors, shipped in the binary). Off by default. |
 | `CBM_SEMANTIC_THRESHOLD` | `0.75` | Similarity threshold for semantic edges, in `(0, 1]`. Values outside the range or non-numeric are ignored and the default applies. |
 | `CBM_DUMP_VERIFY_MIN_RATIO` | `0.5` | Minimum verification ratio for store dump verification, in `[0, 1]`. Set `0` to disable the check. |

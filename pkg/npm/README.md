@@ -5,9 +5,12 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/macOS_%7C_Linux_%7C_Windows-supported-lightgrey)](https://github.com/LonelyTraderBay/memory-for-ai/releases/latest)
 
-**The fastest and most efficient code intelligence engine for AI coding agents.** Full-indexes an average repository in milliseconds, the Linux kernel (28M LOC, 75K files) in 3 minutes. Answers structural queries in under 1ms. This npm wrapper downloads, verifies, and caches the selected native runtime set: the executable, its authenticated integration asset, and the built-in graph UI.
+An MCP server that turns a codebase into a persistent knowledge graph — functions, classes, call chains, HTTP routes, cross-service links — so an AI coding agent answers structural questions with **graph queries instead of reading file after file**. This npm wrapper downloads, verifies, and caches the native runtime set for your platform; Node.js owns download, cache repair, and launch.
 
-High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-sitter/) AST analysis across 162 languages — producing a persistent knowledge graph of functions, classes, call chains, HTTP routes, and cross-service links. 18 MCP tools. No hosted service or API key; this package requires Node.js to manage and launch the cached native runtime set. Plug and play across 45 automatic/conditional client surfaces.
+One self-contained native executable behind the wrapper. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 18 MCP tools. No Docker, no API key, no telemetry — everything runs locally.
+
+- **AI agents:** read [docs/AGENT_GUIDE.md](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AGENT_GUIDE.md) — the complete operating manual.
+- **Evaluating effectiveness:** [docs/MEASURING.md](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/MEASURING.md) — a 15-minute spot check and a full A/B protocol.
 
 ## Installation
 
@@ -15,30 +18,28 @@ High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-si
 npm install -g memory-for-ai
 ```
 
-The runtime set for your platform is downloaded automatically at install time. There is one composition per platform and the graph UI is always included — the former `CBM_VARIANT=ui` opt-in is obsolete.
+The runtime set for your platform is downloaded and verified automatically at install time. One composition per platform; the graph UI is always included (the former `CBM_VARIANT=ui` opt-in is obsolete).
 
-Then configure your coding agents:
+Then configure your coding agents and index:
 
 ```bash
-memory-for-ai install
+memory-for-ai install      # configures every detected agent (45 surfaces; --dry-run previews)
 ```
 
 Restart your agent. Say **"Index this project"** — done.
 
-## Why memory-for-ai
+## Usage
 
-- **Extreme indexing speed** — Linux kernel (28M LOC, 75K files) in 3 minutes. RAM-first pipeline with LZ4 compression and in-memory SQLite.
-- **Plug and play** — verified native runtime sets for macOS (arm64/amd64), Linux (arm64/amd64), and Windows (arm64/amd64). No Docker or API keys; Node.js owns package download, cache repair, and launch.
-- **162 languages** — vendored tree-sitter grammars compiled into the binary. Nothing to install, nothing that breaks.
-- **120x fewer tokens** — 5 structural queries: ~3,400 tokens vs ~412,000 via file-by-file search.
-- **45 supported automatic/conditional client surfaces** — `install` configures the appropriate MCP, durable-context, and documented hook surfaces without widening client permissions.
-- **Detected automatically (39)** — Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode, VS Code, Cursor, Windsurf, Augment / Auggie, OpenClaw, Kiro, Junie, Hermes, OpenHands, Cline, Warp, Qwen Code, GitHub Copilot CLI, Factory Droid, Crush, Goose, Mistral Vibe, Grok Build, Qoder CLI, Kimi Code CLI, GitLab Duo CLI, Rovo Dev CLI, Amp, Devin CLI / Local, Tabnine, Amazon Q Developer IDE, CodeBuddy Code CLI, IBM Bob Shell, Pochi, Pi, and Oh My Pi (omp).
-- **Conditional or explicit (6)** — Continue / cn, Visual Studio, TRAE, Roo Code, IBM Bob IDE, and Sourcegraph Cody. Bob IDE is touched only when `~/.bob/mcp.json` already exists.
-- **New documented adapters** — CodeBuddy uses `~/.codebuddy/.mcp.json` while preserving active older files; Bob Shell uses `~/.bob/mcp_settings.json`; Pochi uses the `mcp` section in `~/.pochi/config.jsonc`; Amazon Q Developer IDE defaults to `~/.aws/amazonq/default.json` while preserving either documented alternative.
-- **Lifecycle hooks stay conservative** — Kimi uses `UserPromptSubmit`; on macOS/Linux, GitLab Duo gets a fail-open user `SessionStart`, while Devin gets `UserPromptSubmit`, `PostCompaction`, and a deduplicated `SessionStart` when Claude does not already provide it. Qoder, GitLab Duo, Devin, and Factory hooks are withheld on Windows without a documented shell/executor contract. Cline's auto-activating file hooks are withheld because their context output is not reliably consumed, CodeBuddy beta hooks are not auto-installed, and Cursor context hooks remain withheld.
-- **Subagent access is explicit** — Claude, Gemini, Kiro, Qwen, CodeBuddy, KiloCode, Mistral Vibe, Grok Build, Qoder, Junie, and Factory get documented graph profiles with the narrowest tool/server filters their schemas support. KiloCode and Vibe enumerate read-only query tools rather than using server wildcards. Cursor, Rovo, Pochi, and Cline use explicit parent handoff where child MCP is unavailable or unsafe; IBM Bob receives no invented hook or agent.
-- **Manual, UI, cloud, or repository-managed (not counted)** — Qodo, Warp MCP, JetBrains AI/ACP, GitHub Copilot coding agent, Jules, CodeRabbit, Replit, BLACKBOX AI, Plandex, and SWE-agent. Warp is counted above for its detected skill installation; its MCP connection remains manual.
-- **18 MCP tools** — search, trace, architecture, impact analysis, Cypher queries, dead code detection, cross-service HTTP linking, ADR management, and more.
+```bash
+memory-for-ai install          # configure all detected coding agents
+memory-for-ai install --project  # repo-local fenced server named after the repo (no global changes)
+memory-for-ai cli list_projects   # every MCP tool also runs as a one-shot CLI command
+memory-for-ai --version
+memory-for-ai --help
+memory-for-ai uninstall        # remove owned agent configs and the binary
+```
+
+Updates go through npm on every platform: `npm install -g memory-for-ai@latest`.
 
 ## Supported Platforms
 
@@ -48,54 +49,12 @@ Restart your agent. Say **"Index this project"** — done.
 | Linux   | arm64, amd64 |
 | Windows | arm64, amd64 |
 
-## Usage
+## Learn more
 
-```bash
-memory-for-ai install          # configure all detected coding agents
-memory-for-ai --version
-memory-for-ai --help
-memory-for-ai update           # update to latest release
-memory-for-ai uninstall        # remove agent configs
-```
-
-### CLI Mode
-
-Every MCP tool is also available directly from the command line:
-
-```bash
-memory-for-ai cli index_repository '{"repo_path": "/path/to/repo"}'
-memory-for-ai cli search_graph '{"name_pattern": ".*Handler.*", "label": "Function"}'
-memory-for-ai cli trace_call_path '{"function_name": "main", "direction": "both"}'
-memory-for-ai cli get_architecture '{}'
-```
-
-## MCP Tools
-
-| Category | Tools |
-|----------|-------|
-| **Indexing** | `index_repository`, `list_projects`, `delete_project`, `index_status` |
-| **Querying** | `search_graph`, `trace_call_path`, `detect_changes`, `query_graph` |
-| **Analysis** | `get_architecture`, `get_graph_schema`, `get_code_snippet`, `search_code`, `get_code_actions` |
-| **Advanced** | `manage_adr`, `ingest_traces`, `get_runtime_traces` |
-
-`ingest_traces` uses `compact-v1` by default. The opt-in `canonical-v2` contract accepts
-producer-scoped hexadecimal span IDs and provides exact duplicate suppression plus
-conflict rejection; it never writes runtime observations into the static graph.
-
-## Performance
-
-Benchmarked on Apple M3 Pro:
-
-| Operation | Time |
-|-----------|------|
-| Linux kernel full index (28M LOC, 75K files) | 3 min |
-| Django full index | ~6s |
-| Cypher query | <1ms |
-| Trace call path (depth=5) | <10ms |
-
-## Full Documentation
-
-See [github.com/LonelyTraderBay/memory-for-ai](https://github.com/LonelyTraderBay/memory-for-ai) for the full README including all MCP tools, configuration options, graph data model, and language support details.
+- [Agent operating guide](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AGENT_GUIDE.md) — tool catalog, task→tool playbooks, correctness protocol, per-project tuning
+- [Installation reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/INSTALL.md) — every install path, CI/containers, build from source
+- [Configuration reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/CONFIGURATION.md) — settings and environment variables
+- [Measuring real effectiveness](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/MEASURING.md) — tokens, tool calls, answer quality on your repo
 
 ## License
 
