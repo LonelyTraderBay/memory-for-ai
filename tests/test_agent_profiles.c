@@ -83,7 +83,7 @@ TEST(agent_profiles_direct_dialects_are_coverage_aware_and_read_only) {
         for (int tier = 0; tier < (int)CBM_GRAPH_TIER_COUNT; tier++) {
             const char *binary = expectation->dialect == CBM_GRAPH_DIALECT_KIRO ||
                                          expectation->dialect == CBM_GRAPH_DIALECT_CODEX
-                                     ? "/opt/codebase memory/cbm"
+                                     ? "/opt/memory for ai/cbm"
                                      : NULL;
             char *profile = cbm_render_graph_profile(expectation->dialect, (cbm_graph_tier_t)tier,
                                                      CBM_GRAPH_ACCESS_DIRECT, binary);

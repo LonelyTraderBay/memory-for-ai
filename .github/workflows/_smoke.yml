@@ -341,7 +341,7 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew tap deusdata/memory-for-ai "$GITHUB_WORKSPACE"
-          brew trust deusdata/memory-for-ai
+          brew tap lonelytraderbay/memory-for-ai "$GITHUB_WORKSPACE"
+          brew trust lonelytraderbay/memory-for-ai
           brew install memory-for-ai
           memory-for-ai --version

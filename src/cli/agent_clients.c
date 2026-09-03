@@ -22,6 +22,10 @@
 #define AGENT_MAX_CONFIG_BYTES (8U * 1024U * 1024U)
 #define AGENT_JSON_MAX_DEPTH 64U
 
+/* Legacy MCP entry keys from the previous product name and an early fork.
+ * Kept deliberately: configs still carrying an entry under one of these names
+ * must be recognized (and treated as ambiguous/foreign) instead of receiving a
+ * second product entry beside the old one. */
 static const char *const agent_compat_entry_keys[] = {
     "codebase-memory",
     "memory-for-ai-mcp",

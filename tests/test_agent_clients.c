@@ -834,7 +834,7 @@ TEST(agent_clients_json_schemas_are_exact_and_policy_neutral) {
         {CBM_AGENT_CLIENT_POCHI, "\"mcp\""},
         {CBM_AGENT_CLIENT_OMP, "\"type\": \"stdio\""},
     };
-    const char *binary = "/opt/Codebase Memory/bin/cbm\\\"special";
+    const char *binary = "/opt/Memory For AI/bin/cbm\\\"special";
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
         char *dir = NULL;
         char *path = agent_fixture("{\n  // user-owned\n  \"keep\": true,\n}\n", &dir);

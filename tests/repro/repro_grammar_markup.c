@@ -450,7 +450,7 @@ static int markup_robustness(const char *lang_tag, const char *bad_src,
  */
 TEST(repro_grammar_markup_markdown) {
     static const char src[] =
-        "# Codebase Memory\n"
+        "# Memory for AI\n"
         "\n"
         "Intro paragraph with **bold** and a [link](https://example.com).\n"
         "\n"
@@ -488,7 +488,7 @@ TEST(repro_grammar_markup_markdown) {
 TEST(repro_grammar_markup_rst) {
     static const char src[] =
         "=================\n"
-        "Codebase Memory\n"
+        "Memory for AI\n"
         "=================\n"
         "\n"
         "Introduction\n"
@@ -522,7 +522,7 @@ TEST(repro_grammar_markup_rst) {
  * Dim 8 expected GREEN: no dangling CALLS endpoints.
  */
 TEST(repro_grammar_markup_typst) {
-    static const char src[] = "#let title = \"Codebase Memory\"\n"
+    static const char src[] = "#let title = \"Memory for AI\"\n"
                               "#let greet(name) = [Hello, #name!]\n"
                               "#let render() = greet(\"world\")\n"
                               "\n"

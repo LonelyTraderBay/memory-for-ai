@@ -115,7 +115,7 @@ shipped_surfaces = (
     "install.ps1",
     "pkg/npm/install.js",
     "pkg/npm/bin.js",
-    "pkg/pypi/src/codebase_memory_mcp/_cli.py",
+    "pkg/pypi/src/memory_for_ai/_cli.py",
     ".github/workflows/_build.yml",
 )
 for relative in shipped_surfaces:
@@ -253,7 +253,7 @@ single_binary_contracts = {
         r"binName\s*=\s*isWindows\s*\?\s*['\"]memory-for-ai\.exe['\"]",
         r"const\s+executionPath\s*=\s*binPath",
     ),
-    "pkg/pypi/src/codebase_memory_mcp/_cli.py": (
+    "pkg/pypi/src/memory_for_ai/_cli.py": (
         r"_WINDOWS_BINARY_NAME\s*=\s*['\"]memory-for-ai\.exe['\"]",
         r"def\s+_runtime_set_ready\(",
     ),
@@ -286,7 +286,7 @@ exact_archive_guards = {
         "'install.ps1'",
         "THIRD_PARTY_NOTICES.md",
     ),
-    "pkg/pypi/src/codebase_memory_mcp/_cli.py": (
+    "pkg/pypi/src/memory_for_ai/_cli.py": (
         "name not in required_set",
         "len(seen) != len(required)",
         "_WINDOWS_BINARY_NAME",
@@ -310,7 +310,7 @@ guidance_contracts = {
         "npm uninstall memory-for-ai",
         "memory-for-ai install --yes",
     ),
-    "pkg/pypi/src/codebase_memory_mcp/_cli.py": (
+    "pkg/pypi/src/memory_for_ai/_cli.py": (
         "python -m pip install --upgrade memory-for-ai",
         "python -m pip uninstall memory-for-ai",
         "install --yes",

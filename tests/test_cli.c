@@ -3230,7 +3230,7 @@ TEST(cli_openclaw_compaction_preserves_user_owned_section) {
     test_mkdirp(config_dir);
     write_test_file(config_path,
                     "{\"agents\":{\"defaults\":{\"compaction\":{"
-                    "\"postCompactionSections\":[\"Codebase Memory\",\"User Notes\"]}}}}\n");
+                    "\"postCompactionSections\":[\"Team Scratchpad\",\"User Notes\"]}}}}\n");
 
     const char *const env_names[] = {"HOME",
                                      "PATH",
@@ -3253,14 +3253,14 @@ TEST(cli_openclaw_compaction_preserves_user_owned_section) {
     bool installed_owned =
         installed && strstr(installed, "Codebase Knowledge Graph (memory-for-ai)");
     bool retained_existing =
-        installed && strstr(installed, "Codebase Memory") && strstr(installed, "User Notes");
+        installed && strstr(installed, "Team Scratchpad") && strstr(installed, "User Notes");
     free(installed);
 
     char *argv[] = {"uninstall", "--yes"};
     int rc = cli_test_cmd_uninstall(2, argv);
     char *uninstalled = read_test_file_alloc(config_path);
     bool preserved_user =
-        uninstalled && strstr(uninstalled, "Codebase Memory") && strstr(uninstalled, "User Notes");
+        uninstalled && strstr(uninstalled, "Team Scratchpad") && strstr(uninstalled, "User Notes");
     bool removed_owned =
         uninstalled && !strstr(uninstalled, "Codebase Knowledge Graph (memory-for-ai)");
     free(uninstalled);
@@ -9242,7 +9242,7 @@ TEST(cli_claude_lifecycle_hooks_delegate_to_augmenter) {
     cbm_unsetenv("CODEX_HOME");
     cbm_unsetenv("OPENCODE_CONFIG");
 
-    const char *binary = "/opt/codebase memory/bin/memory-for-ai";
+    const char *binary = "/opt/memory for ai/bin/memory-for-ai";
     cbm_install_agent_configs(tmpdir, binary, false, false);
 
     char session_path[640];

@@ -1642,7 +1642,7 @@ static const char *const yaml_hook_sequence_path[] = {"hooks", "pre_llm_call"};
 static const char yaml_hook_identity[] = "\"memory-for-ai\"";
 static const char yaml_hook_canonical_item[] = "- id: \"memory-for-ai\"\n"
                                                "  type: \"command\"\n"
-                                               "  command: \"/opt/Codebase Memory/bin/cbm\"\n";
+                                               "  command: \"/opt/Memory For AI/bin/cbm\"\n";
 
 TEST(config_yaml_edit_nested_sequence_preserves_siblings_comments_and_is_idempotent) {
     const char *initial = "# user header\n"
@@ -1673,7 +1673,7 @@ TEST(config_yaml_edit_nested_sequence_preserves_siblings_comments_and_is_idempot
     ASSERT_NOT_NULL(strstr(installed, "model: local\n"));
     ASSERT_NOT_NULL(strstr(installed, "    - id: \"memory-for-ai\"\n"
                                       "      type: \"command\"\n"
-                                      "      command: \"/opt/Codebase Memory/bin/cbm\"\n"));
+                                      "      command: \"/opt/Memory For AI/bin/cbm\"\n"));
     ASSERT_EQ(yaml_count_occurrences(installed, "id: \"memory-for-ai\""), 1U);
 
     ASSERT_EQ(cbm_yaml_upsert_mapping_sequence_item(fixture.path, yaml_hook_sequence_path, 2U, "id",
@@ -1766,7 +1766,7 @@ TEST(config_yaml_edit_nested_sequence_foreign_identity_is_preserved) {
         "  pre_llm_call:\n"
         "    - id: \"memory-for-ai\"\n"
         "      type: \"command\"\n"
-        "      command: \"/opt/Codebase Memory/bin/cbm\"\n"
+        "      command: \"/opt/Memory For AI/bin/cbm\"\n"
         "      timeout: 30\n",
     };
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -1800,7 +1800,7 @@ TEST(config_yaml_edit_nested_sequence_removes_only_exact_canonical_item) {
                           "      command: \"other\"\n"
                           "    - id: \"memory-for-ai\"\n"
                           "      type: \"command\"\n"
-                          "      command: \"/opt/Codebase Memory/bin/cbm\"\n"
+                          "      command: \"/opt/Memory For AI/bin/cbm\"\n"
                           "  post_llm_call:\n"
                           "    - id: \"post\"\n"
                           "      command: \"post\"\n";

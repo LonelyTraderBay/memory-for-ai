@@ -103,7 +103,7 @@ SURFACES=(
     "server.json|release"
     "pkg/npm/package.json|release"
     "pkg/pypi/pyproject.toml|release"
-    "pkg/pypi/src/codebase_memory_mcp/_cli.py|release"
+    "pkg/pypi/src/memory_for_ai/_cli.py|release"
     "pkg/go/cmd/memory-for-ai/main.go|release"
     "pkg/chocolatey/memory-for-ai.nuspec|release"
     "pkg/chocolatey/tools/chocolateyInstall.ps1|release"

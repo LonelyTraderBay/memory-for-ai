@@ -33,7 +33,7 @@ Repository = "https://github.com/LonelyTraderBay/memory-for-ai"
 Issues = "https://github.com/LonelyTraderBay/memory-for-ai/issues"
 
 [project.scripts]
-memory-for-ai = "codebase_memory_mcp:main"
+memory-for-ai = "memory_for_ai:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codebase_memory_mcp"]
+packages = ["src/memory_for_ai"]

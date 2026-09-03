@@ -18,7 +18,7 @@ from unittest import mock
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT / "src"))
 
-from codebase_memory_mcp import _cli  # noqa: E402
+from memory_for_ai import _cli  # noqa: E402
 
 
 class BinarySelectionTests(unittest.TestCase):
@@ -306,7 +306,7 @@ from pathlib import Path
 
 source_root, directory_raw, staged_raw, marker_raw, crash_name = sys.argv[1:]
 sys.path.insert(0, source_root)
-from codebase_memory_mcp import _cli
+from memory_for_ai import _cli
 
 directory = Path(directory_raw)
 staged = Path(staged_raw)
