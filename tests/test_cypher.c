@@ -87,8 +87,11 @@ TEST(cypher_lex_single_quote_string) {
 }
 
 TEST(cypher_lex_string_overflow) {
-    /* Build a string literal longer than 4096 bytes to verify we don't
-     * overflow the stack buffer in lex_string_literal. */
+    /* Build a string literal longer than 4096 bytes. The lexer now REFUSES it
+     * with a parse error: the old shape silently truncated to 4095 chars,
+     * which matched a wrong prefix instead of failing loudly (fail-loud
+     * contract — an agent sending a >4KB pattern deserves an error, not a
+     * silently wrong result). */
     const int big = 5000;
     /* query: "AAAA...A"  (quotes included) */
     char *query = malloc(big + 3); /* quote + big chars + quote + NUL */
@@ -100,12 +103,9 @@ TEST(cypher_lex_string_overflow) {
 
     cbm_lex_result_t r = {0};
     int rc = cbm_lex(query, &r);
-    ASSERT_EQ(rc, 0);
-    ASSERT_NULL(r.error);
-    ASSERT_GTE(r.count, 1);
-    ASSERT_EQ(r.tokens[0].type, TOK_STRING);
-    /* The string should be truncated to CBM_SZ_4K - 1 (4095) characters. */
-    ASSERT_EQ((int)strlen(r.tokens[0].text), 4095);
+    ASSERT_NEQ(rc, 0);
+    ASSERT_NOT_NULL(r.error);
+    ASSERT_NOT_NULL(strstr(r.error, "string literal"));
 
     cbm_lex_free(&r);
     free(query);
@@ -3673,6 +3673,34 @@ TEST(cypher_parse_union) {
     PASS();
 }
 
+TEST(cypher_parse_rejects_malformed_inputs) {
+    /* Fail-loud contract: malformed queries must produce a parse error, not a
+     * silently-wrong result. All three used to be accepted (unterminated
+     * string lexed as a valid token; trailing garbage and unknown characters
+     * skipped) — the parser then answered something the caller never asked. */
+    cbm_query_t *q = NULL;
+    char *err = NULL;
+
+    int rc = cbm_cypher_parse("MATCH (n) WHERE n.name = 'abc RETURN n.name", &q, &err);
+    ASSERT_NEQ(rc, 0);
+    ASSERT_NOT_NULL(err);
+    ASSERT_NULL(q);
+    free(err);
+    err = NULL;
+
+    rc = cbm_cypher_parse("MATCH (a) RETURN a.name $@!", &q, &err);
+    ASSERT_NEQ(rc, 0);
+    ASSERT_NOT_NULL(err);
+    free(err);
+    err = NULL;
+
+    rc = cbm_cypher_parse("MATCH (a) WHERE n.name § RETURN a.name", &q, &err);
+    ASSERT_NEQ(rc, 0);
+    ASSERT_NOT_NULL(err);
+    free(err);
+    PASS();
+}
+
 TEST(cypher_parse_union_depth_capped) {
     /* Each UNION clause re-enters the parser; before the recursion carried no
      * accumulated depth, a long UNION chain (well under the 10 MB message
@@ -4255,6 +4283,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_exec_union);
     RUN_TEST(cypher_exec_union_all);
     RUN_TEST(cypher_parse_union);
+    RUN_TEST(cypher_parse_rejects_malformed_inputs);
     RUN_TEST(cypher_parse_union_depth_capped);
     /* Phase 9: UNWIND */
     RUN_TEST(cypher_parse_unwind);

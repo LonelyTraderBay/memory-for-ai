@@ -91,44 +91,53 @@ static void lex_push_n(cbm_lex_result_t *r, cbm_token_type_t type, const char *s
 }
 
 /* Parse a string literal (with escape handling) into the token list.
- * *pos points at the character after the opening quote; updated past closing quote. */
-static void lex_string_literal(const char *input, int len, int *pos, char quote,
+ * *pos points at the character after the opening quote; updated past closing
+ * quote. Returns false — emitting no token — when the literal is unterminated
+ * at end of input or its content exceeds the token capacity: the old shape
+ * accepted both silently (truncating the long ones), handing the parser a
+ * WRONG string and the agent wrong results where a loud parse error belongs. */
+static bool lex_string_literal(const char *input, int len, int *pos, char quote,
                                cbm_lex_result_t *out) {
     int start = *pos;
     char buf[CBM_SZ_4K];
     int blen = 0;
     const int max_blen = CBM_SZ_4K - 1;
-    while (*pos < len && input[*pos] != quote) {
-        if (input[*pos] == '\\' && *pos + SKIP_ONE < len) {
+    bool terminated = false;
+    while (*pos < len) {
+        char c = input[*pos];
+        if (c == quote) {
+            terminated = true;
+            break;
+        }
+        if (blen >= max_blen) {
+            return false; /* literal too long — refuse rather than truncate */
+        }
+        if (c == '\\' && *pos + SKIP_ONE < len) {
             (*pos)++;
-            if (blen < max_blen) {
-                switch (input[*pos]) {
-                case 'n':
-                    buf[blen++] = '\n';
-                    break;
-                case 't':
-                    buf[blen++] = '\t';
-                    break;
-                case '\\':
-                    buf[blen++] = '\\';
-                    break;
-                default:
-                    buf[blen++] = input[*pos];
-                    break;
-                }
-            }
-        } else {
-            if (blen < max_blen) {
-                buf[blen++] = input[*pos];
+            c = input[*pos];
+            switch (c) {
+            case 'n':
+                c = '\n';
+                break;
+            case 't':
+                c = '\t';
+                break;
+            case '\\':
+                break;
+            default:
+                break;
             }
         }
+        buf[blen++] = c;
         (*pos)++;
     }
-    buf[blen] = '\0';
-    if (*pos < len) {
-        (*pos)++; /* skip closing quote */
+    if (!terminated) {
+        return false;
     }
+    buf[blen] = '\0';
+    (*pos)++; /* skip closing quote */
     lex_push(out, TOK_STRING, buf, start - SKIP_ONE);
+    return true;
 }
 
 /* Keyword table (case-insensitive lookup) */
@@ -376,7 +385,12 @@ int cbm_lex(const char *input, cbm_lex_result_t *out) {
         if (c == '"' || c == '\'') {
             char quote = c;
             i++;
-            lex_string_literal(input, len, &i, quote, out);
+            if (!lex_string_literal(input, len, &i, quote, out)) {
+                cbm_lex_free(out);
+                out->error =
+                    heap_strdup("unterminated or oversized (>4KB) string literal in query");
+                return CBM_NOT_FOUND;
+            }
             continue;
         }
 
@@ -408,8 +422,17 @@ int cbm_lex(const char *input, cbm_lex_result_t *out) {
             continue;
         }
 
-        /* Unknown character — skip */
-        i++;
+        /* Unknown character — refuse rather than skip: skipping silently
+         * accepts malformed queries and executes a prefix of them, returning
+         * wrong results where a loud parse error belongs. */
+        {
+            char message[CBM_SZ_128];
+            snprintf(message, sizeof(message), "unexpected character '%c' in query at pos %d", c,
+                     i);
+            cbm_lex_free(out);
+            out->error = heap_strdup(message);
+            return CBM_NOT_FOUND;
+        }
     }
 
     /* Add EOF */
@@ -1996,6 +2019,11 @@ static int parse_post_where(parser_t *p, cbm_query_t *q, // NOLINT(misc-no-recur
         q->union_next = sub.query;
         sub.query = NULL;
         cbm_parse_free(&sub);
+        /* The sub-parse consumed the remainder of the input (it enforces EOF
+         * on its own slice), so the outer parser is done: run to EOF so the
+         * trailing-garbage check in parse_query_seeded does not mistake the
+         * sub-query's first token for leftover input. */
+        p->pos = p->count;
     }
     return 0;
 }
@@ -2074,6 +2102,18 @@ static int parse_query_seeded(const cbm_token_t *tokens,
 
     if (parse_post_where(&p, q, &pat_cap) < 0) {
         out->error = heap_strdup(p.error[0] ? p.error : "failed to parse query");
+        cbm_query_free(q);
+        return CBM_NOT_FOUND;
+    }
+
+    /* A query must consume the whole input. Leftover tokens mean trailing
+     * garbage (or a malformed compound); executing the valid prefix would
+     * answer something the caller never asked. */
+    if (p.pos < p.count - SKIP_ONE) {
+        char message[CBM_SZ_128];
+        const char *text = peek(&p)->text ? peek(&p)->text : "";
+        snprintf(message, sizeof(message), "unexpected token '%.32s' after end of query", text);
+        out->error = heap_strdup(message);
         cbm_query_free(q);
         return CBM_NOT_FOUND;
     }
