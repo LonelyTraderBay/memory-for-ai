@@ -384,7 +384,7 @@ jobs:
           VT_ACTION_ANALYSIS: ${{ steps.virustotal.outputs.analysis }}
           VT_EXPECTED_SCAN_SET: binaries/scan-set.tsv
           VT_WITHHELD: binaries/virustotal-withheld.tsv
-        run: scripts/ci/reconcile-vt-analyses.sh
+        run: bash scripts/ci/reconcile-vt-analyses.sh
 
       # Same policy as the candidate gate: a single Microsoft `!ml` is tolerated
       # and disclosed, anything else blocks. Engine count is evidence, not a gate.
