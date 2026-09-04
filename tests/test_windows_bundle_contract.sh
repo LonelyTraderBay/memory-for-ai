@@ -306,8 +306,8 @@ for relative, needles in exact_archive_guards.items():
 # A portable mutation refusal must point to the owning package manager.
 guidance_contracts = {
     "pkg/npm/bin.js": (
-        "npm install memory-for-ai@latest",
-        "npm uninstall memory-for-ai",
+        "npm install memory-for-ai-mcp@latest",
+        "npm uninstall memory-for-ai-mcp",
         "memory-for-ai install --yes",
     ),
     "pkg/pypi/src/memory_for_ai/_cli.py": (
