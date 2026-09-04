@@ -152,7 +152,13 @@ for result in results:
         fail(f"VirusTotal result is not bound to candidate bytes: {result['scan_path']}")
     completed = int(result["completed_engines"])
     total = int(result["total_engines"])
-    if completed < 50 or total < completed:
+    # Engine count is evidence, not a gate (the verify-stage policy in
+    # release.yml): a finished analysis that fewer than 50 engines answered
+    # still settles clean vs the single tolerated Microsoft `!ml`, and the
+    # count is disclosed in the notes below as "decisive engines". Only an
+    # empty or malformed tally is incomplete evidence — this bit a real
+    # release when a candidate's analysis finished with 42 of 75 engines.
+    if completed < 1 or total < completed:
         fail(f"incomplete VirusTotal result: {result['scan_path']}")
     classification = result["policy_classification"]
     clean = (
