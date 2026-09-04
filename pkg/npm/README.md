@@ -15,7 +15,7 @@ One self-contained native executable behind the wrapper. 162 languages via vendo
 ## Installation
 
 ```bash
-npm install -g memory-for-ai
+npm install -g memory-for-ai-mcp
 ```
 
 The runtime set for your platform is downloaded and verified automatically at install time. One composition per platform; the graph UI is always included (the former `CBM_VARIANT=ui` opt-in is obsolete).
@@ -45,7 +45,7 @@ memory-for-ai --help
 memory-for-ai uninstall        # remove owned agent configs and the binary
 ```
 
-Updates go through npm on every platform: `npm install -g memory-for-ai@latest`.
+Updates go through npm on every platform: `npm install -g memory-for-ai-mcp-mcp@latest`. The command stays `memory-for-ai` (the package name differs because `memory-for-ai` on npm is held by an unrelated third party).
 
 ## Supported Platforms
 

@@ -1,5 +1,5 @@
 {
-  "name": "memory-for-ai",
+  "name": "memory-for-ai-mcp",
   "version": "0.10.8",
   "description": "Fast code intelligence for AI coding agents — installs a verified native runtime set",
   "mcpName": "io.github.LonelyTraderBay/memory-for-ai",

@@ -478,11 +478,11 @@ jobs:
       - name: Publish to npm
         working-directory: pkg/npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.MEMORY_FOR_AI_MCP_NPM }}
           RELEASE_VERSION: ${{ inputs.version }}
         # A prerelease must never become npm `latest` — plain `npm install`
         # would serve the RC to everyone. Publish prereleases under the
-        # `next` dist-tag; testers opt in via `npm i memory-for-ai@next`.
+        # `next` dist-tag; testers opt in via `npm i memory-for-ai-mcp@next`.
         #
         # Idempotency: npm versions are immutable, so a re-run of this job
         # after a partial success (v0.10.1: npm published, then the twine
@@ -491,8 +491,8 @@ jobs:
         # version already exists on the registry, publishing is DONE; skip.
         run: |
           V="${RELEASE_VERSION#v}"
-          if npm view "memory-for-ai@$V" version >/dev/null 2>&1; then
-            echo "npm already has memory-for-ai@$V — skipping publish (idempotent re-run)"
+          if npm view "memory-for-ai-mcp@$V" version >/dev/null 2>&1; then
+            echo "npm already has memory-for-ai-mcp@$V — skipping publish (idempotent re-run)"
           elif [[ "$RELEASE_VERSION" == *-* ]]; then
             npm publish --access public --provenance --tag next
           else
@@ -527,7 +527,7 @@ jobs:
         working-directory: pkg/pypi
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+          TWINE_PASSWORD: ${{ secrets.MEMORY_FOR_AI_MCP }}
         # --skip-existing: PyPI files are immutable like npm versions; a
         # re-run after partial success must treat already-uploaded files
         # as done, not as a fatal collision.

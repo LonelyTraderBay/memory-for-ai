@@ -654,10 +654,10 @@ async function main() {
     if (platform === 'windows') {
       process.stdout.write(
         'Windows package cache is portable. Run "memory-for-ai install --yes" ' +
-        'to create the managed launcher (use "npx memory-for-ai install --yes" ' +
+        'to create the managed launcher (use "npx memory-for-ai-mcp install --yes" ' +
         'for a local npm install). Package updates/removal remain ' +
-        '"npm install memory-for-ai@latest" and ' +
-        '"npm uninstall memory-for-ai" (add -g for a global install).\n',
+        '"npm install memory-for-ai-mcp@latest" and ' +
+        '"npm uninstall memory-for-ai-mcp" (add -g for a global install).\n',
       );
     }
   } finally {

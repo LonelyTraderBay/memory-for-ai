@@ -83,7 +83,7 @@ test('Windows npm shim keeps package-manager guidance after launcher refusal', (
 
   assert.equal(observed.exitCode, 1);
   assert.equal(path.basename(observed.calls[1].executable), 'memory-for-ai.exe');
-  assert.match(observed.stderr, /npm install memory-for-ai@latest/);
+  assert.match(observed.stderr, /npm install memory-for-ai-mcp@latest/);
   assert.match(observed.stderr, /install --yes/);
 });
 

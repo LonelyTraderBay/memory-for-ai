@@ -75,7 +75,7 @@ Semantics and test coverage for scoped sessions: [CONFIGURATION.md §3b](CONFIGU
 ## Package managers
 
 ```bash
-npm install -g memory-for-ai        # npm — downloads the verified runtime set at install time
+npm install -g memory-for-ai-mcp     # npm — downloads the verified runtime set at install time (command stays `memory-for-ai`)
 pip install memory-for-ai           # PyPI
 brew install memory-for-ai          # Homebrew
 scoop install memory-for-ai         # Windows Scoop
@@ -85,7 +85,7 @@ yay -S codebase-memory-mcp-bin     # Arch AUR — community package under the pr
 go install github.com/LonelyTraderBay/memory-for-ai/pkg/go/cmd/memory-for-ai@latest
 ```
 
-The npm/PyPI/Go wrappers verify and publish a coherent cached runtime set (executable + authenticated assets) without disturbing a running native install, then the usual `memory-for-ai install` configures agents. Update with the same package manager (`npm install -g memory-for-ai@latest`, `pip install -U memory-for-ai`, …).
+The npm/PyPI/Go wrappers verify and publish a coherent cached runtime set (executable + authenticated assets) without disturbing a running native install, then the usual `memory-for-ai install` configures agents. Update with the same package manager (`npm install -g memory-for-ai-mcp@latest`, `pip install -U memory-for-ai`, …).
 
 Nix (flake) — run without installing:
 
