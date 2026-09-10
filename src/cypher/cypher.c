@@ -32,6 +32,8 @@ enum {
     CYP_EDGE_COLS = 3, /* columns per edge var: name, qn, label */
     CYP_COL_BUF = 48,  /* max column buffer (16 vars * 3 cols) */
     CYP_FOUND_NONE = -1,
+    /* Below this many nodes, per-node degree COUNTs are cheaper than a batch (H6) */
+    CYP_DEGREE_BATCH_MIN = 64,
     /* search miss sentinel */ /* mask for ebuf ring buffer (8 entries) */
 };
 #define CYP_DBL_MAX 1e308
@@ -2278,6 +2280,147 @@ typedef struct {
     cbm_store_t *store; /* for computing in_degree/out_degree on demand */
 } binding_t;
 
+/* ── Batch degree cache (H6, Fix 3) ──────────────────────────────
+ * node_prop used to compute in_degree/out_degree with 2 COUNT queries per
+ * node per property read, so a WHERE/RETURN over N bindings issued 2N+
+ * queries. The executor is read-only within a query, so a node id's degree
+ * is stable: prime this thread-local map once per consumer phase (early
+ * WHERE, late WHERE, WITH, RETURN) via cbm_store_batch_count_degrees and
+ * answer lookups with bsearch. A miss (post-WITH stub, hop target outside
+ * the primed set, sets smaller than CYP_DEGREE_BATCH_MIN) falls back to the
+ * per-node path, so results stay bit-identical to the old code. Reset at
+ * the start of every query — same discipline as the regex cache below. */
+typedef struct {
+    int64_t id;
+    int in_deg;
+    int out_deg;
+} cyp_degree_entry_t;
+
+static _Thread_local cyp_degree_entry_t *g_cyp_degree_map; /* owned; sorted by id */
+static _Thread_local int g_cyp_degree_count;
+static _Thread_local bool g_cyp_degree_wanted; /* query text names in_/out_degree */
+
+static void cypher_degree_cache_reset(void) {
+    free(g_cyp_degree_map);
+    g_cyp_degree_map = NULL;
+    g_cyp_degree_count = 0;
+    g_cyp_degree_wanted = false;
+}
+
+static int cyp_degree_entry_cmp(const void *pa, const void *pb) {
+    int64_t a = ((const cyp_degree_entry_t *)pa)->id;
+    int64_t b = ((const cyp_degree_entry_t *)pb)->id;
+    return (a > b) - (a < b);
+}
+
+static int cyp_int64_cmp(const void *pa, const void *pb) {
+    int64_t a = *(const int64_t *)pa;
+    int64_t b = *(const int64_t *)pb;
+    return (a > b) - (a < b);
+}
+
+static bool cypher_degree_cache_lookup(int64_t id, int *in_deg, int *out_deg) {
+    if (!g_cyp_degree_map) {
+        return false;
+    }
+    cyp_degree_entry_t key = {0};
+    key.id = id;
+    const cyp_degree_entry_t *e = bsearch(&key, g_cyp_degree_map, (size_t)g_cyp_degree_count,
+                                          sizeof(*e), cyp_degree_entry_cmp);
+    if (!e) {
+        return false;
+    }
+    *in_deg = e->in_deg;
+    *out_deg = e->out_deg;
+    return true;
+}
+
+/* Replace the cache with batch-counted CALLS degrees for ids[0..count).
+ * CALLS-only matches cbm_store_node_degree. Any failure leaves the previous
+ * cache untouched — lookups then miss and node_prop pays the per-node cost
+ * exactly as before, never a wrong value. */
+static void cypher_degree_cache_build(cbm_store_t *store, int64_t *ids, int count) {
+    qsort(ids, (size_t)count, sizeof(*ids), cyp_int64_cmp);
+    int u = 0;
+    for (int i = 0; i < count; i++) {
+        /* id <= 0: unset/stub id (real rowids start at 1); sorted ⇒ dedupe
+         * against the last kept id */
+        if (ids[i] > 0 && (u == 0 || ids[i] != ids[u - SKIP_ONE])) {
+            ids[u++] = ids[i];
+        }
+    }
+    if (u == 0) {
+        return;
+    }
+    cyp_degree_entry_t *map = malloc((size_t)u * sizeof(*map));
+    int *in_arr = malloc((size_t)u * sizeof(*in_arr));
+    int *out_arr = malloc((size_t)u * sizeof(*out_arr));
+    if (!map || !in_arr || !out_arr) {
+        free(map);
+        free(in_arr);
+        free(out_arr);
+        return;
+    }
+    if (cbm_store_batch_count_degrees(store, ids, u, "CALLS", in_arr, out_arr) != CBM_STORE_OK) {
+        free(map);
+        free(in_arr);
+        free(out_arr);
+        return;
+    }
+    for (int i = 0; i < u; i++) {
+        map[i].id = ids[i];
+        map[i].in_deg = in_arr[i];
+        map[i].out_deg = out_arr[i];
+    }
+    free(in_arr);
+    free(out_arr);
+    free(g_cyp_degree_map);
+    g_cyp_degree_map = map; /* ids sorted ⇒ map sorted by id */
+    g_cyp_degree_count = u;
+}
+
+/* Prime from a scanned-node array (early-WHERE loop, inline {prop} filters). */
+static void cypher_degree_prime_nodes(cbm_store_t *store, const cbm_node_t *nodes, int count) {
+    if (!g_cyp_degree_wanted || !store || count < CYP_DEGREE_BATCH_MIN) {
+        return; /* small sets keep the per-node path — no batch overhead */
+    }
+    int64_t *ids = malloc((size_t)count * sizeof(*ids));
+    if (!ids) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        ids[i] = nodes[i].id;
+    }
+    cypher_degree_cache_build(store, ids, count);
+    free(ids);
+}
+
+/* Prime from a binding array (late WHERE / WITH / RETURN phases). */
+static void cypher_degree_prime_bindings(cbm_store_t *store, const binding_t *bindings, int count) {
+    if (!g_cyp_degree_wanted || !store || count < CYP_DEGREE_BATCH_MIN) {
+        return;
+    }
+    int total = 0;
+    for (int i = 0; i < count; i++) {
+        total += bindings[i].var_count;
+    }
+    if (total <= 0) {
+        return;
+    }
+    int64_t *ids = malloc((size_t)total * sizeof(*ids));
+    if (!ids) {
+        return;
+    }
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        for (int v = 0; v < bindings[i].var_count; v++) {
+            ids[n++] = bindings[i].var_nodes[v].id;
+        }
+    }
+    cypher_degree_cache_build(store, ids, n);
+    free(ids);
+}
+
 /* Return a string field from a node by property name.  NULL-safe. */
 static const char *node_string_field(const cbm_node_t *n, const char *prop) {
     static const struct {
@@ -2340,7 +2483,11 @@ static const char *node_prop(const cbm_node_t *n, const char *prop, cbm_store_t 
     if (store && (strcmp(prop, "in_degree") == 0 || strcmp(prop, "out_degree") == 0)) {
         int in_deg = 0;
         int out_deg = 0;
-        cbm_store_node_degree(store, n->id, &in_deg, &out_deg);
+        /* H6: the batch-primed cache answers ids it knows; a miss pays the
+         * per-node pair of COUNTs exactly as before (stubs, small sets). */
+        if (!cypher_degree_cache_lookup(n->id, &in_deg, &out_deg)) {
+            cbm_store_node_degree(store, n->id, &in_deg, &out_deg);
+        }
         int val = (strcmp(prop, "in_degree") == 0) ? in_deg : out_deg;
         snprintf(out, CBM_SZ_512, "%d", val);
         return out;
@@ -2637,6 +2784,21 @@ static const char *resolve_condition_value(const cbm_condition_t *c, binding_t *
     return n->name ? n->name : "";
 }
 
+/* 1-entry cache for the `=~` pattern: a WHERE x =~ 'lit' filter evaluates
+ * once per row with a query-constant pattern, so regcomp per row was pure
+ * waste. Thread-local like the rest of the evaluator state; invalidated at
+ * the start of every query (cypher_regex_cache_reset) so no compiled regex
+ * outlives its query. */
+static _Thread_local cbm_regex_t g_regex_cache;
+static _Thread_local const char *g_regex_cache_pat; /* owned; NULL = cache empty */
+
+static void cypher_regex_cache_reset(void) {
+    if (g_regex_cache_pat) {
+        cbm_regfree(&g_regex_cache);
+        safe_str_free(&g_regex_cache_pat);
+    }
+}
+
 /* Evaluate a comparison operator between actual and expected strings. */
 static bool eval_comparison_op(const char *op, const char *actual, const char *expected) {
     if (strcmp(op, "=") == 0) {
@@ -2646,13 +2808,32 @@ static bool eval_comparison_op(const char *op, const char *actual, const char *e
         return strcmp(actual, expected) != 0;
     }
     if (strcmp(op, "=~") == 0) {
-        cbm_regex_t re;
-        if (cbm_regcomp(&re, expected, CBM_REG_EXTENDED | CBM_REG_NOSUB) != 0) {
-            return false;
+        /* Compile once per distinct pattern per query instead of once per row;
+         * the cache key is the pattern string, so alternating patterns degrade
+         * to the old behavior, never to a wrong match. */
+        if (!g_regex_cache_pat || strcmp(g_regex_cache_pat, expected) != 0) {
+            if (g_regex_cache_pat) {
+                cbm_regfree(&g_regex_cache);
+                safe_str_free(&g_regex_cache_pat);
+            }
+            if (cbm_regcomp(&g_regex_cache, expected, CBM_REG_EXTENDED | CBM_REG_NOSUB) != 0) {
+                return false;
+            }
+            g_regex_cache_pat = heap_strdup(expected);
+            if (!g_regex_cache_pat) {
+                /* OOM on the cache key: fall back to compile-per-row so the
+                 * match still evaluates (identical to the old behavior). */
+                cbm_regfree(&g_regex_cache);
+                cbm_regex_t re;
+                if (cbm_regcomp(&re, expected, CBM_REG_EXTENDED | CBM_REG_NOSUB) != 0) {
+                    return false;
+                }
+                int rc = cbm_regexec(&re, actual, 0, NULL, 0);
+                cbm_regfree(&re);
+                return rc == 0;
+            }
         }
-        int rc = cbm_regexec(&re, actual, 0, NULL, 0);
-        cbm_regfree(&re);
-        return rc == 0;
+        return cbm_regexec(&g_regex_cache, actual, 0, NULL, 0) == 0;
     }
     if (strcmp(op, "CONTAINS") == 0) {
         return strstr(actual, expected) != NULL;
@@ -3146,6 +3327,9 @@ static void scan_pattern_nodes(cbm_store_t *store, const char *project, cbm_node
     }
     /* Apply inline property filters — free rejected nodes' strings */
     if (first->prop_count > 0) {
+        /* H6: an {in_degree/out_degree: ...} inline filter reads degrees per
+         * scanned node below — batch-prime the whole scan first. */
+        cypher_degree_prime_nodes(store, *out_nodes, *out_count);
         int kept = 0;
         for (int i = 0; i < *out_count; i++) {
             if (check_inline_props(&(*out_nodes)[i], first->props, first->prop_count, store)) {
@@ -3465,6 +3649,44 @@ static bool rb_is_numeric_column(const result_builder_t *rb, int col) {
     return false;
 }
 
+/* qsort context for rb_apply_order_by: the codebase uses plain qsort (no
+ * qsort_r — see mcp.c/store.c), so the resolved key list travels via a
+ * thread-local, the same idiom as the other evaluator state in this file. */
+typedef struct {
+    const char **row;
+    int idx; /* original position: stability tie-break on full-key ties,
+              * preserving the bubble sort's input-order behavior */
+} rb_sort_entry_t;
+
+static _Thread_local struct {
+    const int *cols;
+    const bool *numeric;
+    const bool *descs;
+    int keys;
+} g_rb_sort_ctx;
+
+static int rb_sort_entry_cmp(const void *pa, const void *pb) {
+    const rb_sort_entry_t *a = pa;
+    const rb_sort_entry_t *b = pb;
+    int cmp = 0;
+    for (int k = 0; k < g_rb_sort_ctx.keys && cmp == 0; k++) {
+        int col = g_rb_sort_ctx.cols[k];
+        if (g_rb_sort_ctx.numeric[k]) {
+            cmp = (int)strtol(a->row[col], NULL, CBM_DECIMAL_BASE) -
+                  (int)strtol(b->row[col], NULL, CBM_DECIMAL_BASE);
+        } else {
+            cmp = strcmp(a->row[col], b->row[col]);
+        }
+        if (g_rb_sort_ctx.descs[k]) {
+            cmp = -cmp;
+        }
+    }
+    if (cmp == 0) {
+        cmp = (a->idx > b->idx) - (a->idx < b->idx);
+    }
+    return cmp;
+}
+
 static void rb_apply_order_by(result_builder_t *rb, const cbm_return_clause_t *ret) {
     if (ret->order_key_count == 0) {
         return;
@@ -3489,27 +3711,31 @@ static void rb_apply_order_by(result_builder_t *rb, const cbm_return_clause_t *r
     if (keys == 0) {
         return;
     }
-    for (int i = 0; i < rb->row_count - SKIP_ONE; i++) {
-        for (int j = 0; j < rb->row_count - i - SKIP_ONE; j++) {
-            int cmp = 0;
-            for (int k = 0; k < keys && cmp == 0; k++) {
-                if (numeric[k]) {
-                    cmp = (int)strtol(rb->rows[j][cols[k]], NULL, CBM_DECIMAL_BASE) -
-                          (int)strtol(rb->rows[j + SKIP_ONE][cols[k]], NULL, CBM_DECIMAL_BASE);
-                } else {
-                    cmp = strcmp(rb->rows[j][cols[k]], rb->rows[j + SKIP_ONE][cols[k]]);
-                }
-                if (descs[k]) {
-                    cmp = -cmp;
-                }
-            }
-            if (cmp > 0) {
-                const char **tmp = rb->rows[j];
-                rb->rows[j] = rb->rows[j + SKIP_ONE];
-                rb->rows[j + SKIP_ONE] = tmp;
-            }
-        }
+    /* #601: the sort runs after the scan/expand hot loops; if those already
+     * blew the wall-clock budget, bail instead of ordering rows the top level
+     * will discard. The old O(n^2) bubble sort could itself overrun the budget
+     * with no clock sampling; qsort is O(n log n), so one up-front check (same
+     * convention as expand_pattern_rels) suffices. */
+    if (cypher_deadline_exceeded()) {
+        return;
     }
+    rb_sort_entry_t *entries = malloc((size_t)rb->row_count * sizeof(*entries));
+    if (!entries) {
+        return; /* OOM: leave rows unsorted rather than corrupt the result */
+    }
+    for (int i = 0; i < rb->row_count; i++) {
+        entries[i].row = rb->rows[i];
+        entries[i].idx = i;
+    }
+    g_rb_sort_ctx.cols = cols;
+    g_rb_sort_ctx.numeric = numeric;
+    g_rb_sort_ctx.descs = descs;
+    g_rb_sort_ctx.keys = keys;
+    qsort(entries, (size_t)rb->row_count, sizeof(*entries), rb_sort_entry_cmp);
+    for (int i = 0; i < rb->row_count; i++) {
+        rb->rows[i] = entries[i].row;
+    }
+    free(entries);
 }
 
 static void rb_apply_skip_limit(result_builder_t *rb, int skip_n, int limit) {
@@ -3550,6 +3776,19 @@ static void rb_apply_distinct(result_builder_t *rb) {
     }
     int kept = SKIP_ONE;
     for (int i = SKIP_ONE; i < rb->row_count; i++) {
+        /* #601: dedup is O(rows x kept) — quadratic on a near-unique result —
+         * so sample the clock like the other hot loops. On bail, free the
+         * unprocessed tail: slots in [kept, i) are already-freed dups or
+         * moved aliases, so truncating without this would leak the tail. */
+        if ((i & CYPHER_DEADLINE_CHECK_MASK) == 0 && cypher_deadline_exceeded()) {
+            for (int r = i; r < rb->row_count; r++) {
+                for (int c = 0; c < rb->col_count; c++) {
+                    safe_str_free(&rb->rows[r][c]);
+                }
+                free(rb->rows[r]);
+            }
+            break;
+        }
         bool dup = false;
         for (int j = 0; j < kept && !dup; j++) {
             bool same = true;
@@ -3813,32 +4052,72 @@ static void distinct_list_add(char ***list, int *count, const char *val) {
     (*list)[idx] = heap_strdup(val);
 }
 
-/* Sort bindings by the ORDER BY key list (virtual variables) using bubble
- * sort; later keys break ties, direction is per key (#1334). */
-static void sort_bindings(binding_t *vbindings, int count, const cbm_return_clause_t *wc) {
-    for (int i = 0; i < count - SKIP_ONE; i++) {
-        for (int j = 0; j < count - i - SKIP_ONE; j++) {
-            int cmp = 0;
-            for (int k = 0; k < wc->order_key_count && cmp == 0; k++) {
-                const char *va = binding_get_virtual(&vbindings[j], wc->order_keys[k], NULL);
-                const char *vb2 =
-                    binding_get_virtual(&vbindings[j + SKIP_ONE], wc->order_keys[k], NULL);
-                char *ea = NULL;
-                char *eb = NULL;
-                double da = strtod(va, &ea);
-                double db = strtod(vb2, &eb);
-                cmp = (ea != va && eb != vb2) ? ((da > db) - (da < db)) : strcmp(va, vb2);
-                if (wc->order_descs[k]) {
-                    cmp = -cmp;
-                }
-            }
-            if (cmp > 0) {
-                binding_t tmp = vbindings[j];
-                vbindings[j] = vbindings[j + SKIP_ONE];
-                vbindings[j + SKIP_ONE] = tmp;
-            }
+/* qsort context for sort_bindings (plain qsort, no qsort_r — same idiom as
+ * rb_apply_order_by above). */
+typedef struct {
+    binding_t *b;
+    int idx; /* original position: stability tie-break on full-key ties,
+              * preserving the bubble sort's input-order behavior */
+} binding_sort_entry_t;
+
+static _Thread_local const cbm_return_clause_t *g_binding_sort_wc;
+
+static int binding_sort_entry_cmp(const void *pa, const void *pb) {
+    const binding_sort_entry_t *a = pa;
+    const binding_sort_entry_t *b = pb;
+    const cbm_return_clause_t *wc = g_binding_sort_wc;
+    int cmp = 0;
+    for (int k = 0; k < wc->order_key_count && cmp == 0; k++) {
+        const char *va = binding_get_virtual(a->b, wc->order_keys[k], NULL);
+        const char *vb2 = binding_get_virtual(b->b, wc->order_keys[k], NULL);
+        char *ea = NULL;
+        char *eb = NULL;
+        double da = strtod(va, &ea);
+        double db = strtod(vb2, &eb);
+        cmp = (ea != va && eb != vb2) ? ((da > db) - (da < db)) : strcmp(va, vb2);
+        if (wc->order_descs[k]) {
+            cmp = -cmp;
         }
     }
+    if (cmp == 0) {
+        cmp = (a->idx > b->idx) - (a->idx < b->idx);
+    }
+    return cmp;
+}
+
+/* Sort bindings by the ORDER BY key list (virtual variables); later keys
+ * break ties, direction is per key (#1334). qsort + stability tie-break —
+ * the bubble sort this replaces was O(n^2) with no clock sampling. */
+static void sort_bindings(binding_t *vbindings, int count, const cbm_return_clause_t *wc) {
+    if (count <= SKIP_ONE) {
+        return;
+    }
+    /* #601: if an earlier hot loop already blew the wall-clock budget, bail
+     * instead of ordering rows the top level will discard. */
+    if (cypher_deadline_exceeded()) {
+        return;
+    }
+    binding_sort_entry_t *entries = malloc((size_t)count * sizeof(*entries));
+    if (!entries) {
+        return; /* OOM: leave bindings unsorted rather than corrupt them */
+    }
+    for (int i = 0; i < count; i++) {
+        entries[i].b = &vbindings[i];
+        entries[i].idx = i;
+    }
+    g_binding_sort_wc = wc;
+    qsort(entries, (size_t)count, sizeof(*entries), binding_sort_entry_cmp);
+    binding_t *sorted = malloc((size_t)count * sizeof(*sorted));
+    if (!sorted) {
+        free(entries);
+        return; /* OOM: leave bindings unsorted rather than corrupt them */
+    }
+    for (int i = 0; i < count; i++) {
+        sorted[i] = *entries[i].b; /* shallow struct copy: ownership moves */
+    }
+    memcpy(vbindings, sorted, (size_t)count * sizeof(*vbindings));
+    free(sorted);
+    free(entries);
 }
 
 /* Apply skip and limit to a binding array, freeing discarded entries */
@@ -3916,10 +4195,18 @@ static int with_agg_build_key(cbm_return_clause_t *wc, binding_t *b, char *key, 
     return kl;
 }
 
-/* Find or create an aggregation group. Returns index. */
+/* Find or create an aggregation group. Returns the group index, or
+ * CBM_NOT_FOUND when the wall-clock deadline trips mid-scan (#601). */
 static int with_agg_find_or_create(with_agg_t **aggs, int *agg_cnt, int *agg_cap,
                                    cbm_return_clause_t *wc, binding_t *b, const char *key) {
     for (int a = 0; a < *agg_cnt; a++) {
+        /* #601: the group lookup is a linear scan — O(groups) per binding — so
+         * sample the clock here too, not just in the caller's outer loop. On
+         * timeout return CBM_NOT_FOUND: the caller bails and the top level
+         * reports the timeout, so no partial group is ever emitted. */
+        if ((a & CYPHER_DEADLINE_CHECK_MASK) == 0 && cypher_deadline_exceeded()) {
+            return CBM_NOT_FOUND;
+        }
         if (strcmp((*aggs)[a].group_key, key) == 0) {
             return a;
         }
@@ -4046,9 +4333,19 @@ static void execute_with_aggregate(cbm_return_clause_t *wc, binding_t *bindings,
     int agg_cnt = 0;
 
     for (int bi = 0; bi < bind_count; bi++) {
+        /* #601: grouping is O(bindings x groups) — the dominant cost on a
+         * whole-graph WITH ... GROUP BY. Abort past the wall-clock budget
+         * (mirrors execute_return_agg); partial groups are discarded by the
+         * top-level timeout check. */
+        if ((bi & CYPHER_DEADLINE_CHECK_MASK) == 0 && cypher_deadline_exceeded()) {
+            break;
+        }
         char key[CBM_SZ_1K] = "";
         with_agg_build_key(wc, &bindings[bi], key, sizeof(key));
         int found = with_agg_find_or_create(&aggs, &agg_cnt, &agg_cap, wc, &bindings[bi], key);
+        if (found < 0) {
+            break; /* #601: deadline tripped inside the linear group lookup */
+        }
         with_agg_accumulate(&aggs[found], wc, &bindings[bi]);
     }
 
@@ -4108,6 +4405,9 @@ static void execute_with_simple(cbm_return_clause_t *wc, binding_t *bindings, in
 /* Apply post-WITH WHERE filter */
 static void filter_bindings_where(const cbm_where_clause_t *where, binding_t *vbindings,
                                   int *vcount) {
+    /* H6: late/post-WITH WHERE reads degree props per binding — batch-prime
+     * the current set (bindings carry the store). */
+    cypher_degree_prime_bindings(*vcount > 0 ? vbindings[0].store : NULL, vbindings, *vcount);
     int kept = 0;
     for (int i = 0; i < *vcount; i++) {
         if (eval_where(where, &vbindings[i])) {
@@ -4146,6 +4446,16 @@ static void with_proj_key(cbm_return_clause_t *wc, binding_t *b, char *key, size
 static void with_apply_distinct(cbm_return_clause_t *wc, binding_t *vbindings, int *vcount) {
     int kept = 0;
     for (int i = 0; i < *vcount; i++) {
+        /* #601: dedup is O(rows x kept) — quadratic on a near-unique
+         * projection — so sample the clock like the other hot loops. On bail,
+         * free the unprocessed tail: slots in [kept, i) are already-freed dups
+         * or moved aliases, so truncating without this would leak the tail. */
+        if ((i & CYPHER_DEADLINE_CHECK_MASK) == 0 && cypher_deadline_exceeded()) {
+            for (int r = i; r < *vcount; r++) {
+                binding_free(&vbindings[r]);
+            }
+            break;
+        }
         char key[CBM_SZ_1K];
         with_proj_key(wc, &vbindings[i], key, sizeof(key));
         bool dup = false;
@@ -4176,6 +4486,9 @@ static void execute_with_clause(cbm_query_t *q, binding_t **bindings_ptr, int *b
     }
     binding_t *bindings = *bindings_ptr;
     int bind_count = *bind_count_ptr;
+    /* H6: WITH projection/aggregation reads item properties (incl. degrees)
+     * per binding — batch-prime before the grouping/projection loops. */
+    cypher_degree_prime_bindings(bind_count > 0 ? bindings[0].store : NULL, bindings, bind_count);
 
     binding_t *vbindings = malloc((bind_count + SKIP_ONE) * sizeof(binding_t));
     int vcount = 0;
@@ -4479,11 +4792,23 @@ static void execute_return_agg(cbm_return_clause_t *ret, binding_t *bindings, in
         ret_agg_build_key(ret, &bindings[bi], key, sizeof(key), vals, valbufs);
 
         int found = CYP_FOUND_NONE;
+        bool deadline_hit = false;
         for (int a = 0; a < agg_count; a++) {
+            /* #601: the group lookup is a linear scan — O(groups) per binding —
+             * so the outer check every 1024 bindings can still overshoot when
+             * the group count is huge; sample the clock here too. Sticky flag:
+             * bail the whole grouping, the top level reports the timeout. */
+            if ((a & CYPHER_DEADLINE_CHECK_MASK) == 0 && cypher_deadline_exceeded()) {
+                deadline_hit = true;
+                break;
+            }
             if (strcmp(aggs[a].group_key, key) == 0) {
                 found = a;
                 break;
             }
+        }
+        if (deadline_hit) {
+            break;
         }
         if (found < 0) {
             if (agg_count >= agg_cap) {
@@ -4868,6 +5193,10 @@ static void execute_return_clause(cbm_query_t *q, cbm_return_clause_t *ret, bind
         }
     }
 
+    /* H6: RETURN reads degree props per binding across all three executors
+     * below (star/agg/simple) — batch-prime the final binding set once. */
+    cypher_degree_prime_bindings(bind_count > 0 ? bindings[0].store : NULL, bindings, bind_count);
+
     if (ret->star) {
         execute_return_star(q, bindings, bind_count, max_rows, rb);
     } else {
@@ -4894,6 +5223,9 @@ static int execute_single(cbm_store_t *store, cbm_query_t *q, const char *projec
     cbm_node_t *scanned = NULL;
     int scan_count = 0;
     scan_pattern_nodes(store, project, &pat0->nodes[0], &scanned, &scan_count);
+    /* H6: the early-WHERE loop below reads degree props per scanned node —
+     * batch-prime the whole scan once instead. */
+    cypher_degree_prime_nodes(store, scanned, scan_count);
 
     /* Build initial bindings with early WHERE */
     int bind_cap = scan_count > max_rows ? scan_count : (max_rows > 0 ? max_rows : SKIP_ONE);
@@ -4963,6 +5295,13 @@ int cbm_cypher_execute(cbm_store_t *store, const char *query, const char *projec
     g_cypher_depth_clamped = 0;
     g_cypher_trail_truncated = 0;
     cypher_deadline_arm(); /* #601: start the wall-clock budget for this query */
+    cypher_regex_cache_reset(); /* drop the previous query's =~ cache entry */
+    cypher_degree_cache_reset(); /* drop the previous query's batch degree cache */
+    /* H6: only pay batch-degree priming when the query text actually reads
+     * in_degree/out_degree. A false positive (e.g. the word inside a string
+     * literal) merely primes a cache that goes unused — never a wrong result. */
+    g_cyp_degree_wanted =
+        (query != NULL) && (strstr(query, "in_degree") != NULL || strstr(query, "out_degree") != NULL);
     if (max_rows <= 0) {
         max_rows = CYPHER_RESULT_CEILING;
     }
