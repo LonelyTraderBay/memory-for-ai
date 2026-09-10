@@ -136,6 +136,12 @@ typedef struct {
      * (RUST_LSP_FOLLOWUP §B.2). */
     int eval_step_count;
 
+    /* AST-walk recursion depth, shared by rust_resolve_calls_in_node and
+     * rust_walk_macro_tokens, which recurse mutually (a step cap cannot
+     * stop a native stack overflow on deeply-nested/cyclic files; see
+     * cbm_lsp_max_walk_depth). Zero via memset. */
+    int walk_depth;
+
     /* Cargo.toml manifest, when the caller has parsed one and routed
      * it through. The resolver consults `dep_count`/`member_count` so
      * paths beginning with a workspace member or declared dependency

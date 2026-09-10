@@ -183,6 +183,7 @@ extern const TSLanguage *tree_sitter_javascript(void);
 
 static const CBMType *parse_ts_type_text(CBMArena *arena, const char *text, const char *module_qn);
 static void process_node(TSLSPContext *ctx, TSNode node);
+static void process_node_inner(TSLSPContext *ctx, TSNode node);
 static void process_function_body(TSLSPContext *ctx, TSNode body, const char *func_qn,
                                   const char *class_qn);
 static const CBMType *type_of_identifier(TSLSPContext *ctx, const char *name);
@@ -190,6 +191,21 @@ static const CBMType *lookup_member_type(TSLSPContext *ctx, const CBMType *recv,
 static const CBMRegisteredFunc *lookup_method(TSLSPContext *ctx, const CBMType *recv,
                                               const char *method_name);
 static char *node_text(TSLSPContext *ctx, TSNode node);
+
+/* Depth-guarded entry for the AST call-resolution walk. The walk recurses once
+ * per nesting level; a deeply-nested or cyclic file can overflow the native
+ * stack (SIGSEGV) and take down the whole index. Past the cap the subtree is
+ * skipped — its calls stay unresolved, which is graceful degradation, not a
+ * crash. The cap is CBM_LSP_MAX_WALK_DEPTH, env-overridable via the same name.
+ * The walk_depth-- runs after the inner returns, so early returns in the body
+ * never leak the counter. */
+static void process_node(TSLSPContext *ctx, TSNode node) {
+    if (ctx->walk_depth >= cbm_lsp_max_walk_depth())
+        return;
+    ctx->walk_depth++;
+    process_node_inner(ctx, node);
+    ctx->walk_depth--;
+}
 
 // Collect a node's children into an arena array via a single O(n) cursor pass.
 // Returns NULL (and sets *out_n=0) for a childless node or on OOM. Use this in
@@ -3265,7 +3281,7 @@ static void process_namespace_member(TSLSPContext *ctx, TSNode node) {
     process_node(ctx, node);
 }
 
-static void process_node(TSLSPContext *ctx, TSNode node) {
+static void process_node_inner(TSLSPContext *ctx, TSNode node) {
     if (!ctx || ts_node_is_null(node))
         return;
     const char *kind = ts_node_type(node);

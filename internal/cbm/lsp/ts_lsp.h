@@ -69,6 +69,9 @@ typedef struct {
     // recursive unions/wrappers across registered types) otherwise recurse
     // without bound — stack overflow on real repos.
     int member_depth;
+    // AST-walk recursion depth for process_node (guards stack overflow on
+    // deeply-nested/cyclic files; see cbm_lsp_max_walk_depth). Zero via memset.
+    int walk_depth;
 } TSLSPContext;
 
 #ifdef CBM_ENABLE_TEST_SEAMS

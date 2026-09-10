@@ -40,6 +40,8 @@
 
 /* Forward declarations for early callers in the file. */
 static void rust_resolve_calls_in_node(RustLSPContext *ctx, TSNode node);
+static void rust_resolve_calls_in_node_inner(RustLSPContext *ctx, TSNode node);
+static void rust_walk_macro_tokens_inner(RustLSPContext *ctx, TSNode node);
 static void rust_emit_resolved_call(RustLSPContext *ctx, const char *callee_qn,
                                     const char *strategy, float confidence);
 static void rust_inject_syn_call(RustLSPContext *ctx, const char *callee_qn);
@@ -60,6 +62,32 @@ static const char *rust_lookup_type_param_bound(RustLSPContext *ctx, const char 
 static void rust_collect_bounds_from_text(RustLSPContext *ctx, const char *text);
 static void rust_record_type_param_bound(RustLSPContext *ctx, const char *param_name,
                                          const char *trait_qn);
+
+/* Depth-guarded entries for the AST call-resolution walk. The walk recurses
+ * once per nesting level; a deeply-nested or cyclic file can overflow the
+ * native stack (SIGSEGV) and take down the whole index — the eval-step cap
+ * only bounds total work, not stack depth. Both wrappers share the one
+ * ctx->walk_depth counter, so the mutual recursion between
+ * rust_resolve_calls_in_node and rust_walk_macro_tokens is capped too. Past
+ * the cap the subtree is skipped — its calls stay unresolved, which is
+ * graceful degradation, not a crash. The cap is CBM_LSP_MAX_WALK_DEPTH,
+ * env-overridable via the same name. The walk_depth-- runs after the inner
+ * returns, so early returns in the body never leak the counter. */
+static void rust_resolve_calls_in_node(RustLSPContext *ctx, TSNode node) {
+    if (ctx->walk_depth >= cbm_lsp_max_walk_depth())
+        return;
+    ctx->walk_depth++;
+    rust_resolve_calls_in_node_inner(ctx, node);
+    ctx->walk_depth--;
+}
+
+static void rust_walk_macro_tokens(RustLSPContext *ctx, TSNode node) {
+    if (ctx->walk_depth >= cbm_lsp_max_walk_depth())
+        return;
+    ctx->walk_depth++;
+    rust_walk_macro_tokens_inner(ctx, node);
+    ctx->walk_depth--;
+}
 
 void rust_lsp_init(RustLSPContext *ctx, CBMArena *arena, const char *source, int source_len,
                    const CBMTypeRegistry *registry, const char *module_qn,
@@ -2828,7 +2856,7 @@ static const CBMRegisteredFunc *rust_find_sole_trait_impl(RustLSPContext *ctx, c
  * call expressions. We do this so calls inside `vec![foo()]`,
  * `assert_eq!(a.bar(), 0)`, and `dbg!(get_value())` still get attributed
  * to the enclosing function. */
-static void rust_walk_macro_tokens(RustLSPContext *ctx, TSNode node) {
+static void rust_walk_macro_tokens_inner(RustLSPContext *ctx, TSNode node) {
     if (ts_node_is_null(node))
         return;
     const char *kind = ts_node_type(node);
@@ -4630,7 +4658,7 @@ static void rust_resolve_call_expression(RustLSPContext *ctx, TSNode node) {
 /* Walk every node in a function body, recording calls and refining scope
  * for control-flow constructs that bind variables. */
 #define CBM_RUST_EVAL_STEP_CAP 200000 /* per-file budget */
-static void rust_resolve_calls_in_node(RustLSPContext *ctx, TSNode node) {
+static void rust_resolve_calls_in_node_inner(RustLSPContext *ctx, TSNode node) {
     if (ts_node_is_null(node))
         return;
     /* Pathological-input guard: bail out once we've spent too many

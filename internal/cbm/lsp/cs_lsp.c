@@ -57,6 +57,7 @@ extern const TSLanguage *tree_sitter_c_sharp(void);
 /* ── forward decls ──────────────────────────────────────────────── */
 
 static void cs_resolve_calls_in_node(CSLSPContext *ctx, TSNode node);
+static void cs_resolve_calls_in_node_inner(CSLSPContext *ctx, TSNode node);
 static void cs_process_function_like(CSLSPContext *ctx, TSNode node);
 static void cs_process_type_decl(CSLSPContext *ctx, TSNode node);
 static const CBMType *cs_eval_invocation_type(CSLSPContext *ctx, TSNode call);
@@ -74,6 +75,21 @@ static char *cs_node_text_cached(CSLSPContext *ctx, TSNode node);
 static const CBMType *cs_unwrap_task(CSLSPContext *ctx, const CBMType *t);
 static const CBMType *cs_unwrap_nullable(const CBMType *t);
 static const char *cs_resolve_callable_value(CSLSPContext *ctx, TSNode node, TSNode *callable_leaf);
+
+/* Depth-guarded entry for the AST call-resolution walk. The walk recurses once
+ * per nesting level; a deeply-nested or cyclic file can overflow the native
+ * stack (SIGSEGV) and take down the whole index. Past the cap the subtree is
+ * skipped — its calls stay unresolved, which is graceful degradation, not a
+ * crash. The cap is CBM_LSP_MAX_WALK_DEPTH, env-overridable via the same name.
+ * The walk_depth-- runs after the inner returns, so early returns in the body
+ * never leak the counter. */
+static void cs_resolve_calls_in_node(CSLSPContext *ctx, TSNode node) {
+    if (ctx->walk_depth >= cbm_lsp_max_walk_depth())
+        return;
+    ctx->walk_depth++;
+    cs_resolve_calls_in_node_inner(ctx, node);
+    ctx->walk_depth--;
+}
 
 /* ── small helpers ──────────────────────────────────────────────── */
 
@@ -2205,7 +2221,7 @@ static void cs_resolve_object_creation(CSLSPContext *ctx, TSNode call) {
     cs_emit_resolved(ctx, tqn, "cs_ctor_synthetic", 0.85f);
 }
 
-static void cs_resolve_calls_in_node(CSLSPContext *ctx, TSNode node) {
+static void cs_resolve_calls_in_node_inner(CSLSPContext *ctx, TSNode node) {
     if (ts_node_is_null(node))
         return;
     const char *kind = ts_node_type(node);
