@@ -72,13 +72,21 @@ static bool ipc_test_parent_new(char out[TEST_PATH_CAP], const char *tag) {
     return th_secure_runtime_parent_new(out, TEST_PATH_CAP, tag);
 }
 
-static void ipc_test_copy_path(char out[TEST_PATH_CAP], const char *path) {
+/* Copy a path into a caller buffer of KNOWN size. GCC 16 diagnoses the old
+ * fixed `char out[TEST_PATH_CAP]` parameter whenever a caller hands over a
+ * smaller array (e.g. CBM_DAEMON_IPC_WINDOWS_NAME_CAP pipe-name buffers):
+ * the declared bound let snprintf legitimately write 1024 bytes into a
+ * 256-byte region. Taking the size from the call-site array via sizeof keeps
+ * every caller honest without editing dozens of sites. Only valid for real
+ * arrays, which every caller passes (all locals). */
+static void ipc_test_copy_path_impl(char *out, size_t cap, const char *path) {
     if (!path) {
         out[0] = '\0';
         return;
     }
-    (void)snprintf(out, TEST_PATH_CAP, "%s", path);
+    (void)snprintf(out, cap, "%s", path);
 }
+#define ipc_test_copy_path(out, path) ipc_test_copy_path_impl(out, sizeof(out), path)
 
 static bool ipc_test_full_path(char out[TEST_PATH_CAP], const char *path) {
 #ifdef _WIN32
