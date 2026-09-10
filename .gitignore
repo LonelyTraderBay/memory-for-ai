@@ -96,3 +96,6 @@ soak-results-query-leak/
 
 # Mimosa scanner session state (never commit)
 .mimosa/
+
+# Local C toolchain for manual builds (never commit)
+.toolchain/
