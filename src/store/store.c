@@ -55,6 +55,11 @@ enum {
     ST_QN_MAX_DOTS = 5,
     ST_QN_MIN_DOTS = 3,
     ST_IN_CLAUSE_MARGIN = 4,
+    /* cbm_store_batch_count_degrees processes ids in chunks: keeps the 4K
+     * placeholder buffer comfortably below capacity and under SQLite's
+     * bound-variable limit, so callers may pass any id_count. Matches
+     * DEAD_DEGREE_CHUNK in layout3d.c. */
+    ST_DEGREE_IN_CHUNK = 500,
     ST_GLOB_MIN_LEN = 3,
     ST_GLOB_SKIP = 2,
     ST_MAX_LANG = 10,
@@ -6963,10 +6968,18 @@ static int count_degrees_direction(cbm_store_t *s, const int64_t *node_ids, int 
     }
 
     for (int i = 0; i < id_count; i++) {
-        sqlite3_bind_int64(stmt, i + SKIP_ONE, node_ids[i]);
+        if (sqlite3_bind_int64(stmt, i + SKIP_ONE, node_ids[i]) != SQLITE_OK) {
+            store_set_error_sqlite(s, "bind node id");
+            sqlite3_finalize(stmt);
+            return CBM_STORE_ERR;
+        }
     }
     if (has_type) {
-        bind_text(stmt, id_count + SKIP_ONE, edge_type);
+        if (bind_text(stmt, id_count + SKIP_ONE, edge_type) != SQLITE_OK) {
+            store_set_error_sqlite(s, "bind edge type");
+            sqlite3_finalize(stmt);
+            return CBM_STORE_ERR;
+        }
     }
 
     int scan_rc11;
@@ -6998,27 +7011,44 @@ int cbm_store_batch_count_degrees(cbm_store_t *s, const int64_t *node_ids, int i
     memset(out_in, 0, (size_t)id_count * sizeof(int));
     memset(out_out, 0, (size_t)id_count * sizeof(int));
 
-    /* Build IN clause: (?,?,?) */
-    char in_clause[CBM_SZ_4K];
-    int pos = 0;
-    for (int i = 0; i < id_count && pos < (int)sizeof(in_clause) - ST_IN_CLAUSE_MARGIN; i++) {
-        if (i > 0) {
-            in_clause[pos++] = ',';
-        }
-        in_clause[pos++] = '?';
-    }
-    in_clause[pos] = '\0';
-
     bool has_type = edge_type && edge_type[0] != '\0';
 
-    int rc = count_degrees_direction(s, node_ids, id_count, in_clause, has_type, edge_type, true,
-                                     out_in);
-    if (rc != CBM_STORE_OK) {
-        return rc;
-    }
+    /* Process in chunks: the "?,?,..." IN clause lives in a fixed 4K buffer
+     * (~2 chars per placeholder), so an unbounded id_count previously made the
+     * bind loop overrun the emitted placeholders — sqlite3_bind_int64 then
+     * failed with SQLITE_RANGE (silently ignored) and the tail ids kept
+     * degree 0. Chunking keeps every id bound for any id_count (same pattern
+     * as DELTA_IN_CHUNK in pipeline_delta.c). */
+    for (int off = 0; off < id_count; off += ST_DEGREE_IN_CHUNK) {
+        int chunk = id_count - off;
+        if (chunk > ST_DEGREE_IN_CHUNK) {
+            chunk = ST_DEGREE_IN_CHUNK;
+        }
 
-    return count_degrees_direction(s, node_ids, id_count, in_clause, has_type, edge_type, false,
-                                   out_out);
+        /* Build IN clause: (?,?,?) */
+        char in_clause[CBM_SZ_4K];
+        int pos = 0;
+        for (int i = 0; i < chunk && pos < (int)sizeof(in_clause) - ST_IN_CLAUSE_MARGIN; i++) {
+            if (i > 0) {
+                in_clause[pos++] = ',';
+            }
+            in_clause[pos++] = '?';
+        }
+        in_clause[pos] = '\0';
+
+        int rc = count_degrees_direction(s, node_ids + off, chunk, in_clause, has_type, edge_type,
+                                         true, out_in + off);
+        if (rc != CBM_STORE_OK) {
+            return rc;
+        }
+
+        rc = count_degrees_direction(s, node_ids + off, chunk, in_clause, has_type, edge_type,
+                                     false, out_out + off);
+        if (rc != CBM_STORE_OK) {
+            return rc;
+        }
+    }
+    return CBM_STORE_OK;
 }
 
 /* ── UpsertFileHashBatch ───────────────────────────────────────── */
@@ -7597,16 +7627,35 @@ static void search_apply_degree_filter(char *sql, size_t sql_sz, const cbm_searc
 
 /* Append a WHERE clause fragment, joining with AND if not the first. */
 static int where_append(char *where, int where_sz, int wlen, int *nparams, const char *cond) {
+    /* snprintf returns the would-be length, so on truncation wlen can run
+     * past where_sz; clamp after each append (same pattern as
+     * bfs_build_types_clause) or the next call's `where_sz - wlen` goes
+     * negative and wraps to a huge size_t — an out-of-bounds write. */
     if (*nparams > 0) {
         wlen += snprintf(where + wlen, where_sz - wlen, " AND ");
+        if (wlen >= where_sz) {
+            wlen = where_sz - SKIP_ONE;
+        }
     }
     wlen += snprintf(where + wlen, where_sz - wlen, "%s", cond);
+    if (wlen >= where_sz) {
+        wlen = where_sz - SKIP_ONE;
+    }
     (*nparams)++;
     return wlen;
 }
 
 /* Bind a text parameter and increment the bind index. */
 static void where_bind_text(search_bind_t *binds, int *bind_idx, const char *val) {
+    /* Overflow guard: binds[] has ST_SEARCH_MAX_BINDS slots on the caller's
+     * stack. search_build_exclude_labels iterates a caller-supplied
+     * NULL-terminated array with no length cap, so past the limit we stop
+     * recording binds instead of overrunning the stack array. Placeholders
+     * already emitted beyond the limit stay unbound (SQLite treats them as
+     * NULL): the query under-matches but memory safety is preserved. */
+    if (*bind_idx >= ST_SEARCH_MAX_BINDS) {
+        return;
+    }
     binds[*bind_idx].text = val;
     (*bind_idx)++;
 }
