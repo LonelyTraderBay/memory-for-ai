@@ -20,6 +20,13 @@ One self-contained native executable. 162 languages via vendored tree-sitter gra
 
 ## Quick start
 
+**30-second machine check first** (details: [docs/INSTALL.md — Preflight](docs/INSTALL.md#preflight-check-your-machine-first)):
+
+1. Platform is macOS / Linux / Windows on amd64 or arm64, with ~2 GB free disk.
+2. **Windows:** `powershell -Command "$PSVersionTable.PSVersion"` must print a version — `search_code` shells out to PowerShell at runtime; if the `WindowsPowerShell\v1.0` directory is missing from PATH, add it before installing.
+3. `git --version` works (watcher freshness + `detect_changes`).
+4. Already installed once? `memory-for-ai --version` tells you — re-running the installer *is* the update, indexes survive.
+
 **macOS / Linux** (one line):
 
 ```bash
@@ -90,7 +97,7 @@ Measured on Apple M3 Pro (see [docs/MEASURING.md](docs/MEASURING.md) to reproduc
 | Document | What it covers | Primary audience |
 |---|---|---|
 | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | Operating manual: mental model, all 18 tools, task→tool playbooks, correctness protocol, per-project tuning | AI coding agents (and their humans) |
-| [docs/INSTALL.md](docs/INSTALL.md) | Every install path: one-liners, per-project, package managers, containers/CI, update/uninstall, build from source, artifact verification | Whoever installs |
+| [docs/INSTALL.md](docs/INSTALL.md) | Machine preflight (platform, disk, PowerShell/git on PATH, old-version check), every install path: one-liners, per-project, package managers, containers/CI, update/uninstall, build from source, artifact verification | Whoever installs |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config files, `config set` keys, environment variables, scoped sessions | Operators, CI authors |
 | [docs/MEASURING.md](docs/MEASURING.md) | Measuring answer quality, latency/stability, and token/tool-call savings on your repo | Evaluators |
 | [docs/llms.txt](docs/llms.txt) | Machine-readable index of the above | AI agents |

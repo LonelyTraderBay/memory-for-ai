@@ -467,6 +467,16 @@
         installs the binary, and configures every coding agent it detects. Then restart your agent and say
         <em>"Index this project"</em>.</p>
 
+        <p class="muted">
+            <strong>30-second machine check first:</strong> macOS / Linux / Windows on amd64 or arm64 with ~2 GB
+            free disk; <code>git</code> on PATH. On Windows, <code>powershell</code> must also be on PATH —
+            the <code>search_code</code> tool shells out to it at runtime; if
+            <code>C:\Windows\System32\WindowsPowerShell\v1.0</code> is missing from PATH, add it before installing.
+            Already installed once? Re-running the installer <em>is</em> the update — indexes survive.
+            Full checklist:
+            <a href="https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/INSTALL.md#preflight-check-your-machine-first">Preflight: check your machine first</a>.
+        </p>
+
         <div class="install-block">
             <span class="comment"># macOS / Linux</span><br>
             <span class="cmd">curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh | bash</span><br><br>

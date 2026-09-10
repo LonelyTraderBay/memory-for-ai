@@ -16,6 +16,8 @@
 - Performance: Linux kernel (28M LOC, 75K files) full index in 3 minutes → 4.81M nodes, 7.72M edges; Cypher queries in under 1ms.
 - Evaluation: arXiv:2603.27277 — across 31 real repositories, 10x fewer tokens and 2.1x fewer tool calls vs. file-by-file exploration, at 83% answer quality (92% for the file-by-file baseline).
 - Distribution: native executable plus authenticated release-owned assets; fully static Linux builds in the `-portable` archives. Also available through npm, PyPI, Homebrew, Scoop, Winget, Chocolatey, AUR, and `go install`.
+- Runtime requirements: no language runtime, no Docker, no API key. On Windows, the `search_code` tool shells out to `powershell`, so `powershell.exe` must be on PATH (check `C:\Windows\System32\WindowsPowerShell\v1.0` is in the system PATH; everything except `search_code` works without it). Freshness checks, the watcher, and `detect_changes` shell out to `git` on all platforms.
+- Machine preflight before install (platform/arch, disk, PowerShell-on-Windows, git, existing-install/update detection): docs/INSTALL.md, section "Preflight: check your machine first".
 
 ## Docs
 

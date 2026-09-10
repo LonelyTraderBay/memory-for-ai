@@ -13,6 +13,48 @@ How to get memory-for-ai running on your machine, inside one specific project, o
 | I want to inspect exactly what will be written before anything is | `memory-for-ai install --dry-run` |
 | I can't run installers at all | [Manual MCP configuration](#manual-mcp-configuration) |
 
+## Preflight: check your machine first
+
+Two minutes here prevents every common install failure. Run the checks for your OS; each line either passes silently or tells you exactly what to fix.
+
+**1. Platform support.** Release archives exist for macOS (amd64/arm64), Linux (amd64/arm64, plus fully static `-portable` builds), and Windows (amd64/arm64). Check yours:
+
+```bash
+uname -sm        # macOS / Linux → e.g. "Linux x86_64", "Darwin arm64"
+```
+
+```powershell
+# Windows
+[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+```
+
+**2. Disk and memory.** The installed binary is ~300 MB — it embeds 162 tree-sitter grammars and the nomic-embed-code vector model, so nothing downloads at runtime (release *archives* are smaller thanks to compression). Each indexed repository adds a SQLite graph under `~/.cache/memory-for-ai/`: a typical repo of a few thousand files costs tens of MB; very large trees scale with graph rows (the Linux kernel — 75K files, 12.5M nodes+edges — is ≈ 1 GB). Keep at least 2 GB free. Indexing is parallel and memory-aware — large repos on small machines: set `CBM_MEM_BUDGET_MB` (see [Containers and CI](#containers-and-ci)).
+
+**3. Windows only: PowerShell must be on PATH.** At runtime, the `search_code` tool executes PowerShell for text scanning on Windows. Most systems have this by default; some stripped/hardened images do not. Verify **before** installing:
+
+```powershell
+powershell -Command "$PSVersionTable.PSVersion"   # must print a version table
+```
+
+If you get `'powershell' is not recognized …` while `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, that directory is missing from PATH — add it (System Properties → Environment Variables → Path), then restart your coding agent. Without this, everything works **except** `search_code`, which returns `search failed: the contained command could not complete`.
+
+**4. git on PATH (all platforms).** Freshness checks, the background watcher, and `detect_changes` shell out to `git`. Verify with `git --version`; if it is missing, install Git first (any current build; on Windows also confirm `git.exe` lands on PATH).
+
+**5. Already installed? (old-version check).** The installer is also the updater — re-running it never doubles anything; it stops the daemon, swaps the binary, and migrates agent config only when the prior definition is byte-identical to what it wrote.
+
+```bash
+memory-for-ai --version                 # prints the installed build, or: command not found
+command -v memory-for-ai                # POSIX: install location
+where.exe memory-for-ai                 # Windows: install location
+memory-for-ai cli list_projects         # existing indexes survive an update
+```
+
+- Found → skip to [Update](#update) (or just run the installer again — same thing).
+- Not found → continue to any install path below.
+- Moving from the **old `codebase-memory` name**: the current installer writes the new `memory-for-ai` entries; remove stale entries of the previous name with its own uninstaller if one is present.
+
+**6. Agent present.** At least one supported coding agent (Claude Code, Codex CLI, Cursor, VS Code, …) — the full 45-surface matrix is at [What install writes](#what-install-writes). No supported agent? You can still drive everything through [CLI mode](../README.md#cli-mode) or [Manual MCP configuration](#manual-mcp-configuration).
+
 ## Standard install
 
 Downloads the verified release archive for your platform, checks its SHA-256 against the release `checksums.txt`, installs the binary (default `~/.local/bin`), configures every detected coding agent (see [What install writes](#what-install-writes)), strips macOS quarantine and ad-hoc signs the binary.
@@ -188,6 +230,8 @@ scripts/build.sh                  # without UI (development)
 # → build/c/memory-for-ai  (.exe on Windows)
 ```
 
+**Windows toolchain notes.** CI pins MSYS2 **CLANG64** (`mingw-w64-clang-x86_64-toolchain`); a standalone MinGW GCC (e.g. WinLibs 16.x) also builds cleanly. Either way you need zlib (`pacman -S mingw-w64-clang-x86_64-zlib`, or build zlib once and point the compiler at it) and `make` (`mingw32-make`). Pass `SANITIZE=` on Windows — GCC/MinGW has no AddressSanitizer, so the test build's default sanitizer flags do not apply there. GCC 14+ turns `-Wincompatible-pointer-types` and friends into hard errors; the tree is clean under GCC 16.2 / clang as shipped.
+
 Test suite (the same entry CI gates run):
 
 ```bash
@@ -195,6 +239,8 @@ scripts/test.sh                   # full lane: sanitizer build + all suites + gu
 scripts/test.sh --suites <name>   # one suite, incremental
 build/c/test-runner --list-suites
 ```
+
+On Windows, put PowerShell on PATH **before** running the suite: the `mcp`/`incremental` search-code tests spawn a real `powershell` child process, exactly like the runtime feature (see [Preflight](#preflight-check-your-machine-first)).
 
 Artifact-flow check (build candidates, package, extract, smoke): `scripts/ci/smoke-artifact.sh <linux|darwin|windows> <amd64|arm64>`.
 
@@ -216,6 +262,7 @@ All executable candidates are VirusTotal-scanned before release; the selected by
 |---|---|
 | `curl \| bash` blocked by policy | Download `install.sh`, inspect, run it locally (`bash install.sh`) |
 | Binary not on `PATH` | `export PATH="$HOME/.local/bin:$PATH"` (or the `--dir` you chose) |
+| Windows: `search failed: the contained command could not complete` from `search_code` | `powershell.exe` is not on PATH. Verify `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, add that directory to the system PATH, restart the agent — see [Preflight](#preflight-check-your-machine-first) |
 | Antivirus quarantines the binary | Known Defender `Wacatac.B!ml` false positive — evidence & verification: [SECURITY.md](SECURITY.md#antivirus-false-positives) |
 | macOS "cannot be opened" | Handled automatically by `install`; manually: `xattr -d com.apple.quarantine <binary>` |
 | Agent doesn't show the server after install | Restart the agent; check `/mcp`; confirm the config path is absolute; `echo '{}' \| <binary>` should print JSON |

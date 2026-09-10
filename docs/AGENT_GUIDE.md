@@ -228,6 +228,7 @@ Index each repository as its own project, then `index_repository(repo_path=<any>
 | `trace_path` returns 0 results | Name mismatch. `search_graph(name_pattern=".*PartialName.*")` first, use the exact qn. |
 | Results mention the wrong repo | Missing/incorrect `project`. Run `list_projects`; the bare folder name works as an alias. |
 | `stale_cursor` error | The project re-indexed under you. Re-run the original query from page one. |
+| `search_code` returns "search failed: the contained command could not complete" (Windows) | The scan shells out to `powershell`, which is not on PATH on this machine. Verify `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, add that directory to the system PATH, restart the agent. Everything else works without it — use `search_graph`/`trace_path` meanwhile. |
 | "session is scoped" refusal | The server is pinned with `--scope` — by design for per-project installs. Use the pinned project only. |
 | Tool call refused: repo path outside allowed root | `CBM_ALLOWED_ROOT` or a `--scope` boundary confines indexing. Index inside the boundary. |
 | `index_repository` returns `status:"degraded"` | Persisted-node verification fell below `CBM_DUMP_VERIFY_MIN_RATIO` (default 0.5) — the index exists but is not trustworthy; re-index and keep the response `logfile`. |
