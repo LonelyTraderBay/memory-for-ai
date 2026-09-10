@@ -1243,6 +1243,7 @@ CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLangua
         cbm_source_nesting_exceeds(source, source_len, CBM_PERL_MAX_PARSE_NESTING)) {
         result->has_error = true;
         result->error_msg = cbm_arena_strdup(a, "perl source nesting too deep; skipped");
+        cbm_index_mark_done(rel_path);
         return result;
     }
 
