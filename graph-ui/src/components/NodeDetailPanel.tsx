@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { colorForLabel } from "../lib/colors";
 import { callTool } from "../api/rpc";
@@ -33,6 +33,10 @@ function lineSuffix(node: GraphNode): string {
   return `#L${node.start_line}${end}`;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 /* Encode each path segment so an unusual file_path can't break (or escape) the
  * URL. The scheme is already https-forced by the backend (/api/repo-info);
  * this is defense-in-depth on the path. */
@@ -59,12 +63,21 @@ export function NodeDetailPanel({
   const [code, setCode] = useState<string | null>(null);
   const [codeLoading, setCodeLoading] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
+  const activeController = useRef<AbortController | null>(null);
 
-  /* Reset the fetched code whenever the selected node changes. */
+  /* Reset the fetched code whenever the selected node changes; the cleanup
+   * aborts any in-flight snippet request and bumps the sequence so a stale
+   * response can never be written into the panel for the new node. */
   useEffect(() => {
     setCode(null);
     setCodeError(null);
     setCodeLoading(false);
+    return () => {
+      activeController.current?.abort();
+      activeController.current = null;
+      requestSequence.current += 1;
+    };
   }, [node.id]);
 
   const canFetchCode = Boolean(project && node.qualified_name);
@@ -72,18 +85,33 @@ export function NodeDetailPanel({
 
   const loadCode = async () => {
     if (!project || !node.qualified_name) return;
+    activeController.current?.abort();
+    const controller = new AbortController();
+    activeController.current = controller;
+    const sequence = ++requestSequence.current;
     setCodeLoading(true);
     setCodeError(null);
     try {
-      const res = await callTool<SnippetResult>("get_code_snippet", {
-        qualified_name: node.qualified_name,
-        project,
-      });
-      setCode(res.source ?? "(source not available)");
+      const res = await callTool<SnippetResult>(
+        "get_code_snippet",
+        {
+          qualified_name: node.qualified_name,
+          project,
+        },
+        { signal: controller.signal },
+      );
+      if (requestSequence.current === sequence) {
+        setCode(res.source ?? "(source not available)");
+      }
     } catch (e) {
-      setCodeError(e instanceof Error ? e.message : "Failed to load code");
+      if (requestSequence.current === sequence && !isAbortError(e)) {
+        setCodeError(e instanceof Error ? e.message : "Failed to load code");
+      }
     } finally {
-      setCodeLoading(false);
+      if (requestSequence.current === sequence) {
+        activeController.current = null;
+        setCodeLoading(false);
+      }
     }
   };
 

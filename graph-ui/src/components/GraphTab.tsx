@@ -207,6 +207,10 @@ export function GraphTab({ project }: GraphTabProps) {
       setBudgetDraft(String(value));
     }
     setNeighborhoodFocus(null);
+    /* Node ids are only unique within a project — a selection surviving a
+     * project switch would show the old node matched against the new
+     * project's edges. Drop it alongside the neighborhood focus. */
+    setSelectedNode(null);
   }, [project]);
 
   /* …and fetch only once budget and project agree (one fetch per change). */

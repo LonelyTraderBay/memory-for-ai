@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import type { GraphNode, GraphEdge } from "../lib/types";
 import { edgeIntensityScale } from "../lib/density";
@@ -138,6 +138,11 @@ export function EdgeLines({
     );
     return geo;
   }, [nodes, edges, highlightedIds, targetNodes, brightness]);
+
+  /* R3F only auto-disposes a prop-passed geometry on unmount — a rebuilt
+   * geometry (hover/click/filter changes the deps above) would leak its GPU
+   * buffers. Dispose the previous geometry whenever it is replaced. */
+  useEffect(() => () => geometry.dispose(), [geometry]);
 
   return (
     <lineSegments geometry={geometry}>
