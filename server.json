@@ -12,7 +12,7 @@
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "memory-for-ai",
+      "identifier": "memory-for-ai-mcp",
       "version": "0.10.8",
       "runtimeHint": "npx",
       "transport": {

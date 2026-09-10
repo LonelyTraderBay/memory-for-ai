@@ -41,6 +41,9 @@ jobs:
   codeql-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    permissions:
+      contents: read
+      security-events: read
     steps:
       - name: Wait for CodeQL on current commit (max 45 min)
         env:
@@ -73,9 +76,15 @@ jobs:
         run: |
           echo "Waiting 60s for alert API to settle..."
           sleep 60
-          ALERTS=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' --jq 'length' 2>/dev/null || echo "0")
+          if ! ALERTS=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' --jq 'length'); then
+            echo "BLOCKED: code-scanning alerts API query failed (permissions, rate limit, or outage); failing closed"
+            exit 1
+          fi
           sleep 15
-          ALERTS2=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' --jq 'length' 2>/dev/null || echo "0")
+          if ! ALERTS2=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' --jq 'length'); then
+            echo "BLOCKED: code-scanning alerts API query failed (permissions, rate limit, or outage); failing closed"
+            exit 1
+          fi
           [ "$ALERTS" -lt "$ALERTS2" ] && ALERTS=$ALERTS2
           if [ "$ALERTS" -gt 0 ]; then
             echo "BLOCKED: $ALERTS open alert(s)"

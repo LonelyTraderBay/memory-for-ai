@@ -176,6 +176,14 @@ def canonical_metadata() -> dict:
     if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
         fail(f"server.json has invalid semantic version: {version!r}")
 
+    npm_name = json.loads(read_text(ROOT / "pkg" / "npm" / "package.json")).get("name")
+    for package in server.get("packages", []):
+        if package.get("registryType") == "npm" and package.get("identifier") != npm_name:
+            fail(
+                f"server.json npm package identifier is {package.get('identifier')!r}, "
+                f"expected {npm_name!r} from pkg/npm/package.json"
+            )
+
     return {
         "product_name": macros["CBM_PRODUCT_NAME"],
         "display_name": server.get("title", "Memory for AI"),
