@@ -53,6 +53,9 @@ on:
 
 permissions:
   contents: read
+  # codeql-gate (trong _security.yml) đọc code-scanning alerts — reusable
+  # workflow không được xin quyền vượt caller, nên caller phải cấp ở đây.
+  security-events: read
 
 jobs:
   # ── Security (independent island — does not block main pipeline) ──
