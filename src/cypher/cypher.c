@@ -5294,14 +5294,14 @@ int cbm_cypher_execute(cbm_store_t *store, const char *query, const char *projec
     memset(out, 0, sizeof(*out));
     g_cypher_depth_clamped = 0;
     g_cypher_trail_truncated = 0;
-    cypher_deadline_arm(); /* #601: start the wall-clock budget for this query */
-    cypher_regex_cache_reset(); /* drop the previous query's =~ cache entry */
+    cypher_deadline_arm();       /* #601: start the wall-clock budget for this query */
+    cypher_regex_cache_reset();  /* drop the previous query's =~ cache entry */
     cypher_degree_cache_reset(); /* drop the previous query's batch degree cache */
     /* H6: only pay batch-degree priming when the query text actually reads
      * in_degree/out_degree. A false positive (e.g. the word inside a string
      * literal) merely primes a cache that goes unused — never a wrong result. */
-    g_cyp_degree_wanted =
-        (query != NULL) && (strstr(query, "in_degree") != NULL || strstr(query, "out_degree") != NULL);
+    g_cyp_degree_wanted = (query != NULL) && (strstr(query, "in_degree") != NULL ||
+                                              strstr(query, "out_degree") != NULL);
     if (max_rows <= 0) {
         max_rows = CYPHER_RESULT_CEILING;
     }

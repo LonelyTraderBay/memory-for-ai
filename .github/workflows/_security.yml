@@ -76,19 +76,23 @@ jobs:
         run: |
           echo "Waiting 60s for alert API to settle..."
           sleep 60
-          if ! ALERTS=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' --jq 'length'); then
+          # Gate scope is CodeQL only (tool_name filter): Scorecard uploads its
+          # repo-hygiene checks (Maintained, CodeReview, Vulnerabilities…) to the
+          # same code-scanning API, and those meta-alerts must not block releases
+          # — they track repo practices, not code vulnerabilities in this tree.
+          if ! ALERTS=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open&tool_name=CodeQL' --jq 'length'); then
             echo "BLOCKED: code-scanning alerts API query failed (permissions, rate limit, or outage); failing closed"
             exit 1
           fi
           sleep 15
-          if ! ALERTS2=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' --jq 'length'); then
+          if ! ALERTS2=$(gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open&tool_name=CodeQL' --jq 'length'); then
             echo "BLOCKED: code-scanning alerts API query failed (permissions, rate limit, or outage); failing closed"
             exit 1
           fi
           [ "$ALERTS" -lt "$ALERTS2" ] && ALERTS=$ALERTS2
           if [ "$ALERTS" -gt 0 ]; then
-            echo "BLOCKED: $ALERTS open alert(s)"
-            gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open' \
+            echo "BLOCKED: $ALERTS open CodeQL alert(s)"
+            gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open&tool_name=CodeQL' \
               --jq '.[] | "  #\(.number) [\(.rule.security_severity_level // .rule.severity)] \(.rule.id) — \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"' 2>/dev/null || true
             exit 1
           fi
