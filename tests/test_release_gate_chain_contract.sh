@@ -33,10 +33,10 @@ import pathlib
 import re
 import sys
 
-text = pathlib.Path(sys.argv[1]).read_text()
-build_text = pathlib.Path(sys.argv[2]).read_text()
-dry_text = pathlib.Path(sys.argv[3]).read_text()
-soak_text = pathlib.Path(sys.argv[4]).read_text()
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+build_text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+dry_text = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8")
+soak_text = pathlib.Path(sys.argv[4]).read_text(encoding="utf-8")
 
 # Slice the file into top-level job blocks: two-space indented "name:".
 blocks, current, name = {}, [], None
