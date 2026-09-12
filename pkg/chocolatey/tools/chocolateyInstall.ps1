@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 $packageName = 'memory-for-ai'
-$version     = '0.10.8'
+$version     = '0.10.9'
 $url64       = "https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v${version}/memory-for-ai-windows-amd64.zip"
-$checksum64  = 'b43ad982994c4d829670749e08d3b622a74bb20041fc0a7d02bef6113f81c34d'
+$checksum64  = 'b1c1d1bab8bca8712fff7f7d51b4b9eb37323e44b87317d965eabc2328e37bc8'
 $installDir  = Join-Path $env:ChocolateyBinRoot $packageName
 
 Install-ChocolateyZipPackage `
