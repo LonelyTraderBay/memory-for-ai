@@ -3,7 +3,7 @@
   "display_name": "Memory for AI",
   "repository": "LonelyTraderBay/memory-for-ai",
   "repository_url": "https://github.com/LonelyTraderBay/memory-for-ai",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "mcp_tool_count": 18,
   "mcp_tools": [
     "index_repository",
