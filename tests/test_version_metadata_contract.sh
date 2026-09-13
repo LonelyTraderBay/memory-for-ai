@@ -108,20 +108,17 @@ SURFACES=(
     "pkg/chocolatey/memory-for-ai.nuspec|release"
     "pkg/chocolatey/tools/chocolateyInstall.ps1|release"
     "pkg/homebrew/Formula/memory-for-ai.rb|release"
-    "pkg/scoop/memory-for-ai.json|pin:0.8.1"
-    "pkg/aur/PKGBUILD|pin:0.8.1"
-    "pkg/aur/.SRCINFO|pin:0.8.1"
+    "pkg/scoop/memory-for-ai.json|release"
+    "pkg/aur/PKGBUILD|release"
+    "pkg/aur/.SRCINFO|release"
 )
 
 # Why each pinned surface is frozen, and what clearing it costs. To bring one
 # up to date: download the release's checksums.txt
 # (gh release download v<X.Y.Z> --pattern checksums.txt), replace the version
 # AND every sha256 it pins, then move the entry to "release" above.
-PIN_REASONS=(
-    "pkg/scoop/memory-for-ai.json|pins the windows-amd64.zip sha256; last re-pinned for v0.8.1"
-    "pkg/aur/PKGBUILD|pins sha256sums_x86_64 + sha256sums_aarch64; last re-pinned for v0.8.1"
-    "pkg/aur/.SRCINFO|generated from PKGBUILD, so it must move with it, not before it"
-)
+# Currently empty: every surface tracks the newest release.
+PIN_REASONS=()
 
 # Paths that legitimately contain a semver but make no claim about the
 # product's current version. Each entry states what its number really is, so an

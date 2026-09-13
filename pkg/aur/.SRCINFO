@@ -1,6 +1,6 @@
 pkgbase = memory-for-ai
 	pkgdesc = Fast code intelligence engine — native executable with verified integration asset
-	pkgver = 0.8.1
+	pkgver = 0.10.9
 	pkgrel = 1
 	url = https://github.com/LonelyTraderBay/memory-for-ai
 	arch = x86_64
@@ -8,9 +8,9 @@ pkgbase = memory-for-ai
 	license = MIT
 	provides = memory-for-ai
 	conflicts = memory-for-ai
-	source_x86_64 = memory-for-ai-0.8.1-linux-amd64.tar.gz::https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v0.8.1/memory-for-ai-linux-amd64.tar.gz
-	sha256sums_x86_64 = dbd3b92ea870ef240b63059f26bda15015f76ef9978931bebc3a0f9d09470973
-	source_aarch64 = memory-for-ai-0.8.1-linux-arm64.tar.gz::https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v0.8.1/memory-for-ai-linux-arm64.tar.gz
-	sha256sums_aarch64 = d2f842d1365da5c35d9c5796f57a821c9745267350994346735e1e6e04d46091
+	source_x86_64 = memory-for-ai-0.10.9-linux-amd64.tar.gz::https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v0.10.9/memory-for-ai-linux-amd64.tar.gz
+	sha256sums_x86_64 = 33b7e30849fc4f481797468e78b07f48b481eba9072b2ad3b1cb957e55d09f0c
+	source_aarch64 = memory-for-ai-0.10.9-linux-arm64.tar.gz::https://github.com/LonelyTraderBay/memory-for-ai/releases/download/v0.10.9/memory-for-ai-linux-arm64.tar.gz
+	sha256sums_aarch64 = 9cf9a5e356e5a84a109152a58a7b0b64f96468e82706d88b6ed9b46654b4c3e3
 
 pkgname = memory-for-ai
