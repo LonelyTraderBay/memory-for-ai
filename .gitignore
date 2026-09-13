@@ -99,3 +99,8 @@ soak-results-query-leak/
 
 # Local C toolchain for manual builds (never commit)
 .toolchain/
+
+# Local analysis/review reports (kept locally, never published)
+PHAN-TICH-DU-AN.md
+REVIEW-CBM.md
+REVIEW-CBM-report.md
