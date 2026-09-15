@@ -130,5 +130,8 @@ Publish: raw paired counts, per-pair quality scores, run count, aggregation meth
 | [arXiv:2603.27277](https://arxiv.org/abs/2603.27277) | 10× fewer tokens, 2.1× fewer tool calls vs. file-by-file exploration, at 83% answer quality (92% for the file-by-file baseline) | 31 real repositories, blinded grading |
 | README performance table | Linux kernel full index 3 min; Cypher <1 ms; five structural queries ~3,400 vs ~412,000 tokens | Single machine (Apple M3 Pro); exact reproduction needs the original inputs |
 | Maintainer dogfood (2026-09) | Callers query: ~250 tokens / 1 call vs ~33,000 tokens of reading, 66 callers complete vs grep's incomplete picture | One repository, one question class |
+| [Self-measured A/B on this repo](AB-RESULTS.md) (2026-09) | 8 questions: graph 8/8 PASS at ~3.4K est. tokens vs file-by-file 6 PASS + 2 PARTIAL at ~765K est. tokens (~99.6% reduction; ~4–5× under a charity bound); graph lost on text-lookup and directory-listing controls | One repository, one machine, non-blind grading, bytes-based token estimate — see the report's limitations |
+
+A full worked example of this protocol — frozen setup, freshness incident, per-question table, limitations — lives in [AB-RESULTS.md](AB-RESULTS.md).
 
 Treat these as calibration points for your own measurement, not as expectations: your repo, language mix, question mix, and session shape move the numbers in both directions.

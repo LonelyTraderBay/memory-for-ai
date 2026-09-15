@@ -25,6 +25,7 @@
 - [Installation reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/INSTALL.md): every install path — one-liners, per-project mode, package managers, manual MCP config, CI/containers, update/uninstall, build from source, artifact verification.
 - [Configuration reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/CONFIGURATION.md): config files, config-set runtime keys, environment variables, scoped sessions, daemon rendezvous.
 - [Measuring real effectiveness](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/MEASURING.md): 15-minute spot check, built-in measurement surfaces, rigorous A/B protocol with formulas and reporting schema.
+- [A/B results on this repo](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AB-RESULTS.md): worked self-measurement — 8 questions, graph 8/8 PASS at ~3.4K est. tokens vs file-by-file 6 PASS + 2 PARTIAL at ~765K est. tokens; includes the stale-index freshness incident, the fixed ~7K-token tool-manifest cost, and full limitations (non-blind grading, bytes-based token estimate).
 
 ## Links
 

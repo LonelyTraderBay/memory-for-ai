@@ -14,7 +14,7 @@ One self-contained native executable. 162 languages via vendored tree-sitter gra
 
 - **Are you an AI agent?** Read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the complete operating manual (tool catalog, task→tool playbooks, correctness protocol, per-project tuning). [docs/llms.txt](docs/llms.txt) is the machine-readable index.
 - **Installing for a specific project?** Jump to [Per-project install](#per-project-install) — one command, zero global config, one isolated graph named after the repo.
-- **Want proof it pays off before adopting?** [docs/MEASURING.md](docs/MEASURING.md) — a 15-minute spot check and a full A/B protocol to measure token and tool-call savings on your own repository.
+- **Want proof it pays off before adopting?** [docs/MEASURING.md](docs/MEASURING.md) — a 15-minute spot check and a full A/B protocol to measure token and tool-call savings on your own repository. A worked example with real numbers (and real caveats), measured on this repository itself: [docs/AB-RESULTS.md](docs/AB-RESULTS.md).
 
 > **Research** — design and evaluation are described in [*Codebase-Memory: Tree-Sitter-Based Knowledge Graphs for LLM Code Exploration via MCP*](https://arxiv.org/abs/2603.27277) (arXiv:2603.27277): across 31 real repositories, 10× fewer tokens and 2.1× fewer tool calls vs. file-by-file exploration, at 83% answer quality (92% for the file-by-file baseline).
 
@@ -100,6 +100,7 @@ Measured on Apple M3 Pro (see [docs/MEASURING.md](docs/MEASURING.md) to reproduc
 | [docs/INSTALL.md](docs/INSTALL.md) | Machine preflight (platform, disk, PowerShell/git on PATH, old-version check), every install path: one-liners, per-project, package managers, containers/CI, update/uninstall, build from source, artifact verification | Whoever installs |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config files, `config set` keys, environment variables, scoped sessions | Operators, CI authors |
 | [docs/MEASURING.md](docs/MEASURING.md) | Measuring answer quality, latency/stability, and token/tool-call savings on your repo | Evaluators |
+| [docs/AB-RESULTS.md](docs/AB-RESULTS.md) | Worked A/B measurement on this repository: 8 questions, graph vs file-by-file, with the freshness incident and honest limitations | Evaluators |
 | [docs/llms.txt](docs/llms.txt) | Machine-readable index of the above | AI agents |
 | [SECURITY.md](SECURITY.md) | Reporting, release policy, antivirus false positives, supply chain | Everyone |
 
