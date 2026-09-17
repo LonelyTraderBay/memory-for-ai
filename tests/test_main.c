@@ -763,6 +763,7 @@ extern void suite_store_edges(void);
 extern void suite_store_search(void);
 extern void suite_cypher(void);
 extern void suite_mcp(void);
+extern void suite_edit(void);
 extern void suite_mcp_mutation_guard(void);
 extern void suite_mcp_project_scope(void);
 extern void suite_index_supervisor(void);
@@ -1033,6 +1034,9 @@ int main(int argc, char **argv) {
     RUN_SELECTED_SUITE(mcp_mutation_guard);
     RUN_SELECTED_SUITE(mcp_project_scope);
     RUN_SELECTED_SUITE(index_supervisor);
+
+    /* Symbol-level edit tools (edit_symbol / delete_symbol / rename_symbol) */
+    RUN_SELECTED_SUITE(edit);
 
     /* Shared MCP daemon coordination + private framing */
     RUN_SELECTED_SUITE(daemon);
