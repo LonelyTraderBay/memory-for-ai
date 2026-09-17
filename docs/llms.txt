@@ -7,7 +7,7 @@
 - License: MIT, open source.
 - Languages: 162 (162 vendored tree-sitter grammars compiled into the binary; count generated into product-metadata.json by scripts/check-product-metadata.py).
 - Hybrid LSP type resolution: 10 language families — Python, TypeScript/JavaScript/JSX/TSX, PHP, C#, Go, C/C++, Java, Kotlin, Rust, Perl — a lightweight C implementation of language type-resolution algorithms, structurally inspired by and compatible with tsserver/typescript-go, pyright, gopls, Roslyn, Eclipse JDT, and rust-analyzer.
-- MCP tools: 18 (index_repository, search_graph incl. semantic_query vector search, query_graph (read-only Cypher subset), trace_path, get_code_snippet, get_graph_schema, compare_graphs, get_architecture, search_code, get_code_actions, list_projects, delete_project, index_status, check_index_coverage, detect_changes, manage_adr, ingest_traces, get_runtime_traces).
+- MCP tools: 22 (index_repository, search_graph incl. semantic_query vector search, query_graph (read-only Cypher subset), trace_path, get_code_snippet, edit_symbol, delete_symbol, rename_symbol, undo_edit, get_graph_schema, compare_graphs, get_architecture, search_code, get_code_actions, list_projects, delete_project, index_status, check_index_coverage, detect_changes, manage_adr, ingest_traces, get_runtime_traces).
 - Coverage honesty: index_repository / index_status / check_index_coverage report skipped files, parse_partial line ranges, a file-hash coverage_ratio, and machine-readable confidence_reasons; absence of a flag is never a completeness guarantee.
 - Per-project isolation: `install --project` writes a repo-local `.mcp.json` server entry named memory-for-ai-<repo> pinned with `--scope=<repo>` — one fenced graph per repository, zero global config changes; one binary still serves all repositories.
 - Team sharing: `index_repository(persistence=true)` writes a compressed `.memory-for-ai/graph.db.zst` artifact teammates bootstrap from instead of re-indexing.
@@ -25,7 +25,7 @@
 - [Installation reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/INSTALL.md): every install path — one-liners, per-project mode, package managers, manual MCP config, CI/containers, update/uninstall, build from source, artifact verification.
 - [Configuration reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/CONFIGURATION.md): config files, config-set runtime keys, environment variables, scoped sessions, daemon rendezvous.
 - [Measuring real effectiveness](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/MEASURING.md): 15-minute spot check, built-in measurement surfaces, rigorous A/B protocol with formulas and reporting schema.
-- [A/B results on this repo](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AB-RESULTS.md): worked self-measurement — 8 questions, graph 8/8 PASS at ~3.4K est. tokens vs file-by-file 6 PASS + 2 PARTIAL at ~765K est. tokens; includes the stale-index freshness incident, the fixed ~7K-token tool-manifest cost, and full limitations (non-blind grading, bytes-based token estimate).
+- [A/B results on this repo](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AB-RESULTS.md): worked self-measurement — 8 questions, graph 8/8 PASS at ~3.4K est. tokens vs file-by-file 6 PASS + 2 PARTIAL at ~765K est. tokens; includes the stale-index freshness incident, the fixed ~9K-token tool-manifest cost, and full limitations (non-blind grading, bytes-based token estimate).
 
 ## Links
 

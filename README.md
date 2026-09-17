@@ -10,7 +10,7 @@
 
 An MCP server that turns a codebase into a persistent knowledge graph — functions, classes, call chains, HTTP routes, cross-service links — so an AI coding agent answers structural questions with **graph queries instead of reading file after file**.
 
-One self-contained native executable. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 21 MCP tools. No language runtime, no Docker, no API key, no telemetry — everything runs locally.
+One self-contained native executable. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 22 MCP tools. No language runtime, no Docker, no API key, no telemetry — everything runs locally.
 
 - **Are you an AI agent?** Read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the complete operating manual (tool catalog, task→tool playbooks, correctness protocol, per-project tuning). [docs/llms.txt](docs/llms.txt) is the machine-readable index.
 - **Installing for a specific project?** Jump to [Per-project install](#per-project-install) — one command, zero global config, one isolated graph named after the repo.
