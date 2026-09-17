@@ -55,6 +55,7 @@ enum {
 #include "mcp/mcp.h"
 #include "mcp/mcp_internal.h"
 #include "store/store.h"
+#include "edit/edit.h"
 #include <sqlite3.h>
 #include "cypher/cypher.h"
 #include "discover/discover.h"
@@ -566,10 +567,92 @@ static const tool_def_t TOOLS[] = {
      "\"type\":\"string\"},\"include_neighbors\":{"
      "\"type\":\"boolean\",\"default\":false}},\"required\":[\"qualified_name\",\"project\"]}"},
 
+    {"delete_symbol", "Delete symbol (safe)",
+     "Delete a symbol's source using its graph location, with a graph-based usage check: the "
+     "call is REFUSED while the symbol still has direct callers (CALLS/HTTP_CALLS/ASYNC_CALLS "
+     "edges) unless force=true — the refusal lists the callers. Deleting a symbol that "
+     "CONTAINS nested symbols (e.g. a class with methods) also requires force=true. SAFE BY "
+     "DEFAULT: without dry_run=false the call returns a diff plan (what is removed, callers, "
+     "orphan candidates — callees that become dead code) and writes nothing. Before writing, "
+     "the node's line range is verified against the on-disk source and the file's mtime is "
+     "re-checked. A successful write keeps a backup of the original file and re-indexes the "
+     "project incrementally. Workflow: trace_path(direction=inbound) to review callers → "
+     "delete_symbol (review plan) → delete_symbol(dry_run=false).",
+     "{\"type\":\"object\",\"properties\":{\"qualified_name\":{\"type\":\"string\",\"description\":"
+     "\"Full qualified_name from search_graph\"},\"project\":{\"type\":\"string\"},\"dry_run\":{"
+     "\"type\":\"boolean\",\"default\":true,\"description\":\"true (default): return the delete "
+     "plan only, write nothing. false: apply the delete.\"},\"force\":{\"type\":\"boolean\","
+     "\"default\":false,\"description\":\"Delete despite remaining callers and/or nested "
+     "symbols (both are listed in the refusal/plan).\"}},"
+     "\"required\":[\"qualified_name\",\"project\"]}"},
+
+    {"rename_symbol", "Rename symbol (evidence-tiered)",
+     "Rename a symbol across the project using graph evidence. The tool sweeps all indexed "
+     "files for whole-identifier occurrences of the old name and classifies each into "
+     "confidence tiers: HIGH (the definition itself or inside a graph-verified caller — "
+     "applied automatically), REVIEW (no graph evidence: possible dynamic dispatch, string "
+     "lookup, or missed resolution — applied only with force=true), SKIP (comment/docstring "
+     "line — applied only with include_comments=true). SAFE BY DEFAULT: without dry_run=false "
+     "the call returns the full occurrence plan (per-file tier table + samples) and writes "
+     "nothing. Guards: target-name collision check, definition-drift check, per-file mtime "
+     "re-check before every write, expected_counts to pin a plan against later sweeps. Each "
+     "written file is backed up first; the project is re-indexed afterwards, and the response "
+     "verifies the new symbol resolves in the fresh graph and reports any old-name "
+     "occurrences left on disk. scope: project (default) or definition_only. Known limits: "
+     "plain [A-Za-z0-9_] identifiers only; reflection/string-based references land in REVIEW "
+     "and are never auto-applied.",
+     "{\"type\":\"object\",\"properties\":{\"qualified_name\":{\"type\":\"string\",\"description\":"
+     "\"Full qualified_name from search_graph\"},\"project\":{\"type\":\"string\"},\"new_name\":{"
+     "\"type\":\"string\",\"description\":\"New identifier ([A-Za-z_][A-Za-z0-9_]*)\"},"
+     "\"scope\":{\"type\":\"string\",\"enum\":[\"project\",\"definition_only\"],\"default\":"
+     "\"project\"},\"dry_run\":{\"type\":\"boolean\",\"default\":true,\"description\":\"true "
+     "(default): return the occurrence plan only, write nothing. false: apply the rename.\"},"
+     "\"force\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Also apply REVIEW-tier "
+     "occurrences and bypass the definition-drift check.\"},\"include_comments\":{\"type\":"
+     "\"boolean\",\"default\":false,\"description\":\"Also rename inside comment/docstring "
+     "lines (SKIP tier).\"},\"expected_counts\":{\"type\":\"integer\",\"description\":\"Assert "
+     "the total occurrence count from a previous plan; aborts when the sweep disagrees.\"}},"
+     "\"required\":[\"qualified_name\",\"project\",\"new_name\"]}"},
+
+    {"undo_edit", "Undo an edit from backup",
+     "Restore a file from the most recent backup created by edit_symbol / delete_symbol / "
+     "rename_symbol writes. SAFE BY DEFAULT: without dry_run=false the call returns the plan "
+     "(which backup, current vs backup size/lines) and writes nothing. The restore is atomic "
+     "and the pre-undo content is itself backed up first, so an undo is undoable; afterwards "
+     "the file is byte-compared against the backup and the project is re-indexed. path is "
+     "project-relative (e.g. \"src/foo.c\"); '..' and absolute paths are rejected.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":"
+     "\"Project-relative file path to restore\"},\"project\":{\"type\":\"string\"},\"dry_run\":{"
+     "\"type\":\"boolean\",\"default\":true,\"description\":\"true (default): show the restore "
+     "plan only, write nothing. false: restore the file.\"}},"
+     "\"required\":[\"path\",\"project\"]}"},
+
     {"get_graph_schema", "Get graph schema",
      "Get the schema of the knowledge graph (node labels, edge types)",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
      "\"project\"]}"},
+
+    {"edit_symbol", "Edit symbol source",
+     "Edit a symbol's source in place using its graph location: replace its full definition "
+     "(replace_body — content must be the complete new definition, signature + body), or insert "
+     "a code block directly above/below it (insert_before/insert_after). SAFE BY DEFAULT: "
+     "without dry_run=false the call returns a diff plan and writes nothing. Before writing, "
+     "the node's line range is verified against the on-disk source and the file's mtime is "
+     "re-checked; a stale index or an externally modified file is rejected, never edited "
+     "around. Replacing a symbol that CONTAINS nested symbols (e.g. a class with methods) "
+     "requires force=true. A successful write keeps a backup of the original file (undo by "
+     "restoring it) and re-indexes the project incrementally. Workflow: search_graph → "
+     "get_code_snippet → edit_symbol (review plan) → edit_symbol(dry_run=false).",
+     "{\"type\":\"object\",\"properties\":{\"qualified_name\":{\"type\":\"string\",\"description\":"
+     "\"Full qualified_name from search_graph\"},\"project\":{\"type\":\"string\"},\"action\":{"
+     "\"type\":\"string\",\"enum\":[\"replace_body\",\"insert_before\",\"insert_after\"]},"
+     "\"content\":{\"type\":\"string\",\"description\":\"New source: the complete new definition "
+     "for replace_body; the block to insert for insert_before/insert_after\"},\"dry_run\":{"
+     "\"type\":\"boolean\",\"default\":true,\"description\":\"true (default): return the diff "
+     "plan only, write nothing. false: apply the edit.\"},\"force\":{\"type\":\"boolean\","
+     "\"default\":false,\"description\":\"Allow replace_body over a range containing nested "
+     "symbols, and bypass source-drift verification (out-of-range line numbers are still "
+     "rejected).\"}},\"required\":[\"qualified_name\",\"project\",\"action\",\"content\"]}"},
 
     {"compare_graphs", "Compare graphs",
      "Compare two indexed project snapshots. Returns deterministic target-only additions and "
@@ -792,6 +875,10 @@ static const tool_annotation_def_t TOOL_ANNOTATIONS[] = {
     {"query_graph", false, true, true, false},
     {"trace_path", false, true, true, false},
     {"get_code_snippet", false, true, true, false},
+    {"edit_symbol", false, true, false, false},
+    {"delete_symbol", false, true, false, false},
+    {"rename_symbol", false, true, false, false},
+    {"undo_edit", false, true, false, false},
     {"get_graph_schema", false, true, true, false},
     {"compare_graphs", true, false, true, false},
     {"get_architecture", false, true, true, false},
@@ -9959,6 +10046,1857 @@ static char *handle_get_code_snippet(cbm_mcp_server_t *srv, const char *args) {
         true);
 }
 
+/* ── edit_symbol ───────────────────────────────────────────── */
+
+/* dry_run defaults to true: the tool plans unless explicitly told to write. */
+static bool edit_bool_arg_default(const char *args, const char *key, bool default_val) {
+    yyjson_doc *doc = yyjson_read(args, strlen(args), 0);
+    if (!doc) {
+        return default_val;
+    }
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *val = yyjson_obj_get(root, key);
+    bool result = default_val;
+    if (val && yyjson_is_bool(val)) {
+        result = yyjson_get_bool(val);
+    }
+    yyjson_doc_free(doc);
+    return result;
+}
+
+/* JSON-escape a path for embedding in a synthetic tool-args document. */
+static char *edit_json_escape(const char *s) {
+    size_t len = strlen(s);
+    char *out = malloc(len * 2 + 1);
+    if (!out) {
+        return NULL;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '\\' || s[i] == '"') {
+            out[n++] = '\\';
+        }
+        out[n++] = s[i];
+    }
+    out[n] = '\0';
+    return out;
+}
+
+static char *handle_edit_symbol(cbm_mcp_server_t *srv, const char *args) {
+    char *qn = cbm_mcp_get_string_arg(args, "qualified_name");
+    char *project = get_project_arg(args);
+    char *action_str = cbm_mcp_get_string_arg(args, "action");
+    char *content = cbm_mcp_get_string_arg(args, "content");
+    bool dry_run = edit_bool_arg_default(args, "dry_run", true);
+    bool force = cbm_mcp_get_bool_arg(args, "force");
+
+    cbm_edit_action_t action;
+    if (!qn || !action_str || !content || !cbm_edit_action_parse(action_str, &action)) {
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(
+            "qualified_name, action (replace_body|insert_before|insert_after) and content are "
+            "required",
+            true);
+    }
+    if (content[0] == '\0') {
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result("content must not be empty", true);
+    }
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *_err = build_project_list_error("project not found or not indexed");
+        char *_res = cbm_mcp_text_result(_err, true);
+        free(_err);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return _res;
+    }
+
+    char *not_indexed = verify_project_indexed(store, project);
+    if (not_indexed) {
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return not_indexed;
+    }
+
+    const char *effective_project = project ? project : srv->current_project;
+
+    cbm_node_t node = {0};
+    cbm_node_t *candidates = NULL;
+    int candidate_count = 0;
+    cbm_edit_resolve_status_t rstatus =
+        cbm_edit_resolve_symbol(store, effective_project, qn, &node, &candidates, &candidate_count);
+    if (rstatus == CBM_EDIT_RESOLVE_AMBIGUOUS) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        char hdr[CBM_SZ_256];
+        snprintf(hdr, sizeof(hdr), "symbol is ambiguous — %d matches; pass the exact "
+                                   "qualified_name:\n",
+                 candidate_count);
+        cbm_sb_append(&sb, hdr);
+        int shown = candidate_count < 10 ? candidate_count : 10;
+        for (int i = 0; i < shown; i++) {
+            char row[CBM_SZ_1K];
+            snprintf(row, sizeof(row), "  %s  (%s, %s:%d-%d)\n",
+                     candidates[i].qualified_name ? candidates[i].qualified_name : "?",
+                     candidates[i].label ? candidates[i].label : "?",
+                     candidates[i].file_path ? candidates[i].file_path : "?",
+                     candidates[i].start_line, candidates[i].end_line);
+            cbm_sb_append(&sb, row);
+        }
+        cbm_store_free_nodes(candidates, candidate_count);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "symbol is ambiguous", true);
+        free(text);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return res;
+    }
+    if (rstatus != CBM_EDIT_RESOLVE_OK) {
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(
+            "symbol not found. Use search_graph(name_pattern=\"...\") first to discover "
+            "the exact qualified_name, then pass it to edit_symbol.",
+            true);
+    }
+
+    if (!cbm_edit_label_editable(node.label)) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "label '%s' is not editable by edit_symbol — target a Function, Method, Class, "
+                 "Interface, Struct, Enum, Trait, Impl, Namespace, Macro, Constant or Variable "
+                 "(Module/File/Folder/Package spans are excluded)",
+                 node.label ? node.label : "?");
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Absolute path of the node's file. */
+    cbm_project_t proj = {0};
+    char root_copy[CBM_SZ_1K] = {0};
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
+        !proj.root_path || proj.root_path[0] == '\0') {
+        cbm_project_free_fields(&proj);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
+                                   true);
+    }
+    snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
+    cbm_project_free_fields(&proj);
+
+    char abs_path[CBM_SZ_4K];
+    int pn = snprintf(abs_path, sizeof(abs_path), "%s/%s", root_copy,
+                      node.file_path ? node.file_path : "");
+    if (pn < 0 || (size_t)pn >= sizeof(abs_path)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result("file path too long", true);
+    }
+
+    /* Read the file and take its state token for the write-time guard. */
+    cbm_edit_file_state_t file_state = {0};
+    char *old_data = NULL;
+    size_t old_len = 0;
+    if (cbm_edit_file_stat(abs_path, &file_state) != CBM_EDIT_OK ||
+        cbm_edit_read_file(abs_path, &old_data, &old_len) != CBM_EDIT_OK) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg), "cannot read file: %s", abs_path);
+        free(old_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Staleness gate 1: the node's line range must exist in the file. */
+    int total_lines = cbm_edit_count_lines(old_data, old_len);
+    if (node.start_line < 1 || node.end_line > total_lines) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg),
+                 "stale index: node range %d-%d exceeds the file's %d lines — run "
+                 "index_repository, then retry",
+                 node.start_line, node.end_line, total_lines);
+        free(old_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Staleness gate 2: the line the node starts on must still mention the
+     * symbol name (cheap drift detector; force bypasses it). */
+    if (!force) {
+        size_t line_off = 0;
+        bool drift = true;
+        if (cbm_edit_line_offset(old_data, old_len, node.start_line, &line_off) == CBM_EDIT_OK) {
+            size_t line_end = line_off;
+            while (line_end < old_len && old_data[line_end] != '\n' &&
+                   (line_end - line_off) < (CBM_SZ_512 - 1)) {
+                line_end++;
+            }
+            char line_buf[CBM_SZ_512];
+            memcpy(line_buf, old_data + line_off, line_end - line_off);
+            line_buf[line_end - line_off] = '\0';
+            drift = !node.name || !strstr(line_buf, node.name);
+        }
+        if (drift) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "source drifted from index: line %d of %s no longer contains '%s' — run "
+                     "index_repository, then retry (or force=true to bypass)",
+                     node.start_line, node.file_path ? node.file_path : "?",
+                     node.name ? node.name : "?");
+            free(old_data);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(action_str);
+            free(content);
+            return cbm_mcp_text_result(msg, true);
+        }
+    }
+
+    /* Nested symbols inside the range: replace_body would destroy them. */
+    int nested = 0;
+    cbm_node_t *overlap = NULL;
+    int overlap_count = 0;
+    if (cbm_store_find_nodes_by_file_overlap(store, effective_project, node.file_path,
+                                             node.start_line, node.end_line, &overlap,
+                                             &overlap_count) == CBM_STORE_OK) {
+        for (int i = 0; i < overlap_count; i++) {
+            if (overlap[i].id != node.id) {
+                nested++;
+            }
+        }
+        cbm_store_free_nodes(overlap, overlap_count);
+    }
+    if (nested > 0 && action == CBM_EDIT_REPLACE_BODY && !force) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg),
+                 "replace_body would destroy %d nested symbol(s) defined inside %s:%d-%d — "
+                 "re-run with force=true to confirm",
+                 nested, node.file_path ? node.file_path : "?", node.start_line, node.end_line);
+        free(old_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Surgery (pure in-memory). */
+    char *new_data = NULL;
+    size_t new_len = 0;
+    cbm_edit_surgery_stats_t stats = {0};
+    int src = cbm_edit_surgery_apply(old_data, old_len, node.start_line, node.end_line, action,
+                                     content, strlen(content), &new_data, &new_len, &stats);
+    if (src != CBM_EDIT_OK) {
+        char msg[CBM_SZ_256];
+        snprintf(msg, sizeof(msg), "edit failed: surgery error %d", src);
+        free(old_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    if (dry_run) {
+        char *preview = cbm_edit_plan_preview(old_data, old_len, node.start_line, node.end_line,
+                                              action, content, strlen(content), 3, CBM_SZ_8K);
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        cbm_sb_append(&sb, "edit_symbol: DRY-RUN (no changes written)\n  symbol: ");
+        cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+        cbm_sb_append(&sb, " (");
+        cbm_sb_append(&sb, node.label ? node.label : "?");
+        cbm_sb_append(&sb, ")\n  file: ");
+        cbm_sb_append(&sb, node.file_path ? node.file_path : "?");
+        char num[CBM_SZ_256];
+        snprintf(num, sizeof(num), ":%d-%d\n  action: %s · +%d / -%d lines\n", node.start_line,
+                 node.end_line, cbm_edit_action_name(action), stats.lines_added,
+                 stats.lines_removed);
+        cbm_sb_append(&sb, num);
+        snprintf(num, sizeof(num), "  nested_symbols: %d%s\n", nested,
+                 nested > 0 && action == CBM_EDIT_REPLACE_BODY ? " (requires force=true)" : "");
+        cbm_sb_append(&sb, num);
+        cbm_sb_append(&sb, "  verification: range matches on-disk source\n  plan:\n");
+        cbm_sb_append(&sb, preview ? preview : "(preview unavailable)\n");
+        cbm_sb_append(&sb, "  to apply: re-run with dry_run=false\n");
+        free(preview);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "plan failed", !text);
+        free(text);
+        free(old_data);
+        free(new_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return res;
+    }
+
+    /* Apply: mutation lease + guarded atomic write. */
+    if (!mcp_project_mutation_begin(srv, effective_project)) {
+        free(old_data);
+        free(new_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result("edit blocked by another mutation for this project", true);
+    }
+    char backup_dir[CBM_SZ_4K];
+    const char *cache_dir = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    char backup_path[CBM_SZ_4K] = {0};
+    int wrc = cbm_edit_write_atomic(abs_path, new_data, new_len, &file_state, backup_dir,
+                                    backup_path, sizeof(backup_path));
+    mcp_project_mutation_end(srv, effective_project);
+    if (wrc == CBM_EDIT_ERR_MTIME) {
+        free(old_data);
+        free(new_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result(
+            "file changed on disk between read and write — nothing was written; re-run "
+            "edit_symbol to plan against the current file",
+            true);
+    }
+    if (wrc != CBM_EDIT_OK) {
+        free(old_data);
+        free(new_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(action_str);
+        free(content);
+        return cbm_mcp_text_result("write failed (filesystem error) — nothing was written", true);
+    }
+
+    /* Re-index through the existing index path (auto-routes to incremental),
+     * reusing the daemon/supervisor/mutation-lease machinery. */
+    char *esc_root = edit_json_escape(root_copy);
+    char *reindex_args = NULL;
+    char *reindex_result = NULL;
+    if (esc_root) {
+        size_t alen = strlen(esc_root) + 32;
+        reindex_args = malloc(alen);
+        if (reindex_args) {
+            snprintf(reindex_args, alen, "{\"repo_path\":\"%s\"}", esc_root);
+            reindex_result = handle_index_repository(srv, reindex_args);
+        }
+    }
+    bool reindex_ok = reindex_result && !strstr(reindex_result, "\"isError\":true");
+    free(esc_root);
+    free(reindex_args);
+    free(reindex_result);
+
+    cbm_sb_t sb;
+    cbm_sb_init(&sb);
+    cbm_sb_append(&sb, "edit_symbol: APPLIED\n  symbol: ");
+    cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+    cbm_sb_append(&sb, " (");
+    cbm_sb_append(&sb, node.label ? node.label : "?");
+    cbm_sb_append(&sb, ")\n  file: ");
+    cbm_sb_append(&sb, node.file_path ? node.file_path : "?");
+    char num[CBM_SZ_512];
+    snprintf(num, sizeof(num), ":%d-%d\n  action: %s · +%d / -%d lines\n", node.start_line,
+             node.end_line, cbm_edit_action_name(action), stats.lines_added, stats.lines_removed);
+    cbm_sb_append(&sb, num);
+    snprintf(num, sizeof(num), "  backup: %s\n", backup_path[0] ? backup_path : "(none)");
+    cbm_sb_append(&sb, num);
+    cbm_sb_append(&sb, reindex_ok
+                           ? "  reindex: incremental OK\n"
+                           : "  reindex: FAILED — run index_repository manually before relying "
+                             "on graph data for this file\n");
+    cbm_sb_append(&sb, "  verification: pre-write range check passed; mtime guard held\n");
+    char *text = cbm_sb_finish(&sb);
+    char *res = cbm_mcp_text_result(text ? text : "edit applied", !text);
+    free(text);
+    free(old_data);
+    free(new_data);
+    cbm_edit_free_node(&node);
+    free(qn);
+    free(project);
+    free(action_str);
+    free(content);
+    return res;
+}
+
+/* ── delete_symbol ──────────────────────────────────────────── */
+
+static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
+    char *qn = cbm_mcp_get_string_arg(args, "qualified_name");
+    char *project = get_project_arg(args);
+    bool dry_run = edit_bool_arg_default(args, "dry_run", true);
+    bool force = cbm_mcp_get_bool_arg(args, "force");
+
+    if (!qn) {
+        free(project);
+        return cbm_mcp_text_result("qualified_name is required", true);
+    }
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *_err = build_project_list_error("project not found or not indexed");
+        char *_res = cbm_mcp_text_result(_err, true);
+        free(_err);
+        free(qn);
+        free(project);
+        return _res;
+    }
+
+    char *not_indexed = verify_project_indexed(store, project);
+    if (not_indexed) {
+        free(qn);
+        free(project);
+        return not_indexed;
+    }
+
+    const char *effective_project = project ? project : srv->current_project;
+
+    cbm_node_t node = {0};
+    cbm_node_t *candidates = NULL;
+    int candidate_count = 0;
+    cbm_edit_resolve_status_t rstatus =
+        cbm_edit_resolve_symbol(store, effective_project, qn, &node, &candidates, &candidate_count);
+    if (rstatus == CBM_EDIT_RESOLVE_AMBIGUOUS) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        char hdr[CBM_SZ_256];
+        snprintf(hdr, sizeof(hdr), "symbol is ambiguous — %d matches; pass the exact "
+                                   "qualified_name:\n",
+                 candidate_count);
+        cbm_sb_append(&sb, hdr);
+        int shown = candidate_count < 10 ? candidate_count : 10;
+        for (int i = 0; i < shown; i++) {
+            char row[CBM_SZ_1K];
+            snprintf(row, sizeof(row), "  %s  (%s, %s:%d-%d)\n",
+                     candidates[i].qualified_name ? candidates[i].qualified_name : "?",
+                     candidates[i].label ? candidates[i].label : "?",
+                     candidates[i].file_path ? candidates[i].file_path : "?",
+                     candidates[i].start_line, candidates[i].end_line);
+            cbm_sb_append(&sb, row);
+        }
+        cbm_store_free_nodes(candidates, candidate_count);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "symbol is ambiguous", true);
+        free(text);
+        free(qn);
+        free(project);
+        return res;
+    }
+    if (rstatus != CBM_EDIT_RESOLVE_OK) {
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(
+            "symbol not found. Use search_graph(name_pattern=\"...\") first to discover "
+            "the exact qualified_name, then pass it to delete_symbol.",
+            true);
+    }
+
+    if (!cbm_edit_label_editable(node.label)) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "label '%s' is not deletable by delete_symbol — target a Function, Method, "
+                 "Class, Interface, Struct, Enum, Trait, Impl, Namespace, Macro, Constant or "
+                 "Variable (Module/File/Folder/Package spans are excluded)",
+                 node.label ? node.label : "?");
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Absolute path of the node's file. */
+    cbm_project_t proj = {0};
+    char root_copy[CBM_SZ_1K] = {0};
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
+        !proj.root_path || proj.root_path[0] == '\0') {
+        cbm_project_free_fields(&proj);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
+                                   true);
+    }
+    snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
+    cbm_project_free_fields(&proj);
+
+    char abs_path[CBM_SZ_4K];
+    int pn = snprintf(abs_path, sizeof(abs_path), "%s/%s", root_copy,
+                      node.file_path ? node.file_path : "");
+    if (pn < 0 || (size_t)pn >= sizeof(abs_path)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result("file path too long", true);
+    }
+
+    /* Nested symbols: deleting a container destroys them too. */
+    int nested = 0;
+    cbm_node_t *overlap = NULL;
+    int overlap_count = 0;
+    if (cbm_store_find_nodes_by_file_overlap(store, effective_project, node.file_path,
+                                             node.start_line, node.end_line, &overlap,
+                                             &overlap_count) == CBM_STORE_OK) {
+        for (int i = 0; i < overlap_count; i++) {
+            if (overlap[i].id != node.id) {
+                nested++;
+            }
+        }
+        cbm_store_free_nodes(overlap, overlap_count);
+    }
+    if (nested > 0 && !force) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg),
+                 "delete would also destroy %d nested symbol(s) defined inside %s:%d-%d — "
+                 "re-run with force=true to confirm",
+                 nested, node.file_path ? node.file_path : "?", node.start_line, node.end_line);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Usage check: direct inbound callers from the graph (CALLS/HTTP_CALLS/
+     * ASYNC_CALLS). in_deg is the exact total; the names list is capped. */
+    int in_deg = 0;
+    int out_deg = 0;
+    cbm_store_node_degree(store, node.id, &in_deg, &out_deg);
+    char **callers = NULL;
+    int caller_count = 0;
+    char **callees = NULL;
+    int callee_count = 0;
+    cbm_store_node_neighbor_names(store, node.id, 20, &callers, &caller_count, &callees,
+                                  &callee_count);
+
+    if (in_deg > 0 && !force) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        char hdr[CBM_SZ_512];
+        snprintf(hdr, sizeof(hdr),
+                 "delete_symbol: REFUSED — '%s' still has %d direct caller(s)%s:\n",
+                 node.name ? node.name : "?", in_deg,
+                 caller_count < in_deg ? " (showing first 20)" : "");
+        cbm_sb_append(&sb, hdr);
+        for (int i = 0; i < caller_count; i++) {
+            cbm_sb_append(&sb, "  ");
+            cbm_sb_append(&sb, callers[i] ? callers[i] : "?");
+            cbm_sb_append(&sb, "\n");
+        }
+        cbm_sb_append(&sb, "Remove the callers first, or re-run with force=true. Use "
+                           "trace_path(direction=\"inbound\", depth=5) for the full transitive "
+                           "caller tree before deciding.\n");
+        for (int i = 0; i < caller_count; i++) {
+            free(callers[i]);
+        }
+        free(callers);
+        for (int i = 0; i < callee_count; i++) {
+            free(callees[i]);
+        }
+        free(callees);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "delete refused: symbol has callers", true);
+        free(text);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return res;
+    }
+
+    /* Orphan candidates: callees whose sole inbound edge comes from the node
+     * being deleted — they become dead code after this delete. */
+    cbm_sb_t orphans;
+    cbm_sb_init(&orphans);
+    int orphan_count = 0;
+    for (int i = 0; i < callee_count && orphan_count < 10; i++) {
+        cbm_node_t cn = {0};
+        cbm_node_t *cn_cands = NULL;
+        int cn_count = 0;
+        if (cbm_edit_resolve_symbol(store, effective_project, callees[i], &cn, &cn_cands,
+                                    &cn_count) != CBM_EDIT_RESOLVE_OK) {
+            cbm_store_free_nodes(cn_cands, cn_count);
+            continue;
+        }
+        int ci = 0;
+        int co = 0;
+        cbm_store_node_degree(store, cn.id, &ci, &co);
+        if (ci <= 1 && cn.id != node.id) {
+            char row[CBM_SZ_512];
+            snprintf(row, sizeof(row), "  %s (%s:%d-%d)\n",
+                     cn.qualified_name ? cn.qualified_name : "?",
+                     cn.file_path ? cn.file_path : "?", cn.start_line, cn.end_line);
+            cbm_sb_append(&orphans, row);
+            orphan_count++;
+        }
+        cbm_edit_free_node(&cn);
+    }
+    for (int i = 0; i < caller_count; i++) {
+        free(callers[i]);
+    }
+    free(callers);
+    for (int i = 0; i < callee_count; i++) {
+        free(callees[i]);
+    }
+    free(callees);
+
+    /* Read the file and take its state token for the write-time guard. */
+    cbm_edit_file_state_t file_state = {0};
+    char *old_data = NULL;
+    size_t old_len = 0;
+    if (cbm_edit_file_stat(abs_path, &file_state) != CBM_EDIT_OK ||
+        cbm_edit_read_file(abs_path, &old_data, &old_len) != CBM_EDIT_OK) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg), "cannot read file: %s", abs_path);
+        free(old_data);
+        cbm_sb_free(&orphans);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Staleness gate 1: the node's line range must exist in the file. */
+    int total_lines = cbm_edit_count_lines(old_data, old_len);
+    if (node.start_line < 1 || node.end_line > total_lines) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg),
+                 "stale index: node range %d-%d exceeds the file's %d lines — run "
+                 "index_repository, then retry",
+                 node.start_line, node.end_line, total_lines);
+        free(old_data);
+        cbm_sb_free(&orphans);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Staleness gate 2: the line the node starts on must still mention the
+     * symbol name (force bypasses). */
+    if (!force) {
+        size_t line_off = 0;
+        bool drift = true;
+        if (cbm_edit_line_offset(old_data, old_len, node.start_line, &line_off) == CBM_EDIT_OK) {
+            size_t line_end = line_off;
+            while (line_end < old_len && old_data[line_end] != '\n' &&
+                   (line_end - line_off) < (CBM_SZ_512 - 1)) {
+                line_end++;
+            }
+            char line_buf[CBM_SZ_512];
+            memcpy(line_buf, old_data + line_off, line_end - line_off);
+            line_buf[line_end - line_off] = '\0';
+            drift = !node.name || !strstr(line_buf, node.name);
+        }
+        if (drift) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "source drifted from index: line %d of %s no longer contains '%s' — run "
+                     "index_repository, then retry (or force=true to bypass)",
+                     node.start_line, node.file_path ? node.file_path : "?",
+                     node.name ? node.name : "?");
+            free(old_data);
+            cbm_sb_free(&orphans);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            return cbm_mcp_text_result(msg, true);
+        }
+    }
+
+    /* Surgery: delete the range (pure in-memory). */
+    char *new_data = NULL;
+    size_t new_len = 0;
+    cbm_edit_surgery_stats_t stats = {0};
+    int src = cbm_edit_surgery_delete(old_data, old_len, node.start_line, node.end_line, &new_data,
+                                      &new_len, &stats);
+    if (src != CBM_EDIT_OK) {
+        char msg[CBM_SZ_256];
+        snprintf(msg, sizeof(msg), "delete failed: surgery error %d", src);
+        free(old_data);
+        cbm_sb_free(&orphans);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    if (dry_run) {
+        char *preview = cbm_edit_plan_preview(old_data, old_len, node.start_line, node.end_line,
+                                              CBM_EDIT_REPLACE_BODY, "", 0, 3, CBM_SZ_8K);
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        cbm_sb_append(&sb, "delete_symbol: DRY-RUN (no changes written)\n  symbol: ");
+        cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+        cbm_sb_append(&sb, " (");
+        cbm_sb_append(&sb, node.label ? node.label : "?");
+        cbm_sb_append(&sb, ")\n  file: ");
+        cbm_sb_append(&sb, node.file_path ? node.file_path : "?");
+        char num[CBM_SZ_512];
+        snprintf(num, sizeof(num), ":%d-%d\n  action: delete · -%d lines\n", node.start_line,
+                 node.end_line, stats.lines_removed);
+        cbm_sb_append(&sb, num);
+        snprintf(num, sizeof(num), "  nested_symbols: %d%s\n  callers: %d direct inbound\n",
+                 nested, nested > 0 ? " (also destroyed)" : "", in_deg);
+        cbm_sb_append(&sb, num);
+        if (orphan_count > 0) {
+            snprintf(num, sizeof(num),
+                     "  orphan_candidates: %d (become uncalled after this delete — review):\n",
+                     orphan_count);
+            cbm_sb_append(&sb, num);
+            char *orphan_text = cbm_sb_finish(&orphans);
+            cbm_sb_append(&sb, orphan_text ? orphan_text : "");
+            free(orphan_text);
+        } else {
+            cbm_sb_append(&sb, "  orphan_candidates: 0\n");
+            cbm_sb_free(&orphans);
+        }
+        cbm_sb_append(&sb, "  verification: range matches on-disk source\n  plan:\n");
+        cbm_sb_append(&sb, preview ? preview : "(preview unavailable)\n");
+        cbm_sb_append(&sb, "  to apply: re-run with dry_run=false\n");
+        free(preview);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "plan failed", !text);
+        free(text);
+        free(old_data);
+        free(new_data);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return res;
+    }
+
+    /* Apply: mutation lease + guarded atomic write. */
+    if (!mcp_project_mutation_begin(srv, effective_project)) {
+        free(old_data);
+        free(new_data);
+        cbm_sb_free(&orphans);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result("delete blocked by another mutation for this project", true);
+    }
+    char backup_dir[CBM_SZ_4K];
+    const char *cache_dir = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    char backup_path[CBM_SZ_4K] = {0};
+    int wrc = cbm_edit_write_atomic(abs_path, new_data, new_len, &file_state, backup_dir,
+                                    backup_path, sizeof(backup_path));
+    mcp_project_mutation_end(srv, effective_project);
+    if (wrc == CBM_EDIT_ERR_MTIME) {
+        free(old_data);
+        free(new_data);
+        cbm_sb_free(&orphans);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result(
+            "file changed on disk between read and write — nothing was written; re-run "
+            "delete_symbol to plan against the current file",
+            true);
+    }
+    if (wrc != CBM_EDIT_OK) {
+        free(old_data);
+        free(new_data);
+        cbm_sb_free(&orphans);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        return cbm_mcp_text_result("write failed (filesystem error) — nothing was written", true);
+    }
+
+    /* Re-index through the existing index path (auto-routes to incremental). */
+    char *esc_root = edit_json_escape(root_copy);
+    char *reindex_args = NULL;
+    char *reindex_result = NULL;
+    if (esc_root) {
+        size_t alen = strlen(esc_root) + 32;
+        reindex_args = malloc(alen);
+        if (reindex_args) {
+            snprintf(reindex_args, alen, "{\"repo_path\":\"%s\"}", esc_root);
+            reindex_result = handle_index_repository(srv, reindex_args);
+        }
+    }
+    bool reindex_ok = reindex_result && !strstr(reindex_result, "\"isError\":true");
+    free(esc_root);
+    free(reindex_args);
+    free(reindex_result);
+
+    cbm_sb_t sb;
+    cbm_sb_init(&sb);
+    cbm_sb_append(&sb, "delete_symbol: APPLIED\n  symbol: ");
+    cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+    cbm_sb_append(&sb, " (");
+    cbm_sb_append(&sb, node.label ? node.label : "?");
+    cbm_sb_append(&sb, ")\n  file: ");
+    cbm_sb_append(&sb, node.file_path ? node.file_path : "?");
+    char num[CBM_SZ_512];
+    snprintf(num, sizeof(num), ":%d-%d\n  action: delete · -%d lines\n", node.start_line,
+             node.end_line, stats.lines_removed);
+    cbm_sb_append(&sb, num);
+    snprintf(num, sizeof(num), "  backup: %s\n", backup_path[0] ? backup_path : "(none)");
+    cbm_sb_append(&sb, num);
+    cbm_sb_append(&sb, reindex_ok
+                           ? "  reindex: incremental OK\n"
+                           : "  reindex: FAILED — run index_repository manually before relying "
+                             "on graph data for this file\n");
+    if (orphan_count > 0) {
+        snprintf(num, sizeof(num),
+                 "  orphan_candidates: %d (now uncalled — review with trace_path):\n",
+                 orphan_count);
+        cbm_sb_append(&sb, num);
+        char *orphan_text = cbm_sb_finish(&orphans);
+        cbm_sb_append(&sb, orphan_text ? orphan_text : "");
+        free(orphan_text);
+    } else {
+        cbm_sb_free(&orphans);
+    }
+    cbm_sb_append(&sb, "  verification: pre-write range check passed; mtime guard held\n");
+    char *text = cbm_sb_finish(&sb);
+    char *res = cbm_mcp_text_result(text ? text : "delete applied", !text);
+    free(text);
+    free(old_data);
+    free(new_data);
+    cbm_edit_free_node(&node);
+    free(qn);
+    free(project);
+    return res;
+}
+
+/* ── rename_symbol ──────────────────────────────────────────── */
+
+enum {
+    RENAME_MAX_FILES_WITH_OCC = 512,
+    RENAME_OCC_CAP_PER_FILE = 4096,
+    RENAME_MAX_CALLER_RANGES = 128,
+    RENAME_PLAN_FILE_ROWS = 30,
+    RENAME_PLAN_SAMPLES = 10,
+    RENAME_MAX_FILE_BYTES = 8 * 1024 * 1024,
+};
+
+/* Confidence tiers for rename occurrences. */
+enum {
+    RENAME_TIER_HIGH = 0,  /* definition site or inside a graph-verified caller */
+    RENAME_TIER_REVIEW = 1, /* whole-identifier match without graph evidence */
+    RENAME_TIER_SKIP = 2,   /* comment/docstring-looking line */
+};
+
+typedef struct {
+    char *file; /* owned */
+    int start;
+    int end;
+} rename_range_t;
+
+typedef struct {
+    char *rel_path; /* owned */
+    char abs_path[CBM_SZ_4K];
+    char *data; /* owned file contents */
+    size_t len;
+    cbm_edit_file_state_t state;
+    cbm_edit_occurrence_t *occs; /* owned */
+    unsigned char *tiers;        /* owned, parallel to occs */
+    int count;
+    int applied;
+    int write_rc;
+} rename_file_ctx_t;
+
+static void rename_free_files(rename_file_ctx_t *files, int count) {
+    if (!files) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        free(files[i].rel_path);
+        free(files[i].data);
+        free(files[i].occs);
+        free(files[i].tiers);
+    }
+    free(files);
+}
+
+static void rename_free_ranges(rename_range_t *ranges, int count) {
+    if (!ranges) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        free(ranges[i].file);
+    }
+    free(ranges);
+}
+
+static const char *rename_tier_name(int tier) {
+    switch (tier) {
+    case RENAME_TIER_HIGH:
+        return "HIGH";
+    case RENAME_TIER_REVIEW:
+        return "REVIEW";
+    case RENAME_TIER_SKIP:
+        return "SKIP";
+    }
+    return "?";
+}
+
+static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
+    char *qn = cbm_mcp_get_string_arg(args, "qualified_name");
+    char *project = get_project_arg(args);
+    char *new_name = cbm_mcp_get_string_arg(args, "new_name");
+    char *scope = cbm_mcp_get_string_arg(args, "scope");
+    bool dry_run = edit_bool_arg_default(args, "dry_run", true);
+    bool force = cbm_mcp_get_bool_arg(args, "force");
+    bool include_comments = cbm_mcp_get_bool_arg(args, "include_comments");
+    int expected_counts = cbm_mcp_get_int_arg(args, "expected_counts", -1);
+
+    if (!qn || !new_name) {
+        free(qn);
+        free(project);
+        free(new_name);
+        free(scope);
+        return cbm_mcp_text_result("qualified_name and new_name are required", true);
+    }
+    if (!cbm_edit_is_valid_identifier(new_name)) {
+        free(qn);
+        free(project);
+        free(new_name);
+        free(scope);
+        return cbm_mcp_text_result(
+            "new_name must be a valid identifier ([A-Za-z_][A-Za-z0-9_]*)", true);
+    }
+    bool def_only = scope && strcmp(scope, "definition_only") == 0;
+    free(scope);
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *_err = build_project_list_error("project not found or not indexed");
+        char *_res = cbm_mcp_text_result(_err, true);
+        free(_err);
+        free(qn);
+        free(project);
+        free(new_name);
+        return _res;
+    }
+
+    char *not_indexed = verify_project_indexed(store, project);
+    if (not_indexed) {
+        free(qn);
+        free(project);
+        free(new_name);
+        return not_indexed;
+    }
+
+    const char *effective_project = project ? project : srv->current_project;
+
+    cbm_node_t node = {0};
+    cbm_node_t *candidates = NULL;
+    int candidate_count = 0;
+    cbm_edit_resolve_status_t rstatus =
+        cbm_edit_resolve_symbol(store, effective_project, qn, &node, &candidates, &candidate_count);
+    if (rstatus == CBM_EDIT_RESOLVE_AMBIGUOUS) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        char hdr[CBM_SZ_256];
+        snprintf(hdr, sizeof(hdr), "symbol is ambiguous — %d matches; pass the exact "
+                                   "qualified_name:\n",
+                 candidate_count);
+        cbm_sb_append(&sb, hdr);
+        int shown = candidate_count < 10 ? candidate_count : 10;
+        for (int i = 0; i < shown; i++) {
+            char row[CBM_SZ_1K];
+            snprintf(row, sizeof(row), "  %s  (%s, %s:%d-%d)\n",
+                     candidates[i].qualified_name ? candidates[i].qualified_name : "?",
+                     candidates[i].label ? candidates[i].label : "?",
+                     candidates[i].file_path ? candidates[i].file_path : "?",
+                     candidates[i].start_line, candidates[i].end_line);
+            cbm_sb_append(&sb, row);
+        }
+        cbm_store_free_nodes(candidates, candidate_count);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "symbol is ambiguous", true);
+        free(text);
+        free(qn);
+        free(project);
+        free(new_name);
+        return res;
+    }
+    if (rstatus != CBM_EDIT_RESOLVE_OK) {
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result(
+            "symbol not found. Use search_graph(name_pattern=\"...\") first to discover "
+            "the exact qualified_name, then pass it to rename_symbol.",
+            true);
+    }
+
+    if (!cbm_edit_label_editable(node.label)) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "label '%s' is not renameable by rename_symbol — target a Function, Method, "
+                 "Class, Interface, Struct, Enum, Trait, Impl, Namespace, Macro, Constant or "
+                 "Variable",
+                 node.label ? node.label : "?");
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    const char *old_name = node.name;
+    if (!old_name || !cbm_edit_is_valid_identifier(old_name)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result(
+            "symbol name is not a plain identifier — rename_symbol only handles plain "
+            "identifier names",
+            true);
+    }
+    if (strcmp(old_name, new_name) == 0) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result("new_name equals the current name — nothing to do", true);
+    }
+
+    /* New qualified name: replace the last dotted segment. */
+    char new_qn[CBM_SZ_1K];
+    {
+        const char *qn_str = node.qualified_name ? node.qualified_name : "";
+        const char *last_dot = strrchr(qn_str, '.');
+        int nn;
+        if (last_dot) {
+            nn = snprintf(new_qn, sizeof(new_qn), "%.*s.%s", (int)(last_dot - qn_str), qn_str,
+                          new_name);
+        } else {
+            nn = snprintf(new_qn, sizeof(new_qn), "%s", new_name);
+        }
+        if (nn < 0 || (size_t)nn >= sizeof(new_qn)) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(new_name);
+            return cbm_mcp_text_result("qualified name too long", true);
+        }
+    }
+
+    /* Collision gate: the target name must not already exist at that qn. */
+    {
+        cbm_node_t collision = {0};
+        if (cbm_store_find_node_by_qn(store, effective_project, new_qn, &collision) ==
+            CBM_STORE_OK) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "rename refused: a symbol already exists at %s (%s, %s:%d-%d) — choose a "
+                     "different new_name",
+                     new_qn, collision.label ? collision.label : "?",
+                     collision.file_path ? collision.file_path : "?", collision.start_line,
+                     collision.end_line);
+            cbm_edit_free_node(&collision);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(new_name);
+            return cbm_mcp_text_result(msg, true);
+        }
+    }
+
+    /* Project root. */
+    cbm_project_t proj = {0};
+    char root_copy[CBM_SZ_1K] = {0};
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
+        !proj.root_path || proj.root_path[0] == '\0') {
+        cbm_project_free_fields(&proj);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
+                                   true);
+    }
+    snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
+    cbm_project_free_fields(&proj);
+
+    /* Caller ranges for the HIGH tier: occurrences inside a graph-verified
+     * caller's body are real call sites. */
+    rename_range_t *ranges = calloc(RENAME_MAX_CALLER_RANGES, sizeof(*ranges));
+    int range_count = 0;
+    {
+        char **callers = NULL;
+        int caller_count = 0;
+        char **callees = NULL;
+        int callee_count = 0;
+        cbm_store_node_neighbor_names(store, node.id, 200, &callers, &caller_count, &callees,
+                                      &callee_count);
+        for (int i = 0; i < callee_count; i++) {
+            free(callees[i]);
+        }
+        free(callees);
+        if (ranges) {
+            for (int i = 0; i < caller_count && range_count < RENAME_MAX_CALLER_RANGES; i++) {
+                cbm_node_t cn = {0};
+                cbm_node_t *cn_cands = NULL;
+                int cn_count = 0;
+                if (cbm_edit_resolve_symbol(store, effective_project, callers[i], &cn, &cn_cands,
+                                            &cn_count) != CBM_EDIT_RESOLVE_OK) {
+                    cbm_store_free_nodes(cn_cands, cn_count);
+                    continue;
+                }
+                if (cn.file_path) {
+                    ranges[range_count].file = strdup(cn.file_path);
+                    if (ranges[range_count].file) {
+                        ranges[range_count].start = cn.start_line;
+                        ranges[range_count].end = cn.end_line;
+                        range_count++;
+                    }
+                }
+                cbm_edit_free_node(&cn);
+            }
+        }
+        for (int i = 0; i < caller_count; i++) {
+            free(callers[i]);
+        }
+        free(callers);
+    }
+
+    /* File list to sweep. */
+    char **sweep_files = NULL;
+    int sweep_count = 0;
+    char *def_file_owned = NULL;
+    if (def_only) {
+        def_file_owned = strdup(node.file_path ? node.file_path : "");
+        if (def_file_owned) {
+            sweep_files = &def_file_owned;
+            sweep_count = 1;
+        }
+    } else {
+        if (cbm_store_list_files(store, effective_project, &sweep_files, &sweep_count) !=
+            CBM_STORE_OK) {
+            sweep_files = NULL;
+            sweep_count = 0;
+        }
+    }
+    if (sweep_count == 0) {
+        rename_free_ranges(ranges, range_count);
+        free(def_file_owned);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result("no files to sweep for this project", true);
+    }
+
+    /* Sweep: whole-identifier occurrences per file, classified into tiers. */
+    rename_file_ctx_t *files = calloc(RENAME_MAX_FILES_WITH_OCC, sizeof(*files));
+    int file_ctx_count = 0;
+    int skipped_large = 0;
+    int unreadable = 0;
+    bool sweep_truncated = false;
+    int total_occ = 0;
+    int tier_counts[3] = {0, 0, 0};
+    if (!files) {
+        rename_free_ranges(ranges, range_count);
+        if (!def_only) {
+            for (int i = 0; i < sweep_count; i++) {
+                free(sweep_files[i]);
+            }
+            free(sweep_files);
+        }
+        free(def_file_owned);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result("out of memory", true);
+    }
+
+    int fi = 0;
+    for (fi = 0; fi < sweep_count && file_ctx_count < RENAME_MAX_FILES_WITH_OCC; fi++) {
+        const char *rel = sweep_files[fi];
+        char abs_path[CBM_SZ_4K];
+        int pn = snprintf(abs_path, sizeof(abs_path), "%s/%s", root_copy, rel);
+        if (pn < 0 || (size_t)pn >= sizeof(abs_path)) {
+            continue;
+        }
+        cbm_edit_file_state_t st = {0};
+        if (cbm_edit_file_stat(abs_path, &st) != CBM_EDIT_OK) {
+            unreadable++;
+            continue;
+        }
+        if (st.size > RENAME_MAX_FILE_BYTES) {
+            skipped_large++;
+            continue;
+        }
+        char *data = NULL;
+        size_t len = 0;
+        if (cbm_edit_read_file(abs_path, &data, &len) != CBM_EDIT_OK) {
+            unreadable++;
+            continue;
+        }
+        cbm_edit_occurrence_t *occs = NULL;
+        int occ_count = 0;
+        if (cbm_edit_scan_identifier(data, len, old_name, &occs, &occ_count,
+                                     RENAME_OCC_CAP_PER_FILE) != CBM_EDIT_OK ||
+            occ_count == 0) {
+            free(occs);
+            free(data);
+            continue;
+        }
+
+        rename_file_ctx_t *rec = &files[file_ctx_count];
+        rec->rel_path = strdup(rel);
+        rec->data = data;
+        rec->len = len;
+        rec->state = st;
+        rec->occs = occs;
+        rec->count = occ_count;
+        rec->tiers = malloc((size_t)occ_count);
+        snprintf(rec->abs_path, sizeof(rec->abs_path), "%s", abs_path);
+        if (!rec->rel_path || !rec->tiers) {
+            free(rec->rel_path);
+            free(rec->tiers);
+            free(rec->occs);
+            free(rec->data);
+            memset(rec, 0, sizeof(*rec));
+            continue;
+        }
+
+        bool is_def_file = node.file_path && strcmp(rel, node.file_path) == 0;
+        for (int oi = 0; oi < occ_count; oi++) {
+            int line = occs[oi].line;
+            int tier = RENAME_TIER_REVIEW;
+            if (is_def_file && line >= node.start_line && line <= node.end_line) {
+                tier = RENAME_TIER_HIGH; /* the definition itself */
+            } else {
+                bool in_caller = false;
+                for (int ri = 0; ri < range_count; ri++) {
+                    if (strcmp(rel, ranges[ri].file) == 0 && line >= ranges[ri].start &&
+                        line <= ranges[ri].end) {
+                        in_caller = true;
+                        break;
+                    }
+                }
+                if (in_caller) {
+                    tier = RENAME_TIER_HIGH;
+                } else {
+                    size_t lo = 0;
+                    if (cbm_edit_line_offset(data, len, line, &lo) == CBM_EDIT_OK &&
+                        cbm_edit_line_looks_like_comment(data, len, lo)) {
+                        tier = RENAME_TIER_SKIP;
+                    }
+                }
+            }
+            rec->tiers[oi] = (unsigned char)tier;
+            tier_counts[tier]++;
+        }
+        total_occ += occ_count;
+        file_ctx_count++;
+    }
+    if (fi < sweep_count) {
+        sweep_truncated = true;
+    }
+    if (!def_only) {
+        for (int i = 0; i < sweep_count; i++) {
+            free(sweep_files[i]);
+        }
+        free(sweep_files);
+    }
+    free(def_file_owned);
+    rename_free_ranges(ranges, range_count);
+
+    if (total_occ == 0) {
+        rename_free_files(files, file_ctx_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result(
+            "no whole-identifier occurrences of the symbol name found in indexed files — "
+            "nothing to rename",
+            true);
+    }
+
+    /* expected_counts assertion: protects against applying a stale plan. */
+    if (expected_counts >= 0 && expected_counts != total_occ) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "expected_counts mismatch: you asserted %d but the sweep found %d occurrences "
+                 "— the codebase changed since your plan; re-run rename_symbol for a fresh plan",
+                 expected_counts, total_occ);
+        rename_free_files(files, file_ctx_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    int will_apply = tier_counts[RENAME_TIER_HIGH] +
+                     (force ? tier_counts[RENAME_TIER_REVIEW] : 0) +
+                     (include_comments ? tier_counts[RENAME_TIER_SKIP] : 0);
+
+    if (dry_run) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        cbm_sb_append(&sb, "rename_symbol: DRY-RUN (no changes written)\n  symbol: ");
+        cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+        cbm_sb_append(&sb, " → ");
+        cbm_sb_append(&sb, new_name);
+        char num[CBM_SZ_512];
+        snprintf(num, sizeof(num),
+                 "\n  occurrences: %d total (HIGH %d, REVIEW %d, SKIP %d) across %d files%s\n",
+                 total_occ, tier_counts[RENAME_TIER_HIGH], tier_counts[RENAME_TIER_REVIEW],
+                 tier_counts[RENAME_TIER_SKIP], file_ctx_count,
+                 sweep_truncated ? " (file cap reached — sweep truncated)" : "");
+        cbm_sb_append(&sb, num);
+        if (skipped_large > 0 || unreadable > 0) {
+            snprintf(num, sizeof(num), "  files not swept: %d too large, %d unreadable\n",
+                     skipped_large, unreadable);
+            cbm_sb_append(&sb, num);
+        }
+        cbm_sb_append(&sb, "  per-file (HIGH/REVIEW/SKIP):\n");
+        int rows = file_ctx_count < RENAME_PLAN_FILE_ROWS ? file_ctx_count
+                                                          : RENAME_PLAN_FILE_ROWS;
+        for (int i = 0; i < rows; i++) {
+            int h = 0, r = 0, s = 0;
+            for (int oi = 0; oi < files[i].count; oi++) {
+                if (files[i].tiers[oi] == RENAME_TIER_HIGH) {
+                    h++;
+                } else if (files[i].tiers[oi] == RENAME_TIER_REVIEW) {
+                    r++;
+                } else {
+                    s++;
+                }
+            }
+            snprintf(num, sizeof(num), "    %s: %d/%d/%d\n", files[i].rel_path, h, r, s);
+            cbm_sb_append(&sb, num);
+        }
+        if (file_ctx_count > rows) {
+            snprintf(num, sizeof(num), "    ... and %d more files\n", file_ctx_count - rows);
+            cbm_sb_append(&sb, num);
+        }
+        /* Sample occurrences with tier labels. */
+        cbm_sb_append(&sb, "  samples:\n");
+        int samples = 0;
+        for (int i = 0; i < file_ctx_count && samples < RENAME_PLAN_SAMPLES; i++) {
+            for (int oi = 0; oi < files[i].count && samples < RENAME_PLAN_SAMPLES; oi++) {
+                size_t lo = 0;
+                char line_buf[121];
+                line_buf[0] = '\0';
+                if (cbm_edit_line_offset(files[i].data, files[i].len, files[i].occs[oi].line,
+                                         &lo) == CBM_EDIT_OK) {
+                    size_t le = lo;
+                    while (le < files[i].len && files[i].data[le] != '\n' &&
+                           (le - lo) < 120) {
+                        le++;
+                    }
+                    memcpy(line_buf, files[i].data + lo, le - lo);
+                    line_buf[le - lo] = '\0';
+                }
+                snprintf(num, sizeof(num), "    %s:%d [%s] %s\n", files[i].rel_path,
+                         files[i].occs[oi].line, rename_tier_name(files[i].tiers[oi]),
+                         line_buf);
+                cbm_sb_append(&sb, num);
+                samples++;
+            }
+        }
+        snprintf(num, sizeof(num), "  will_apply: %d occurrence(s) (HIGH%s%s)\n", will_apply,
+                 force ? " + REVIEW" : "",
+                 include_comments ? " + SKIP" : "");
+        cbm_sb_append(&sb, num);
+        if (tier_counts[RENAME_TIER_REVIEW] > 0 && !force) {
+            snprintf(num, sizeof(num),
+                     "  note: %d REVIEW occurrence(s) have no graph evidence (possible dynamic "
+                     "dispatch, string lookup, or missed resolution) — inspect them, then "
+                     "re-run with force=true to include, or leave them for manual edit\n",
+                     tier_counts[RENAME_TIER_REVIEW]);
+            cbm_sb_append(&sb, num);
+        }
+        cbm_sb_append(&sb, "  to apply: re-run with dry_run=false (optionally with "
+                           "expected_counts=");
+        snprintf(num, sizeof(num), "%d to pin this plan)\n", total_occ);
+        cbm_sb_append(&sb, num);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "plan failed", !text);
+        free(text);
+        rename_free_files(files, file_ctx_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return res;
+    }
+
+    /* Drift gate on the definition file (force bypasses). */
+    if (!force) {
+        bool drift = true;
+        for (int i = 0; i < file_ctx_count; i++) {
+            if (node.file_path && strcmp(files[i].rel_path, node.file_path) == 0) {
+                size_t lo = 0;
+                if (cbm_edit_line_offset(files[i].data, files[i].len, node.start_line, &lo) ==
+                    CBM_EDIT_OK) {
+                    size_t le = lo;
+                    while (le < files[i].len && files[i].data[le] != '\n' &&
+                           (le - lo) < (CBM_SZ_512 - 1)) {
+                        le++;
+                    }
+                    char line_buf[CBM_SZ_512];
+                    memcpy(line_buf, files[i].data + lo, le - lo);
+                    line_buf[le - lo] = '\0';
+                    drift = !strstr(line_buf, old_name);
+                }
+                break;
+            }
+        }
+        if (drift) {
+            rename_free_files(files, file_ctx_count);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(new_name);
+            return cbm_mcp_text_result(
+                "source drifted from index: the definition line no longer contains the symbol "
+                "name — run index_repository, then retry (or force=true to bypass)",
+                true);
+        }
+    }
+
+    /* Apply: one lease for the whole multi-file write, released before the
+     * re-index (which takes its own lease). */
+    if (!mcp_project_mutation_begin(srv, effective_project)) {
+        rename_free_files(files, file_ctx_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(new_name);
+        return cbm_mcp_text_result("rename blocked by another mutation for this project", true);
+    }
+    char backup_dir[CBM_SZ_4K];
+    const char *cache_dir = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    int files_written = 0;
+    int files_failed = 0;
+    int total_applied = 0;
+    for (int i = 0; i < file_ctx_count; i++) {
+        rename_file_ctx_t *rec = &files[i];
+        bool *mask = calloc((size_t)rec->count, sizeof(bool));
+        if (!mask) {
+            rec->write_rc = CBM_EDIT_ERR_OOM;
+            files_failed++;
+            continue;
+        }
+        int apply_n = 0;
+        for (int oi = 0; oi < rec->count; oi++) {
+            int tier = rec->tiers[oi];
+            bool take = tier == RENAME_TIER_HIGH ||
+                        (tier == RENAME_TIER_REVIEW && force) ||
+                        (tier == RENAME_TIER_SKIP && include_comments);
+            mask[oi] = take;
+            if (take) {
+                apply_n++;
+            }
+        }
+        if (apply_n == 0) {
+            free(mask);
+            rec->write_rc = CBM_EDIT_OK;
+            continue;
+        }
+        char *new_data = NULL;
+        size_t new_len = 0;
+        int rrc = cbm_edit_rename_in_buffer(rec->data, rec->len, old_name, new_name, rec->occs,
+                                            mask, rec->count, &new_data, &new_len);
+        free(mask);
+        if (rrc != CBM_EDIT_OK) {
+            rec->write_rc = rrc;
+            files_failed++;
+            continue;
+        }
+        char backup_path[CBM_SZ_4K] = {0};
+        rec->write_rc = cbm_edit_write_atomic(rec->abs_path, new_data, new_len, &rec->state,
+                                              backup_dir, backup_path, sizeof(backup_path));
+        free(new_data);
+        if (rec->write_rc == CBM_EDIT_OK) {
+            rec->applied = apply_n;
+            total_applied += apply_n;
+            files_written++;
+        } else {
+            files_failed++;
+        }
+    }
+    mcp_project_mutation_end(srv, effective_project);
+
+    /* Re-index through the existing index path (auto-routes to incremental). */
+    char *esc_root = edit_json_escape(root_copy);
+    char *reindex_args = NULL;
+    char *reindex_result = NULL;
+    if (esc_root) {
+        size_t alen = strlen(esc_root) + 32;
+        reindex_args = malloc(alen);
+        if (reindex_args) {
+            snprintf(reindex_args, alen, "{\"repo_path\":\"%s\"}", esc_root);
+            reindex_result = handle_index_repository(srv, reindex_args);
+        }
+    }
+    bool reindex_ok = reindex_result && !strstr(reindex_result, "\"isError\":true");
+    free(esc_root);
+    free(reindex_args);
+    free(reindex_result);
+
+    /* Post-reindex verification loop:
+     *  1. the new symbol resolves in the freshly re-indexed graph;
+     *  2. an old-name re-sweep of the written files shows only the
+     *     occurrences we deliberately did not apply. */
+    bool new_resolves = false;
+    {
+        cbm_store_t *fresh = compare_open_project_store(effective_project);
+        if (fresh) {
+            cbm_node_t nn = {0};
+            if (cbm_store_find_node_by_qn(fresh, effective_project, new_qn, &nn) ==
+                CBM_STORE_OK) {
+                new_resolves = true;
+                cbm_edit_free_node(&nn);
+            }
+            cbm_store_close(fresh);
+        }
+    }
+    int remaining_old = 0;
+    for (int i = 0; i < file_ctx_count; i++) {
+        if (files[i].write_rc != CBM_EDIT_OK || files[i].applied == 0) {
+            continue;
+        }
+        char *data = NULL;
+        size_t len = 0;
+        if (cbm_edit_read_file(files[i].abs_path, &data, &len) == CBM_EDIT_OK) {
+            cbm_edit_occurrence_t *occs = NULL;
+            int occ_count = 0;
+            if (cbm_edit_scan_identifier(data, len, old_name, &occs, &occ_count,
+                                         RENAME_OCC_CAP_PER_FILE) == CBM_EDIT_OK) {
+                remaining_old += occ_count;
+            }
+            free(occs);
+            free(data);
+        }
+    }
+
+    cbm_sb_t sb;
+    cbm_sb_init(&sb);
+    cbm_sb_append(&sb, "rename_symbol: APPLIED\n  symbol: ");
+    cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+    cbm_sb_append(&sb, " → ");
+    cbm_sb_append(&sb, new_name);
+    char num[CBM_SZ_512];
+    snprintf(num, sizeof(num), "\n  renamed: %d occurrence(s) across %d file(s)\n",
+             total_applied, files_written);
+    cbm_sb_append(&sb, num);
+    if (files_failed > 0) {
+        snprintf(num, sizeof(num),
+                 "  WARNING: %d file(s) failed to write (mtime conflict or IO error) — their "
+                 "occurrences were NOT renamed; re-run rename_symbol to retry\n",
+                 files_failed);
+        cbm_sb_append(&sb, num);
+    }
+    snprintf(num, sizeof(num), "  not_applied: %d REVIEW%s, %d SKIP%s\n",
+             force ? 0 : tier_counts[RENAME_TIER_REVIEW], force ? " (force)" : "",
+             include_comments ? 0 : tier_counts[RENAME_TIER_SKIP],
+             include_comments ? " (include_comments)" : "");
+    cbm_sb_append(&sb, num);
+    snprintf(num, sizeof(num), "  backups: %s (per file, before any write)\n", backup_dir);
+    cbm_sb_append(&sb, num);
+    cbm_sb_append(&sb, reindex_ok
+                           ? "  reindex: incremental OK\n"
+                           : "  reindex: FAILED — run index_repository manually before relying "
+                             "on graph data\n");
+    snprintf(num, sizeof(num), "  verification: new symbol %s in re-indexed graph; %d old-name "
+                               "occurrence(s) remain on disk (the unapplied tiers above)\n",
+             new_resolves ? "resolves" : "DOES NOT RESOLVE — investigate", remaining_old);
+    cbm_sb_append(&sb, num);
+    char *text = cbm_sb_finish(&sb);
+    char *res = cbm_mcp_text_result(text ? text : "rename applied", !text);
+    free(text);
+    rename_free_files(files, file_ctx_count);
+    cbm_edit_free_node(&node);
+    free(qn);
+    free(project);
+    free(new_name);
+    return res;
+}
+
+/* ── undo_edit ───────────────────────────────────────────────── */
+
+static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
+    char *path = cbm_mcp_get_string_arg(args, "path");
+    char *project = get_project_arg(args);
+    bool dry_run = edit_bool_arg_default(args, "dry_run", true);
+
+    if (!path) {
+        free(project);
+        return cbm_mcp_text_result("path is required (project-relative, e.g. "
+                                   "\"src/foo.c\")",
+                                   true);
+    }
+
+    /* The path is user-supplied (not graph-verified like the symbol tools), so
+     * pin it to the project root: no absolute paths, no drive letters, no
+     * '..' components. */
+    if (path[0] == '/' || path[0] == '\\' || strchr(path, ':') != NULL ||
+        strncmp(path, "..", 2) == 0 || strstr(path, "/../") != NULL ||
+        strstr(path, "/..\\") != NULL || strstr(path, "\\..\\") != NULL ||
+        strstr(path, "\\../") != NULL ||
+        (strstr(path, "/..") != NULL && strstr(path, "/..")[3] == '\0') ||
+        (strstr(path, "\\..") != NULL && strstr(path, "\\..")[3] == '\0')) {
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("path must be a project-relative path without '..'",
+                                   true);
+    }
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *_err = build_project_list_error("project not found or not indexed");
+        char *_res = cbm_mcp_text_result(_err, true);
+        free(_err);
+        free(path);
+        free(project);
+        return _res;
+    }
+
+    char *not_indexed = verify_project_indexed(store, project);
+    if (not_indexed) {
+        free(path);
+        free(project);
+        return not_indexed;
+    }
+
+    const char *effective_project = project ? project : srv->current_project;
+
+    cbm_project_t proj = {0};
+    char root_copy[CBM_SZ_1K] = {0};
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
+        !proj.root_path || proj.root_path[0] == '\0') {
+        cbm_project_free_fields(&proj);
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
+                                   true);
+    }
+    snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
+    cbm_project_free_fields(&proj);
+
+    char abs_path[CBM_SZ_4K];
+    int pn = snprintf(abs_path, sizeof(abs_path), "%s/%s", root_copy, path);
+    if (pn < 0 || (size_t)pn >= sizeof(abs_path)) {
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("file path too long", true);
+    }
+
+    /* Basename — backup files are named bk_<epoch>_<pid>_<basename>. */
+    const char *base = abs_path;
+    for (const char *p = abs_path; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    }
+
+    char backup_dir[CBM_SZ_4K];
+    const char *cache_dir = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+
+    char backup_path[CBM_SZ_4K] = {0};
+    int brc = cbm_edit_latest_backup(backup_dir, base, backup_path, sizeof(backup_path));
+    if (brc == CBM_EDIT_ERR_RANGE) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg),
+                 "no backup found for '%s' — nothing to undo. Backups are created by "
+                 "edit_symbol / delete_symbol / rename_symbol writes; this file was never "
+                 "written through them (or backups were cleaned).",
+                 path);
+        free(path);
+        free(project);
+        return cbm_mcp_text_result(msg, true);
+    }
+    if (brc != CBM_EDIT_OK) {
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("cannot read the backup directory", true);
+    }
+
+    /* Current on-disk state (may be missing if the file was deleted after the
+     * edit — the restore still works). */
+    cbm_edit_file_state_t cur_state = {0};
+    bool cur_exists = cbm_edit_file_stat(abs_path, &cur_state) == CBM_EDIT_OK;
+    int cur_lines = 0;
+    if (cur_exists) {
+        char *cur_data = NULL;
+        size_t cur_len = 0;
+        if (cbm_edit_read_file(abs_path, &cur_data, &cur_len) == CBM_EDIT_OK) {
+            cur_lines = cbm_edit_count_lines(cur_data, cur_len);
+        }
+        free(cur_data);
+    }
+
+    char *backup_data = NULL;
+    size_t backup_len = 0;
+    if (cbm_edit_read_file(backup_path, &backup_data, &backup_len) != CBM_EDIT_OK) {
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("backup file unreadable — restore aborted", true);
+    }
+    int backup_lines = cbm_edit_count_lines(backup_data, backup_len);
+
+    if (dry_run) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        cbm_sb_append(&sb, "undo_edit: DRY-RUN (no changes written)\n  file: ");
+        cbm_sb_append(&sb, path);
+        char num[CBM_SZ_512];
+        if (cur_exists) {
+            snprintf(num, sizeof(num), "\n  current on disk: %lld bytes, %d lines",
+                     (long long)cur_state.size, cur_lines);
+        } else {
+            snprintf(num, sizeof(num), "\n  current on disk: (file is missing)");
+        }
+        cbm_sb_append(&sb, num);
+        snprintf(num, sizeof(num), "\n  restore from: %s\n  backup content: %zu bytes, %d "
+                                   "lines\n",
+                 backup_path, backup_len, backup_lines);
+        cbm_sb_append(&sb, num);
+        cbm_sb_append(&sb, "  safety: the current content is itself backed up before the "
+                           "restore, so the undo is undoable\n");
+        cbm_sb_append(&sb, "  to apply: re-run with dry_run=false\n");
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "plan failed", !text);
+        free(text);
+        free(backup_data);
+        free(path);
+        free(project);
+        return res;
+    }
+
+    /* Apply: mutation lease + atomic restore. expected=NULL on purpose — the
+     * undo intentionally supersedes whatever is on disk; the pre-restore
+     * content is preserved by write_atomic's own backup. */
+    if (!mcp_project_mutation_begin(srv, effective_project)) {
+        free(backup_data);
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("undo blocked by another mutation for this project", true);
+    }
+    char safety_backup[CBM_SZ_4K] = {0};
+    int wrc = CBM_EDIT_ERR_IO;
+    if (cur_exists) {
+        wrc = cbm_edit_write_atomic(abs_path, backup_data, backup_len, NULL, backup_dir,
+                                    safety_backup, sizeof(safety_backup));
+    } else {
+        /* File is gone: write the backup content directly (write_atomic's
+         * expected-check would fail on the missing file). */
+        FILE *fp = cbm_fopen(abs_path, "wb");
+        if (fp) {
+            size_t written = fwrite(backup_data, 1, backup_len, fp);
+            wrc = (written == backup_len && fclose(fp) == 0) ? CBM_EDIT_OK : CBM_EDIT_ERR_IO;
+        }
+    }
+    mcp_project_mutation_end(srv, effective_project);
+    if (wrc != CBM_EDIT_OK) {
+        free(backup_data);
+        free(path);
+        free(project);
+        return cbm_mcp_text_result("restore failed (filesystem error) — nothing was written",
+                                   true);
+    }
+
+    /* Post-verify: the file on disk must now equal the backup content. */
+    char *verify_data = NULL;
+    size_t verify_len = 0;
+    bool verified = cbm_edit_read_file(abs_path, &verify_data, &verify_len) == CBM_EDIT_OK &&
+                    verify_len == backup_len && memcmp(verify_data, backup_data, backup_len) == 0;
+    free(verify_data);
+
+    /* Re-index so the graph reflects the restored source. */
+    char *esc_root = edit_json_escape(root_copy);
+    char *reindex_args = NULL;
+    char *reindex_result = NULL;
+    if (esc_root) {
+        size_t alen = strlen(esc_root) + 32;
+        reindex_args = malloc(alen);
+        if (reindex_args) {
+            snprintf(reindex_args, alen, "{\"repo_path\":\"%s\"}", esc_root);
+            reindex_result = handle_index_repository(srv, reindex_args);
+        }
+    }
+    bool reindex_ok = reindex_result && !strstr(reindex_result, "\"isError\":true");
+    free(esc_root);
+    free(reindex_args);
+    free(reindex_result);
+
+    cbm_sb_t sb;
+    cbm_sb_init(&sb);
+    cbm_sb_append(&sb, "undo_edit: APPLIED\n  file: ");
+    cbm_sb_append(&sb, path);
+    char num[CBM_SZ_512];
+    snprintf(num, sizeof(num), "\n  restored from: %s (%zu bytes, %d lines)\n", backup_path,
+             backup_len, backup_lines);
+    cbm_sb_append(&sb, num);
+    if (safety_backup[0]) {
+        snprintf(num, sizeof(num), "  pre-undo content backed up to: %s\n", safety_backup);
+        cbm_sb_append(&sb, num);
+    }
+    cbm_sb_append(&sb, reindex_ok
+                           ? "  reindex: incremental OK\n"
+                           : "  reindex: FAILED — run index_repository manually before relying "
+                             "on graph data for this file\n");
+    cbm_sb_append(&sb, verified ? "  verification: on-disk content matches the backup exactly\n"
+                                : "  verification: FAILED — file content differs from the "
+                                  "backup; inspect manually\n");
+    char *text = cbm_sb_finish(&sb);
+    char *res = cbm_mcp_text_result(text ? text : "undo applied", !text);
+    free(text);
+    free(backup_data);
+    free(path);
+    free(project);
+    return res;
+}
+
 /* ── search_code v2: graph-augmented code search ─────────────── */
 
 /* Intermediate grep match */
@@ -13935,6 +15873,18 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
     }
     if (strcmp(tool_name, "get_code_snippet") == 0) {
         return handle_get_code_snippet(srv, args_json);
+    }
+    if (strcmp(tool_name, "edit_symbol") == 0) {
+        return handle_edit_symbol(srv, args_json);
+    }
+    if (strcmp(tool_name, "delete_symbol") == 0) {
+        return handle_delete_symbol(srv, args_json);
+    }
+    if (strcmp(tool_name, "rename_symbol") == 0) {
+        return handle_rename_symbol(srv, args_json);
+    }
+    if (strcmp(tool_name, "undo_edit") == 0) {
+        return handle_undo_edit(srv, args_json);
     }
     if (strcmp(tool_name, "search_code") == 0) {
         return handle_search_code(srv, args_json);
