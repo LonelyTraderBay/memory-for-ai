@@ -1,6 +1,6 @@
 # Agent operating guide — memory-for-ai
 
-**Audience.** You are an AI coding agent (or the person configuring one) and the memory-for-ai MCP server is available in your session. This document is the complete operating manual: what the graph is, what each of the 18 tools does exactly, which tool to pick for which task, how to avoid wrong conclusions, and how to fit the index to your specific project.
+**Audience.** You are an AI coding agent (or the person configuring one) and the memory-for-ai MCP server is available in your session. This document is the complete operating manual: what the graph is, what each of the 22 tools does exactly, which tool to pick for which task, how to avoid wrong conclusions, and how to fit the index to your specific project.
 
 **How to read.** Sections 1–2 get you productive in five minutes. Section 3 (tool catalog) and Section 4 (task playbook) are the reference you will return to. Section 7 (correctness protocol) is mandatory before you make claims like "X is never called" or "this list is complete".
 
@@ -27,7 +27,7 @@
 
 After indexing, note the response's coverage fields (`skipped`, `parse_partial`, `excluded`) — see Section 7 before trusting completeness.
 
-## 3. Tool catalog (18 tools)
+## 3. Tool catalog (22 tools)
 
 Annotations: 🌱 mutates state · everything else is read-only against the graph.
 
@@ -69,6 +69,15 @@ Annotations: 🌱 mutates state · everything else is read-only against the grap
 | `ingest_traces` 🌱 | Persist runtime call observations into an isolated sidecar (never merged into the static graph). Default wire `compact-v1`: `traces[]` of `{caller, callee, count?, duration_ns?, error?}` (caller/callee required), ≤10,000 items / 16 MiB; same `(project, source_batch_id)` + same payload = idempotent success, different payload = no-mutation conflict. Opt-in `canonical-v2` adds producer-scoped dedup (`producer_id`, `producer_epoch`, `source_batch_id`; lowercase-hex `trace_id`/`span_id`). |
 | `get_runtime_traces` | Read runtime aggregates, deterministically ordered by call count, caller, callee. `include_overlay=true` reads a pinned `RUNTIME_CALL` publication (with `runtime_generation` to pin, `cursor` from `next_cursor` to page). Runtime data never leaks into `search_graph` or `trace_path` results. |
 
+### Editing
+
+| Tool | What it does · key parameters |
+|---|---|
+| `edit_symbol` 🌱 | Edit a symbol's source using its graph location. `action`: `replace_body` (replace the node's full line range — `content` is the complete new definition, signature + body), `insert_before`, `insert_after`. **Dry-run by default**: without `dry_run=false` the call returns a diff plan and writes nothing. Pre-write guards: node range must exist in the file and its first line must still contain the symbol name (stale index → re-index first); `replace_body` over a range containing nested symbols requires `force=true`; the file's mtime is re-checked at write time (external change → nothing written). A successful write keeps a backup under the cache dir's `backups/` and re-indexes the project incrementally. Workflow: `search_graph` → `get_code_snippet` → `edit_symbol` (review plan) → `edit_symbol(dry_run=false)`. |
+| `delete_symbol` 🌱 | Delete a symbol's source with a graph-based usage check. **Refused while the symbol has direct callers** (CALLS/HTTP_CALLS/ASYNC_CALLS) unless `force=true` — the refusal lists them; deleting a container with nested symbols also requires `force=true`. Dry-run plan shows removed lines, callers, and **orphan candidates** (callees that become dead code). Same pre-write guards, backup, and incremental re-index as `edit_symbol`. Workflow: `trace_path(direction="inbound")` to review the transitive caller tree → `delete_symbol` (review plan) → `delete_symbol(dry_run=false)`. |
+| `rename_symbol` 🌱 | Rename a symbol project-wide with **evidence-tiered occurrences**: HIGH (definition site or inside a graph-verified caller — auto-applied), REVIEW (whole-identifier match without graph evidence — only with `force=true`), SKIP (comment/docstring line — only with `include_comments=true`). Dry-run plan: per-file tier table + samples. Guards: target-name collision check, definition-drift check, per-file mtime re-check, `expected_counts` to pin a plan. Every written file is backed up; after re-index the response **verifies the new symbol resolves in the fresh graph** and reports old-name occurrences left on disk. `scope`: `project` (default) / `definition_only`. Limits: plain `[A-Za-z0-9_]` identifiers; reflection/string references land in REVIEW and are never auto-applied. |
+| `undo_edit` 🌱 | Restore a file from the most recent backup created by an `edit_symbol` / `delete_symbol` / `rename_symbol` write. `path` is project-relative (`..` and absolute paths rejected). **Dry-run by default**: shows which backup would be restored (current vs backup size/lines). The restore is atomic, the **pre-undo content is itself backed up** (undo is undoable), the file is byte-compared against the backup afterwards, and the project is re-indexed. Fails cleanly when no backup exists for the file. |
+
 ## 4. Task → tool playbook
 
 | You need to… | Do this | Notes |
@@ -86,6 +95,10 @@ Annotations: 🌱 mutates state · everything else is read-only against the grap
 | Text search that must not miss string literals/comments | `search_code(pattern="...", mode="compact")` | This is the honest fallback when you need raw text, not structure. |
 | Diff two snapshots (refactor audit, vendor bump) | Index both worktrees as projects → `compare_graphs(base_project, target_project)` | Stable identities → deterministic additions/removals. |
 | Remember a decision for future sessions | `manage_adr(mode="set_sections", section_updates={"TRADEOFFS": "…"})` | Byte-preserving; safe to retry. |
+| Edit a function's source | `edit_symbol(qualified_name=…, action="replace_body", content=…)` → review plan → re-run with `dry_run=false` | Plan first; the tool refuses stale ranges, nested-symbol destruction (without `force`), and externally modified files. |
+| Delete dead code safely | `delete_symbol(qualified_name=…)` → review plan (callers + orphan candidates) → re-run with `dry_run=false` | Refused while callers exist unless `force=true`; orphan candidates feed the next deletion round. |
+| Rename a function across the repo | `rename_symbol(qualified_name=…, new_name=…)` → review tier plan → re-run with `dry_run=false, expected_counts=<N>` | HIGH tier auto-applies; inspect REVIEW samples before adding `force=true`. Verify the response's post-reindex checks. |
+| Revert a mistaken edit | `undo_edit(path="src/foo.c")` → review the restore plan → re-run with `dry_run=false` | Restores the latest backup made by the edit tools; the pre-undo content is backed up too, so the undo itself can be undone. |
 | Recall what the runtime actually did | `get_runtime_traces(project=…)` after your instrumentation `ingest_traces` | Static graph = what code says; sidecar = what ran. |
 | Ship the index with the repo | `index_repository(persistence=true)` → commit `.memory-for-ai/graph.db.zst` | Section 9. |
 

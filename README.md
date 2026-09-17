@@ -10,7 +10,7 @@
 
 An MCP server that turns a codebase into a persistent knowledge graph — functions, classes, call chains, HTTP routes, cross-service links — so an AI coding agent answers structural questions with **graph queries instead of reading file after file**.
 
-One self-contained native executable. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 18 MCP tools. No language runtime, no Docker, no API key, no telemetry — everything runs locally.
+One self-contained native executable. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 21 MCP tools. No language runtime, no Docker, no API key, no telemetry — everything runs locally.
 
 - **Are you an AI agent?** Read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the complete operating manual (tool catalog, task→tool playbooks, correctness protocol, per-project tuning). [docs/llms.txt](docs/llms.txt) is the machine-readable index.
 - **Installing for a specific project?** Jump to [Per-project install](#per-project-install) — one command, zero global config, one isolated graph named after the repo.
@@ -96,7 +96,7 @@ Measured on Apple M3 Pro (see [docs/MEASURING.md](docs/MEASURING.md) to reproduc
 
 | Document | What it covers | Primary audience |
 |---|---|---|
-| [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | Operating manual: mental model, all 18 tools, task→tool playbooks, correctness protocol, per-project tuning | AI coding agents (and their humans) |
+| [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | Operating manual: mental model, all 22 tools, task→tool playbooks, correctness protocol, per-project tuning | AI coding agents (and their humans) |
 | [docs/INSTALL.md](docs/INSTALL.md) | Machine preflight (platform, disk, PowerShell/git on PATH, old-version check), every install path: one-liners, per-project, package managers, containers/CI, update/uninstall, build from source, artifact verification | Whoever installs |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config files, `config set` keys, environment variables, scoped sessions | Operators, CI authors |
 | [docs/MEASURING.md](docs/MEASURING.md) | Measuring answer quality, latency/stability, and token/tool-call savings on your repo | Evaluators |
@@ -155,7 +155,7 @@ Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode,
 src/
   main.c              Entry point (MCP stdio server + CLI + install/update/config)
   daemon/             Per-account session coordination, IPC, lifecycle, shared jobs/watchers
-  mcp/                MCP server (18 tools, JSON-RPC 2.0, session detection, auto-index)
+  mcp/                MCP server (22 tools, JSON-RPC 2.0, session detection, auto-index)
   cli/                Install/uninstall/update/config (45 client surfaces, hooks, instructions)
   store/              SQLite graph storage (nodes, edges, traversal, search, Leiden/Louvain)
   pipeline/           Multi-pass indexing (structure → definitions → calls → HTTP links → config → tests)

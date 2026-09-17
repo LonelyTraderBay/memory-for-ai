@@ -177,7 +177,7 @@ If you prefer not to use `install` at all:
 }
 ```
 
-Add to `~/.claude.json` (user scope) or the project `.mcp.json`; for a per-project pinned server, append `"--scope=<repo>"` to `args`. Restart the agent and verify with `/mcp` — you should see `memory-for-ai` with 18 tools. Quick transport check: `echo '{}' | /path/to/binary` must print JSON.
+Add to `~/.claude.json` (user scope) or the project `.mcp.json`; for a per-project pinned server, append `"--scope=<repo>"` to `args`. Restart the agent and verify with `/mcp` — you should see `memory-for-ai` with 22 tools. Quick transport check: `echo '{}' | /path/to/binary` must print JSON.
 
 ## Containers and CI
 

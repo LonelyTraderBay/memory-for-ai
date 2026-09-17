@@ -7,7 +7,7 @@
 
 An MCP server that turns a codebase into a persistent knowledge graph — functions, classes, call chains, HTTP routes, cross-service links — so an AI coding agent answers structural questions with **graph queries instead of reading file after file**. This npm wrapper downloads, verifies, and caches the native runtime set for your platform; Node.js owns download, cache repair, and launch.
 
-One self-contained native executable behind the wrapper. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 18 MCP tools. No Docker, no API key, no telemetry — everything runs locally.
+One self-contained native executable behind the wrapper. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 22 MCP tools. No Docker, no API key, no telemetry — everything runs locally.
 
 - **AI agents:** read [docs/AGENT_GUIDE.md](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AGENT_GUIDE.md) — the complete operating manual.
 - **Evaluating effectiveness:** [docs/MEASURING.md](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/MEASURING.md) — a 15-minute spot check and a full A/B protocol.
