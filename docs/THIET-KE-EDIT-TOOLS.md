@@ -1,0 +1,220 @@
+# Thiết kế kỹ thuật: Bộ edit tools (phương án D — clean-room)
+
+> Spec ngày 2026-09-16. Phạm vi: thiết kế 3 tool mới `edit_symbol` → `delete_symbol` → `rename_symbol` cho memory-for-ai, clean-room (không copy code Serena), giữ nguyên MIT + single-binary.
+> Tài liệu này **chỉ là thiết kế** — chưa sửa code. Mọi tham chiếu kiến trúc đều đối chiếu với codebase thật tại thời điểm viết.
+
+---
+
+## 1. Mục tiêu & phạm vi
+
+**Mục tiêu**: cho agent khả năng sửa code ở mức symbol (thay body, chèn trước/sau, xóa an toàn, đổi tên) với độ tin cậy *cao hơn* các tool LSP-based nhờ kèm bằng chứng coverage/confidence trong mọi response.
+
+**Non-goals** (cố ý không làm):
+- Diagnostics từ compiler thật (cần LSP — phá zero-dependency).
+- Debug tương tác, file utilities, shell (trùng agent harness).
+- Edit các file không nằm trong project đã index.
+
+**Ba nguyên tắc xuyên suốt** (kế thừa văn hóa correctness protocol của dự án):
+1. **Evidence-first**: mọi response của edit tool phải kèm `coverage` + `confidence` + trạng thái re-index. Agent không bao giờ phải "tin mù" một edit.
+2. **Dry-run mặc định**: lần gọi đầu luôn trả về *plan* (diff preview); apply chỉ khi `dry_run=false`. Tương tự triết lý `install --dry-run` hiện có.
+3. **Atomic + revertible**: ghi file qua temp-file + rename; mọi edit tạo backup để `undo` trong cùng session.
+
+## 2. Điểm tựa kiến trúc hiện có (đã kiểm chứng trong code)
+
+| Tài sản sẵn có | Vai trò trong thiết kế |
+|---|---|
+| `cbm_node_t` (`src/store/store.h:37-47`): `file_path` (relative), `start_line`, `end_line`, `label`, `qualified_name` | Xác định chính xác vùng source của symbol — nền của mọi edit |
+| `cbm_store_find_nodes_in_range()` (`src/store/store.h:166-168`) | Tìm node chồng lấn một line range — dùng cho kiểm tra nested symbol trước khi edit |
+| `trace_path(direction="inbound")` + `include_evidence` (strategy `lsp`/`language_rule`/`heuristic`/`unresolved`) | Usage check cho `delete_symbol`; confidence tiers cho `rename_symbol` |
+| `check_index_coverage` (paths ≤128, scopes ≤32) | **Gate bắt buộc** trước `rename_symbol` và trước mọi edit trên file có `coverage_note` |
+| `pipeline_incremental.c` (disk-based incremental re-index, inbound cross-file edge preservation) | Re-index sau edit — không cần full re-index |
+| `watcher/` (auto-sync theo git/filesystem) | Đồng bộ hóa sau edit; cần cơ chế tránh race (mục 7) |
+| Tool registration trong `src/mcp/mcp.c`: bảng schema JSON tĩnh + `TOOL_ANNOTATIONS` (`mcp.c:789-808`) + dispatch strcmp chain (`mcp.c:~13936`) | Pattern đăng ký tool mới — 3 điểm chạm duy nhất vào mcp.c |
+| Cơ chế `stale_cursor` (cursor không sống qua re-index) | Sẵn có để vô hiệu hóa pagination cũ sau edit |
+| Node `body` column trong store (backfill, `store.h:~1194`) | Cache source của node — có thể dùng để verify trước khi ghi |
+
+## 3. Kiến trúc tổng thể
+
+### 3.1. Module mới: `src/edit/`
+
+Không nhồi thêm vào `mcp.c` (đã ~14.7k dòng). Tạo module riêng:
+
+```
+src/edit/
+  edit.h            Public API cho tầng MCP
+  edit_resolve.c    qn → node → file range (dùng store)
+  edit_surgery.c    Line-range text surgery (replace/insert/delete) trên buffer
+  edit_write.c      Atomic write (temp + rename), backup/undo, mtime guard
+  edit_plan.c       Diff preview (unified-ish, bounded) cho dry_run
+  edit_rename.c     Occurrence collection + confidence partitioning cho rename
+```
+
+### 3.2. Luồng chung của một edit call
+
+```
+1. RESOLVE    qualified_name → cbm_node_t (file_path, start_line, end_line)
+              → ambiguous → trả suggestions (tái dùng pattern của get_code_snippet)
+2. GATE       check_index_coverage(paths=[file]) → nếu file có parse_partial/
+              excluded → từ chối edit vùng đó, trả coverage_note (trừ khi force)
+3. READ       Đọc file từ disk + ghi nhận mtime/size (optimistic concurrency)
+4. VERIFY     Node range còn khớp source thật? (so signature dòng đầu của range
+              với node.properties; lệch → báo stale, yêu cầu re-index)
+5. PLAN       edit_surgery trên buffer → sinh diff preview
+              → nếu dry_run=true (mặc định): trả plan + evidence, KẾT THÚC
+6. APPLY      edit_write: temp file cùng thư mục → fsync → rename (atomic trên
+              cả POSIX lẫn Windows); lưu backup vào ~/.cache/memory-for-ai/backups/
+7. REINDEX    Gọi incremental re-index cho đúng 1 file (route của
+              pipeline_incremental) — đồng bộ, blocking trong call
+8. RESPOND    Trả: plan đã apply + evidence (coverage, confidence, reindex
+              status, số node/edge thay đổi) + backup_id cho undo
+```
+
+### 3.3. Đăng ký tool (3 điểm chạm vào mcp.c)
+
+1. Thêm entry vào bảng tool tĩnh (schema JSON inline như các tool hiện có).
+2. Thêm vào `TOOL_ANNOTATIONS`: edit tools là những tool đầu tiên ghi vào source — cần cờ `read_only=false`, `destructive=true` (với `delete_symbol`), `idempotent=false`.
+3. Thêm nhánh dispatch `handle_edit_symbol` / `handle_delete_symbol` / `handle_rename_symbol` vào chain.
+
+## 4. Tool 1: `edit_symbol`
+
+### Input schema
+
+```json
+{
+  "project": "string (required)",
+  "qualified_name": "string (required — qn đầy đủ từ search_graph)",
+  "action": "replace_body | insert_before | insert_after (required)",
+  "content": "string (required — source mới; replace_body: thân symbol mới,
+             KHÔNG gồm signature; insert_*: block chèn, tự giữ indentation)",
+  "dry_run": "boolean, default true",
+  "force": "boolean, default false — bỏ qua coverage gate (response vẫn ghi
+            'coverage_gate': 'bypassed')",
+  "expected_mtime_ns": "integer, optional — optimistic concurrency từ plan call"
+}
+```
+
+### Quy tắc surgery
+
+- `replace_body`: thay các dòng `(signature_end+1 .. end_line)` của node. Signature line giữ nguyên — đây là khác biệt cốt lõi so với text-replace: agent không bao giờ vô tình đổi tên/tham số khi chỉ định sửa thân.
+- `insert_before` / `insert_after`: chèn tại `start_line` / `end_line+1`; tự suy ra indentation từ dòng signature của node láng giềng.
+- Từ chối nếu range chứa **nested symbol** mà action sẽ xóa mất (dùng `cbm_store_find_nodes_in_range`) — trừ khi `content` đã chứa lại định nghĩa đó (so khớp qn sau re-parse).
+
+### Response (apply mode)
+
+```
+edit_symbol: APPLIED  myproj.src.handlers.ProcessOrder  (Method)
+  action: replace_body · src/handlers/order.c:88-134 → 88-141
+  diff: +19 / -12 lines
+  coverage: file fully indexed (no gaps)
+  confidence: HIGH (node range verified against source pre-write)
+  reindex: incremental OK — 1 file, 23 nodes, 41 edges updated (184 ms)
+  backup: bk_20260916_161203_order.c  (undo: edit_symbol với action='restore')
+```
+
+## 5. Tool 2: `delete_symbol`
+
+Khác biệt then chốt so với safe-delete của LSP: usage check dùng **graph bắc cầu**, thấy cả caller qua Route/cross-service mà LSP không thấy.
+
+### Luồng
+
+```
+1. RESOLVE + GATE như edit_symbol
+2. USAGE CHECK  trace_path(qn, direction="inbound", depth=5, include_evidence=true)
+   → callers_total == 0  → safe, confidence HIGH
+   → callers chỉ trong test files → safe-with-note (đề xuất xóa test kèm theo)
+   → callers thật → danh sách callers (prefix-grouped, giới hạn 20 + total)
+3. Nếu có callers thật và force=false → TỪ CHỐI, trả caller list + gợi ý
+   ("xóa/cập nhật N caller trước, hoặc force=true")
+4. Surgery: xóa range start_line..end_line + dòng trống thừa liền kề
+5. Write + reindex + respond (kèm danh sách node/edge đã gỡ khỏi graph)
+```
+
+### Input bổ sung
+
+- `include_tests` (default false): cho phép xóa cả khi chỉ còn test callers — response liệt kê các test bị mồ côi để agent quyết định dọn tiếp.
+- `recursive_orphans` (default false, *phase 2*): sau khi xóa, quét callee của symbol vừa xóa — callee nào mất hết caller thì gợi ý xóa tiếp (dead-code cascade, chính là pattern "propagate deletions" nhưng chủ động hơn nhờ graph).
+
+## 6. Tool 3: `rename_symbol`
+
+Tool khó nhất — và cũng là nơi memory-for-ai có thể **vượt** Serena nhờ evidence.
+
+### Nguyên tắc an toàn: coverage gate là điều kiện tiên quyết
+
+LSP rename "tin mù" rằng language server thấy hết references. memory-for-ai làm tường minh:
+
+```
+1. RESOLVE qn → node
+2. COLLECT occurrences:
+   a. Graph: mọi edge USAGE / CALLS / CALL_REFERENCE / IMPORTS / IMPLEMENTS
+      trỏ tới node, kèm file_path + line + resolution strategy
+      (lsp | language_rule | heuristic | unresolved)
+   b. Vét text: search_code(name_pattern) trên toàn repo để bắt occurrences
+      mà graph miss (string literal, reflection, comment, macro)
+3. GATE: check_index_coverage(paths=[mọi file chứa occurrence])
+   → file nào có gap → occurrences trong gap = "unknown-confidence"
+4. PARTITION kết quả thành 3 tầng:
+   HIGH     — edges strategy=lsp/language_rule + file fully covered → sửa tự động
+   REVIEW   — heuristic + text-only matches trong code → liệt kê từng cái,
+              agent duyệt (tham số approved_occurrences)
+   SKIP     — comment/docstring/unresolved → mặc định không đụng
+5. dry_run plan: bảng occurrences theo tầng, theo file; tổng số thay đổi
+6. Apply: sửa theo thứ tự bottom-up theo line trong từng file (tránh lệch
+   offset); mỗi file một atomic write; re-index tất cả file đã chạm
+7. Verify sau re-index: node mới với tên mới tồn tại; query kiểm tra không còn
+   edge nào trỏ tên cũ → báo cáo vòng kiểm chứng khép kín
+```
+
+### Input schema bổ sung
+
+```json
+{
+  "new_name": "string (required)",
+  "scope": "definition_only | project (default project)",
+  "approved_occurrences": "array of {file, line} — duyệt tầng REVIEW",
+  "include_comments": "boolean, default false",
+  "expected_counts": "integer, optional — agent assert số occurrence trước khi
+                      apply; lệch → abort (chống apply nhầm plan cũ)"
+}
+```
+
+### Giới hạn công khai (phải ghi trong tool description)
+
+- Dynamic dispatch (getattr/reflection/string-based lookup) nằm ở tầng REVIEW/SKIP — tool **không** tự sửa, chỉ liệt kê.
+- `expected_counts` + coverage gate là hai cơ chế chống "rename mò" — đây là câu chuyện khác biệt hóa chính so với Serena.
+
+## 7. Concurrency & tương tác watcher
+
+- **Race agent-edit vs watcher**: watcher poll có thể bắt đầu re-index giữa lúc write. Giải pháp: `edit_write` đi qua daemon (per-account session coordination đã có) — daemon giữ per-project write-lock; watcher và edit tool cùng acquire. Edit là thao tác ngắn (<1s) nên lock không ảnh hưởng throughput.
+- **Optimistic concurrency**: mtime/size đọc ở bước 3 phải khớp lúc ghi; lệch → abort với lỗi `file_changed_externally`, kèm gợi ý re-run plan. `expected_mtime_ns` cho phép agent ghim plan→apply.
+- **Cursor invalidation**: sau re-index, mọi cursor `trace_path` cũ tự động stale (cơ chế `stale_cursor` đã có — không cần làm gì thêm).
+
+## 8. Testing strategy
+
+| Tầng | Nội dung |
+|---|---|
+| Unit (`tests/`) | edit_surgery trên buffer: replace/insert/delete ở đầu/giữa/cuối file, CRLF vs LF, file không có trailing newline, nested symbols, unicode |
+| Integration | Fixture repos đa ngôn ngữ (ít nhất Python + TS + Go + C — 4 ngôn ngữ có full Hybrid-LSP): edit → re-index → assert graph mới (node range, edges) đúng |
+| Concurrency | Fault-injection theo pattern sẵn có của `pipeline_incremental.c` (`*_test_fail_*_once`): ép watcher chạy giữa write, ép rename thất bại nửa chừng → assert không file nào corrupt |
+| Rename adversarial | Repo có reflection/string-lookup → assert occurrences rơi đúng tầng REVIEW/SKIP, không bị sửa mò |
+| A/B đo giá trị | Theo `docs/MEASURING.md`: so token/tool-call của "rename bằng edit tools" vs "rename bằng grep + read + write thủ công" trên 5 task chuẩn |
+
+## 9. Roadmap & effort ước lượng
+
+| Phase | Nội dung | Effort | Phụ thuộc | Trạng thái |
+|---|---|---|---|---|
+| 1 | `src/edit/` skeleton + `edit_symbol` (3 actions) + dry-run + atomic write + single-file re-index | ~2–3 tuần | Không | ✅ Xong |
+| 2 | `delete_symbol` + usage check + orphan cascade (gợi ý) | ~1–2 tuần | Phase 1 | ✅ Xong |
+| 3 | `rename_symbol` 2-phase (plan/apply) + coverage gate + 3 tầng confidence | ~3–4 tuần | Phase 1, 2 | ✅ Xong |
+| 4 | `undo_edit` (restore từ backup) + `expected_counts` + polish docs/AGENT_GUIDE | ~1 tuần | Phase 3 | ✅ Xong |
+
+Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `docs/llms.txt`, và số "18 tools" → tăng tương ứng ở README (hiện tại: 22 tools). Unit test C cho cả 4 tool nằm trong `tests/test_edit.c` (suite `edit`, 36 test); logic parity test (không cần compiler) ở `build/edit_surgery_logic_test.py` (27 ca).
+
+## 10. Rủi ro chính & giảm thiểu
+
+| Rủi ro | Xác suất | Giảm thiểu |
+|---|---|---|
+| Edit làm hỏng file user (mất dữ liệu) | Thấp nhưng nghiêm trọng | Atomic write + backup mọi edit + dry-run mặc định + `undo` |
+| Graph stale sau edit → agent đọc thông tin cũ | Trung bình | Re-index đồng bộ *trong* call, không async; response kèm reindex status |
+| Rename sai trên dynamic language | Trung bình | 3 tầng confidence + coverage gate + `expected_counts`; không bao giờ sửa occurrence `unresolved` |
+| Phình scope (agent muốn move symbol, inline…) | Cao | Chốt 3 tool; move/inline để sau khi có số liệu A/B chứng minh nhu cầu |
+| Lock contention với watcher trên repo lớn | Thấp | Per-file lock granularity; edit <1s; watcher backoff đã adaptive |
