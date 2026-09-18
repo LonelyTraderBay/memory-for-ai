@@ -393,6 +393,12 @@ def discover_archives(root: pathlib.Path) -> dict[str, pathlib.Path]:
             child = parent / name
             if child.is_symlink():
                 raise ContractError(f"symlinked file in archive tree: {child}")
+            # UI-branded variants (memory-for-ai-ui-*) are byte-identical
+            # duplicates uploaded at publish time — they are not in the
+            # canonical 14-container namespace. Skipping them keeps this
+            # check idempotent when re-run against a fully published release.
+            if name.startswith("memory-for-ai-ui-"):
+                continue
             if name.endswith((".tar.gz", ".zip", ".mcpb")):
                 archive_like.append(child)
                 if name in discovered:
