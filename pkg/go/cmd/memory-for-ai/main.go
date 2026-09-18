@@ -36,7 +36,7 @@ import (
 
 const (
 	repo              = "LonelyTraderBay/memory-for-ai"
-	version           = "0.10.9"
+	version           = "0.11.0"
 	windowsBinaryName = "memory-for-ai.exe"
 
 	maxRedirects            = 5

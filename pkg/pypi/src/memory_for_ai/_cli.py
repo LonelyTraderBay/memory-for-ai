@@ -338,7 +338,7 @@ def _version() -> str:
         from importlib.metadata import version
         return version("memory-for-ai")
     except Exception:
-        return "0.10.9"
+        return "0.11.0"
 
 
 def _os_name() -> str:
