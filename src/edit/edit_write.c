@@ -27,6 +27,25 @@
 #define EDIT_PID() getpid()
 #endif
 
+#if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
+/* One-shot fault injection for the write path (test builds only; the
+ * production build has no hook or branch at the write entry). */
+#include <stdatomic.h>
+static atomic_bool g_edit_test_fail_write = false;
+
+void cbm_edit_write_test_fail_once(void) {
+    atomic_store(&g_edit_test_fail_write, true);
+}
+
+void cbm_edit_write_test_reset_faults(void) {
+    atomic_store(&g_edit_test_fail_write, false);
+}
+
+static bool edit_test_take_write_failure(void) {
+    return atomic_exchange(&g_edit_test_fail_write, false);
+}
+#endif
+
 /* Platform-portable mtime in nanoseconds (mirrors watcher.c/artifact.c). */
 static int64_t edit_stat_mtime_ns(const struct stat *st) {
 #if defined(_WIN32)
@@ -103,6 +122,15 @@ int cbm_edit_write_atomic(const char *abs_path, const char *data, size_t len,
     if (!abs_path || !data) {
         return CBM_EDIT_ERR_ARGS;
     }
+
+#if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
+    /* Simulated write-path failure: nothing is written, no backup is made —
+     * callers cannot distinguish this from a real IO error, which is the
+     * point of the exercise. */
+    if (edit_test_take_write_failure()) {
+        return CBM_EDIT_ERR_IO;
+    }
+#endif
 
     /* 1. Optimistic concurrency: refuse to write over a file that changed
      *    since the caller read it. */

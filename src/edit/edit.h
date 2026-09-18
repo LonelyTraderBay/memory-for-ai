@@ -200,6 +200,17 @@ int cbm_edit_write_atomic(const char *abs_path, const char *data, size_t len,
  * no backup matches; CBM_EDIT_ERR_IO when the directory cannot be read. */
 int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out, size_t out_sz);
 
+#if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
+/* One-shot fault injection for the write path (test builds only — the
+ * production build has neither this hook nor a branch at the write entry,
+ * mirroring CBM_INCREMENTAL_TEST_API). cbm_edit_write_test_fail_once arms
+ * the NEXT cbm_edit_write_atomic call to return CBM_EDIT_ERR_IO before
+ * touching anything, so tests can exercise partial multi-file failure and
+ * verify no file is left corrupt. */
+void cbm_edit_write_test_fail_once(void);
+void cbm_edit_write_test_reset_faults(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

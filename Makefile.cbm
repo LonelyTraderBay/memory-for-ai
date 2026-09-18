@@ -132,9 +132,10 @@ endif
 KOTLIN_DEDUP_TEST_DEFINE = -DCBM_KOTLIN_DEDUP_TEST_API=1
 CALL_REFERENCE_LOOKUP_TEST_DEFINE = -DCBM_CALL_REFERENCE_LOOKUP_TEST_API=1
 INCREMENTAL_TEST_DEFINE = -DCBM_INCREMENTAL_TEST_API=1
+EDIT_TEST_DEFINE = -DCBM_EDIT_TEST_API=1
 CFLAGS_TEST = $(CFLAGS_COMMON) $(EDITOR_TEST_DEFINES) $(SANITIZED_DEFINE) \
 	$(KOTLIN_DEDUP_TEST_DEFINE) $(CALL_REFERENCE_LOOKUP_TEST_DEFINE) \
-	$(INCREMENTAL_TEST_DEFINE) -g -O1 $(SANITIZE)
+	$(INCREMENTAL_TEST_DEFINE) $(EDIT_TEST_DEFINE) -g -O1 $(SANITIZE)
 CXXFLAGS_TEST = $(CXXFLAGS_COMMON) $(SANITIZED_DEFINE) -g -O1 $(SANITIZE) $(CXX_STDLIB_FLAGS)
 
 # TSan (can't combine with ASan)
@@ -151,7 +152,7 @@ TSAN_SANITIZE = -fsanitize=thread -fno-omit-frame-pointer
 # sets are left alone: mimalloc, sqlite3, tre, zstd, lz4 and tree-sitter read no
 # macro of ours.
 CFLAGS_TSAN = $(CFLAGS_COMMON) $(EDITOR_TEST_DEFINES) $(KOTLIN_DEDUP_TEST_DEFINE) \
-	$(CALL_REFERENCE_LOOKUP_TEST_DEFINE) $(INCREMENTAL_TEST_DEFINE) \
+	$(CALL_REFERENCE_LOOKUP_TEST_DEFINE) $(INCREMENTAL_TEST_DEFINE) $(EDIT_TEST_DEFINE) \
 	-DCBM_SANITIZED_BUILD=1 -g -O1 $(TSAN_SANITIZE)
 CXXFLAGS_TSAN = $(CXXFLAGS_COMMON) -DCBM_SANITIZED_BUILD=1 -g -O1 \
                 $(TSAN_SANITIZE)
@@ -672,7 +673,7 @@ TEST_JAVA_LSP_SRCS = tests/test_java_lsp.c tests/test_java_lsp_coverage.c
 TEST_KOTLIN_LSP_SRCS = tests/test_kotlin_lsp.c
 TEST_RUST_LSP_SRCS = tests/test_rust_lsp.c
 
-TEST_INTEGRATION_SRCS = tests/test_integration.c tests/test_incremental.c tests/test_lang_contract.c tests/test_edge_imports.c tests/test_edge_structural.c tests/test_lsp_resolution_probe.c tests/test_node_creation_probe.c tests/test_edge_types_probe.c tests/test_convergence_probe.c tests/test_matrix_known_classes.c tests/test_matrix_new_constructs.c tests/test_grammar_probe_a.c tests/test_grammar_probe_b.c tests/test_grammar_probe_c.c tests/test_grammar_probe_d.c tests/test_grammar_probe_e.c tests/test_grammar_probe_f.c tests/test_grammar_probe_g.c
+TEST_INTEGRATION_SRCS = tests/test_integration.c tests/test_edit_integration.c tests/test_incremental.c tests/test_lang_contract.c tests/test_edge_imports.c tests/test_edge_structural.c tests/test_lsp_resolution_probe.c tests/test_node_creation_probe.c tests/test_edge_types_probe.c tests/test_convergence_probe.c tests/test_matrix_known_classes.c tests/test_matrix_new_constructs.c tests/test_grammar_probe_a.c tests/test_grammar_probe_b.c tests/test_grammar_probe_c.c tests/test_grammar_probe_d.c tests/test_grammar_probe_e.c tests/test_grammar_probe_f.c tests/test_grammar_probe_g.c
 
 TEST_TRACES_SRCS = tests/test_traces.c
 
