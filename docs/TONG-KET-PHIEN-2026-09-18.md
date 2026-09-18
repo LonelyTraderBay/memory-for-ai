@@ -106,8 +106,8 @@ mingw32-make -f Makefile.cbm test-focused CC=gcc CXX=g++ SANITIZE= TEST_SUITES=<
 - HEAD: `ac3db7c2` — mọi check xanh (dco, CodeQL, scorecard, build, pages).
 - 0 issue mở (#10, #11 đã closed-completed).
 - Release v0.11.0 hoàn chỉnh trên mọi kênh phân phối.
-- Chưa commit: `docs/PHAN-TICH-KET-HOP-SERENA.md`, `docs/SO-SANH-SERENA.md`
-  (tài liệu phân tích Serena — giữ local theo ý chủ).
+- Đã commit: `docs/PHAN-TICH-KET-HOP-SERENA.md`, `docs/SO-SANH-SERENA.md`
+  (tài liệu phân tích Serena từ 2026-09-16).
 
 ## 6. Việc có thể làm tiếp (chưa ai yêu cầu)
 
