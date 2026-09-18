@@ -489,12 +489,15 @@ mcp_call() {
     # Send request to server stdin
     echo "$req" >&3
 
-    # Read and validate one response (wait up to 30s). A JSON-RPC error or
+    # Read and validate one response (wait up to 60s — matches the Check 4
+    # latency ceiling; a 30s read timeout used to fail soak legs on slow
+    # Windows ARM runners where a single PowerShell-backed search_code call
+    # can exceed 30s under load, see issue #11). A JSON-RPC error or
     # tool-level isError is a failed operation, not a successful round-trip.
     local resp=""
     local exit_code=1
     MCP_LAST_RESPONSE=""
-    if read -r -t 30 resp <&4 2>/dev/null; then
+    if read -r -t 60 resp <&4 2>/dev/null; then
         MCP_LAST_RESPONSE="$resp"
         if json_rpc_response_ok "$id" "$resp"; then
             exit_code=0
