@@ -115,6 +115,17 @@ static const char *RUNNER_PY_PLUS = "from calc import plus\n"
                                     "def run():\n"
                                     "    return plus(1, 2)\n";
 
+/* chain.py — top_fn → mid_fn → leaf_fn call chain with no external callers:
+ * deleting top_fn orphans mid_fn directly, and leaf_fn only transitively. */
+static const char *CHAIN_PY = "def leaf_fn():\n"
+                              "    return 1\n"
+                              "\n"
+                              "def mid_fn():\n"
+                              "    return leaf_fn()\n"
+                              "\n"
+                              "def top_fn():\n"
+                              "    return mid_fn()\n";
+
 static int einteg_setup(void) {
     snprintf(g_tmpdir, sizeof(g_tmpdir), "/tmp/cbm_edit_integ_XXXXXX");
     if (!cbm_mkdtemp(g_tmpdir))
@@ -126,6 +137,7 @@ static int einteg_setup(void) {
     write_fixture_file("ops.c", OPS_C);
     write_fixture_file("drift.py", DRIFT_PY);
     write_fixture_file("runner.py", RUNNER_PY);
+    write_fixture_file("chain.py", CHAIN_PY);
 
     g_project = cbm_project_name_from_path(g_tmpdir);
     if (!g_project)
@@ -544,6 +556,50 @@ TEST(einteg_drift_rejected_without_write) {
     PASS();
 }
 
+TEST(einteg_orphans_shallow_by_default) {
+    /* delete_symbol plan for top_fn: mid_fn (sole caller = top_fn) is an
+     * orphan candidate; leaf_fn's caller is mid_fn — NOT the deleted node —
+     * so without recursive_orphans the cascade stops at depth 1. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function("top_fn", &qn, &start, &end));
+
+    char *resp = call_edit_tool("delete_symbol", qn, "");
+    ASSERT_NOT_NULL(resp);
+    /* Depth-1 only: mid_fn listed, cascade stops there. (The diff preview's
+     * context lines can mention leaf_fn — the COUNT is the discriminator,
+     * not substring absence.) */
+    ASSERT_TRUE(strstr(resp, "orphan_candidates: 1") != NULL);
+    ASSERT_TRUE(strstr(resp, "mid_fn") != NULL);
+    ASSERT_TRUE(strstr(resp, "recursive cascade") == NULL);
+    free(resp);
+
+    /* Nothing written (dry-run default). */
+    ASSERT_TRUE(file_equals("chain.py", CHAIN_PY));
+    free(qn);
+    PASS();
+}
+
+TEST(einteg_recursive_orphans_cascade) {
+    /* With recursive_orphans=true the cascade walks mid_fn's callees:
+     * leaf_fn's ONLY caller sits inside the cascade → it is listed too. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function("top_fn", &qn, &start, &end));
+
+    char *resp = call_edit_tool("delete_symbol", qn, ",\"recursive_orphans\":true");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "orphan_candidates: 2") != NULL);
+    ASSERT_TRUE(strstr(resp, "mid_fn") != NULL);
+    ASSERT_TRUE(strstr(resp, "leaf_fn") != NULL);
+    ASSERT_TRUE(strstr(resp, "recursive cascade") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(file_equals("chain.py", CHAIN_PY));
+    free(qn);
+    PASS();
+}
+
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
 /* Fault-injection tests (THIET-KE-EDIT-TOOLS.md §8 "Concurrency"): the write
  * path must fail cleanly — no partial bytes, no lost originals — when a
@@ -639,6 +695,8 @@ SUITE(edit_integration) {
     RUN_TEST(einteg_delete_removes_node_c);
     RUN_TEST(einteg_rename_propagates_ts);
     RUN_TEST(einteg_drift_rejected_without_write);
+    RUN_TEST(einteg_orphans_shallow_by_default);
+    RUN_TEST(einteg_recursive_orphans_cascade);
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
     RUN_TEST(einteg_edit_write_failure_keeps_file);
     RUN_TEST(einteg_rename_partial_failure_no_corruption);

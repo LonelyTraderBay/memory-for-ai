@@ -583,7 +583,10 @@ static const tool_def_t TOOLS[] = {
      "\"type\":\"boolean\",\"default\":true,\"description\":\"true (default): return the delete "
      "plan only, write nothing. false: apply the delete.\"},\"force\":{\"type\":\"boolean\","
      "\"default\":false,\"description\":\"Delete despite remaining callers and/or nested "
-     "symbols (both are listed in the refusal/plan).\"}},"
+     "symbols (both are listed in the refusal/plan).\"},\"recursive_orphans\":{\"type\":"
+     "\"boolean\",\"default\":false,\"description\":\"Also scan callees of orphan candidates "
+     "recursively — a callee whose every inbound caller is the deleted symbol or an already-"
+     "listed orphan is dead code too (dead-code cascade suggestion).\"}},"
      "\"required\":[\"qualified_name\",\"project\"]}"},
 
     {"rename_symbol", "Rename symbol (evidence-tiered)",
@@ -10469,6 +10472,7 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
     char *project = get_project_arg(args);
     bool dry_run = edit_bool_arg_default(args, "dry_run", true);
     bool force = cbm_mcp_get_bool_arg(args, "force");
+    bool recursive_orphans = cbm_mcp_get_bool_arg(args, "recursive_orphans");
 
     if (!qn) {
         free(project);
@@ -10645,11 +10649,20 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
     }
 
     /* Orphan candidates: callees whose sole inbound edge comes from the node
-     * being deleted — they become dead code after this delete. */
+     * being deleted — they become dead code after this delete. Cascade tracks
+     * the deleted node plus every listed orphan BY NODE ID so the opt-in
+     * recursive pass can test whether a deeper callee's callers ALL sit
+     * inside the cascade (neighbor_names yields short names, so membership
+     * re-resolves each caller name back to a node id). */
+#define DELETE_ORPHAN_CAP 10
+#define DELETE_CASCADE_CAP (DELETE_ORPHAN_CAP + 2)
     cbm_sb_t orphans;
     cbm_sb_init(&orphans);
     int orphan_count = 0;
-    for (int i = 0; i < callee_count && orphan_count < 10; i++) {
+    int64_t cascade_ids[DELETE_CASCADE_CAP];
+    int cascade_n = 0;
+    cascade_ids[cascade_n++] = node.id;
+    for (int i = 0; i < callee_count && orphan_count < DELETE_ORPHAN_CAP; i++) {
         cbm_node_t cn = {0};
         cbm_node_t *cn_cands = NULL;
         int cn_count = 0;
@@ -10668,8 +10681,101 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
                      cn.start_line, cn.end_line);
             cbm_sb_append(&orphans, row);
             orphan_count++;
+            if (cascade_n < DELETE_CASCADE_CAP) {
+                cascade_ids[cascade_n++] = cn.id;
+            }
         }
         cbm_edit_free_node(&cn);
+    }
+
+    /* Opt-in recursive cascade (recursive_orphans=true): walk callees of
+     * already-listed orphans; a deeper callee is dead code too when EVERY
+     * inbound caller it has resolves to a node inside the cascade.
+     * Conservative on ambiguity and truncation: an ambiguous or capped
+     * caller list means "cannot verify every caller" → NOT listed. */
+    if (recursive_orphans) {
+        for (int ci2 = 1; ci2 < cascade_n && orphan_count < DELETE_ORPHAN_CAP; ci2++) {
+            char **m_callers = NULL;
+            int m_caller_count = 0;
+            char **m_callees = NULL;
+            int m_callee_count = 0;
+            cbm_store_node_neighbor_names(store, cascade_ids[ci2], 20, &m_callers, &m_caller_count,
+                                          &m_callees, &m_callee_count);
+            for (int j = 0; j < m_callee_count && orphan_count < DELETE_ORPHAN_CAP; j++) {
+                cbm_node_t deep = {0};
+                cbm_node_t *d_cands = NULL;
+                int d_count = 0;
+                if (cbm_edit_resolve_symbol(store, effective_project, m_callees[j], &deep, &d_cands,
+                                            &d_count) != CBM_EDIT_RESOLVE_OK) {
+                    cbm_store_free_nodes(d_cands, d_count);
+                    continue;
+                }
+                bool already = false;
+                for (int k = 0; k < cascade_n && !already; k++) {
+                    already = deep.id == cascade_ids[k];
+                }
+                if (!already) {
+                    int di = 0;
+                    int dout = 0;
+                    cbm_store_node_degree(store, deep.id, &di, &dout);
+                    char **d_callers = NULL;
+                    int d_caller_count = 0;
+                    char **d_callees = NULL;
+                    int d_callee_count = 0;
+                    cbm_store_node_neighbor_names(store, deep.id, 20, &d_callers, &d_caller_count,
+                                                  &d_callees, &d_callee_count);
+                    bool all_inside = di > 0 && d_caller_count >= di; /* not truncated */
+                    for (int k = 0; k < d_caller_count && all_inside; k++) {
+                        cbm_node_t rn = {0};
+                        cbm_node_t *r_cands = NULL;
+                        int r_count = 0;
+                        /* A caller name that does not resolve to exactly one
+                         * cascade member disqualifies the candidate. */
+                        if (cbm_edit_resolve_symbol(store, effective_project, d_callers[k], &rn,
+                                                    &r_cands, &r_count) != CBM_EDIT_RESOLVE_OK) {
+                            all_inside = false;
+                        } else {
+                            bool inside = false;
+                            for (int m = 0; m < cascade_n && !inside; m++) {
+                                inside = rn.id == cascade_ids[m];
+                            }
+                            all_inside = inside;
+                            cbm_edit_free_node(&rn);
+                        }
+                        cbm_store_free_nodes(r_cands, r_count);
+                    }
+                    if (all_inside) {
+                        char row[CBM_SZ_512];
+                        snprintf(row, sizeof(row), "  %s (%s:%d-%d)\n",
+                                 deep.qualified_name ? deep.qualified_name : "?",
+                                 deep.file_path ? deep.file_path : "?", deep.start_line,
+                                 deep.end_line);
+                        cbm_sb_append(&orphans, row);
+                        orphan_count++;
+                        if (cascade_n < DELETE_CASCADE_CAP) {
+                            cascade_ids[cascade_n++] = deep.id;
+                        }
+                    }
+                    for (int k = 0; k < d_caller_count; k++) {
+                        free(d_callers[k]);
+                    }
+                    free(d_callers);
+                    for (int k = 0; k < d_callee_count; k++) {
+                        free(d_callees[k]);
+                    }
+                    free(d_callees);
+                }
+                cbm_edit_free_node(&deep);
+            }
+            for (int j = 0; j < m_caller_count; j++) {
+                free(m_callers[j]);
+            }
+            free(m_callers);
+            for (int j = 0; j < m_callee_count; j++) {
+                free(m_callees[j]);
+            }
+            free(m_callees);
+        }
     }
     for (int i = 0; i < caller_count; i++) {
         free(callers[i]);
@@ -10781,8 +10887,8 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
         cbm_sb_append(&sb, num);
         if (orphan_count > 0) {
             snprintf(num, sizeof(num),
-                     "  orphan_candidates: %d (become uncalled after this delete — review):\n",
-                     orphan_count);
+                     "  orphan_candidates: %d (become uncalled after this delete%s — review):\n",
+                     orphan_count, recursive_orphans ? ", recursive cascade" : "");
             cbm_sb_append(&sb, num);
             char *orphan_text = cbm_sb_finish(&orphans);
             cbm_sb_append(&sb, orphan_text ? orphan_text : "");
@@ -10882,8 +10988,8 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
                              "on graph data for this file\n");
     if (orphan_count > 0) {
         snprintf(num, sizeof(num),
-                 "  orphan_candidates: %d (now uncalled — review with trace_path):\n",
-                 orphan_count);
+                 "  orphan_candidates: %d (now uncalled%s — review with trace_path):\n",
+                 orphan_count, recursive_orphans ? ", recursive cascade" : "");
         cbm_sb_append(&sb, num);
         char *orphan_text = cbm_sb_finish(&orphans);
         cbm_sb_append(&sb, orphan_text ? orphan_text : "");
