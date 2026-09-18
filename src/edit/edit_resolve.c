@@ -63,9 +63,8 @@ bool cbm_edit_label_editable(const char *label) {
         return false;
     }
     static const char *const EDITABLE[] = {
-        "Function", "Method",  "Class",     "Interface", "Struct",
-        "Enum",     "Trait",   "Impl",      "Namespace", "Macro",
-        "Constant", "Variable",
+        "Function", "Method", "Class",     "Interface", "Struct",   "Enum",
+        "Trait",    "Impl",   "Namespace", "Macro",     "Constant", "Variable",
     };
     for (size_t i = 0; i < sizeof(EDITABLE) / sizeof(EDITABLE[0]); i++) {
         if (strcmp(label, EDITABLE[i]) == 0) {

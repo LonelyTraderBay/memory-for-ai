@@ -198,8 +198,7 @@ int cbm_edit_write_atomic(const char *abs_path, const char *data, size_t len,
  * follow bk_<epoch>_<pid>_<basename>, written by cbm_edit_write_atomic).
  * On CBM_EDIT_OK the full path is written to `out`; CBM_EDIT_ERR_RANGE when
  * no backup matches; CBM_EDIT_ERR_IO when the directory cannot be read. */
-int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out,
-                           size_t out_sz);
+int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out, size_t out_sz);
 
 #ifdef __cplusplus
 }

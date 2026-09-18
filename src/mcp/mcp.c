@@ -10141,8 +10141,9 @@ static char *handle_edit_symbol(cbm_mcp_server_t *srv, const char *args) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
         char hdr[CBM_SZ_256];
-        snprintf(hdr, sizeof(hdr), "symbol is ambiguous — %d matches; pass the exact "
-                                   "qualified_name:\n",
+        snprintf(hdr, sizeof(hdr),
+                 "symbol is ambiguous — %d matches; pass the exact "
+                 "qualified_name:\n",
                  candidate_count);
         cbm_sb_append(&sb, hdr);
         int shown = candidate_count < 10 ? candidate_count : 10;
@@ -10194,16 +10195,15 @@ static char *handle_edit_symbol(cbm_mcp_server_t *srv, const char *args) {
     /* Absolute path of the node's file. */
     cbm_project_t proj = {0};
     char root_copy[CBM_SZ_1K] = {0};
-    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
-        !proj.root_path || proj.root_path[0] == '\0') {
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK || !proj.root_path ||
+        proj.root_path[0] == '\0') {
         cbm_project_free_fields(&proj);
         cbm_edit_free_node(&node);
         free(qn);
         free(project);
         free(action_str);
         free(content);
-        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
-                                   true);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository", true);
     }
     snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
     cbm_project_free_fields(&proj);
@@ -10503,8 +10503,9 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
         char hdr[CBM_SZ_256];
-        snprintf(hdr, sizeof(hdr), "symbol is ambiguous — %d matches; pass the exact "
-                                   "qualified_name:\n",
+        snprintf(hdr, sizeof(hdr),
+                 "symbol is ambiguous — %d matches; pass the exact "
+                 "qualified_name:\n",
                  candidate_count);
         cbm_sb_append(&sb, hdr);
         int shown = candidate_count < 10 ? candidate_count : 10;
@@ -10550,14 +10551,13 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
     /* Absolute path of the node's file. */
     cbm_project_t proj = {0};
     char root_copy[CBM_SZ_1K] = {0};
-    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
-        !proj.root_path || proj.root_path[0] == '\0') {
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK || !proj.root_path ||
+        proj.root_path[0] == '\0') {
         cbm_project_free_fields(&proj);
         cbm_edit_free_node(&node);
         free(qn);
         free(project);
-        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
-                                   true);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository", true);
     }
     snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
     cbm_project_free_fields(&proj);
@@ -10664,8 +10664,8 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
         if (ci <= 1 && cn.id != node.id) {
             char row[CBM_SZ_512];
             snprintf(row, sizeof(row), "  %s (%s:%d-%d)\n",
-                     cn.qualified_name ? cn.qualified_name : "?",
-                     cn.file_path ? cn.file_path : "?", cn.start_line, cn.end_line);
+                     cn.qualified_name ? cn.qualified_name : "?", cn.file_path ? cn.file_path : "?",
+                     cn.start_line, cn.end_line);
             cbm_sb_append(&orphans, row);
             orphan_count++;
         }
@@ -10776,8 +10776,8 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
         snprintf(num, sizeof(num), ":%d-%d\n  action: delete · -%d lines\n", node.start_line,
                  node.end_line, stats.lines_removed);
         cbm_sb_append(&sb, num);
-        snprintf(num, sizeof(num), "  nested_symbols: %d%s\n  callers: %d direct inbound\n",
-                 nested, nested > 0 ? " (also destroyed)" : "", in_deg);
+        snprintf(num, sizeof(num), "  nested_symbols: %d%s\n  callers: %d direct inbound\n", nested,
+                 nested > 0 ? " (also destroyed)" : "", in_deg);
         cbm_sb_append(&sb, num);
         if (orphan_count > 0) {
             snprintf(num, sizeof(num),
@@ -10916,7 +10916,7 @@ enum {
 
 /* Confidence tiers for rename occurrences. */
 enum {
-    RENAME_TIER_HIGH = 0,  /* definition site or inside a graph-verified caller */
+    RENAME_TIER_HIGH = 0,   /* definition site or inside a graph-verified caller */
     RENAME_TIER_REVIEW = 1, /* whole-identifier match without graph evidence */
     RENAME_TIER_SKIP = 2,   /* comment/docstring-looking line */
 };
@@ -10997,8 +10997,8 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
         free(project);
         free(new_name);
         free(scope);
-        return cbm_mcp_text_result(
-            "new_name must be a valid identifier ([A-Za-z_][A-Za-z0-9_]*)", true);
+        return cbm_mcp_text_result("new_name must be a valid identifier ([A-Za-z_][A-Za-z0-9_]*)",
+                                   true);
     }
     bool def_only = scope && strcmp(scope, "definition_only") == 0;
     free(scope);
@@ -11033,8 +11033,9 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
         char hdr[CBM_SZ_256];
-        snprintf(hdr, sizeof(hdr), "symbol is ambiguous — %d matches; pass the exact "
-                                   "qualified_name:\n",
+        snprintf(hdr, sizeof(hdr),
+                 "symbol is ambiguous — %d matches; pass the exact "
+                 "qualified_name:\n",
                  candidate_count);
         cbm_sb_append(&sb, hdr);
         int shown = candidate_count < 10 ? candidate_count : 10;
@@ -11144,15 +11145,14 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
     /* Project root. */
     cbm_project_t proj = {0};
     char root_copy[CBM_SZ_1K] = {0};
-    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
-        !proj.root_path || proj.root_path[0] == '\0') {
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK || !proj.root_path ||
+        proj.root_path[0] == '\0') {
         cbm_project_free_fields(&proj);
         cbm_edit_free_node(&node);
         free(qn);
         free(project);
         free(new_name);
-        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
-                                   true);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository", true);
     }
     snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
     cbm_project_free_fields(&proj);
@@ -11371,8 +11371,7 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result(msg, true);
     }
 
-    int will_apply = tier_counts[RENAME_TIER_HIGH] +
-                     (force ? tier_counts[RENAME_TIER_REVIEW] : 0) +
+    int will_apply = tier_counts[RENAME_TIER_HIGH] + (force ? tier_counts[RENAME_TIER_REVIEW] : 0) +
                      (include_comments ? tier_counts[RENAME_TIER_SKIP] : 0);
 
     if (dry_run) {
@@ -11395,8 +11394,7 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
             cbm_sb_append(&sb, num);
         }
         cbm_sb_append(&sb, "  per-file (HIGH/REVIEW/SKIP):\n");
-        int rows = file_ctx_count < RENAME_PLAN_FILE_ROWS ? file_ctx_count
-                                                          : RENAME_PLAN_FILE_ROWS;
+        int rows = file_ctx_count < RENAME_PLAN_FILE_ROWS ? file_ctx_count : RENAME_PLAN_FILE_ROWS;
         for (int i = 0; i < rows; i++) {
             int h = 0, r = 0, s = 0;
             for (int oi = 0; oi < files[i].count; oi++) {
@@ -11426,23 +11424,20 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
                 if (cbm_edit_line_offset(files[i].data, files[i].len, files[i].occs[oi].line,
                                          &lo) == CBM_EDIT_OK) {
                     size_t le = lo;
-                    while (le < files[i].len && files[i].data[le] != '\n' &&
-                           (le - lo) < 120) {
+                    while (le < files[i].len && files[i].data[le] != '\n' && (le - lo) < 120) {
                         le++;
                     }
                     memcpy(line_buf, files[i].data + lo, le - lo);
                     line_buf[le - lo] = '\0';
                 }
                 snprintf(num, sizeof(num), "    %s:%d [%s] %s\n", files[i].rel_path,
-                         files[i].occs[oi].line, rename_tier_name(files[i].tiers[oi]),
-                         line_buf);
+                         files[i].occs[oi].line, rename_tier_name(files[i].tiers[oi]), line_buf);
                 cbm_sb_append(&sb, num);
                 samples++;
             }
         }
         snprintf(num, sizeof(num), "  will_apply: %d occurrence(s) (HIGH%s%s)\n", will_apply,
-                 force ? " + REVIEW" : "",
-                 include_comments ? " + SKIP" : "");
+                 force ? " + REVIEW" : "", include_comments ? " + SKIP" : "");
         cbm_sb_append(&sb, num);
         if (tier_counts[RENAME_TIER_REVIEW] > 0 && !force) {
             snprintf(num, sizeof(num),
@@ -11528,8 +11523,7 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
         int apply_n = 0;
         for (int oi = 0; oi < rec->count; oi++) {
             int tier = rec->tiers[oi];
-            bool take = tier == RENAME_TIER_HIGH ||
-                        (tier == RENAME_TIER_REVIEW && force) ||
+            bool take = tier == RENAME_TIER_HIGH || (tier == RENAME_TIER_REVIEW && force) ||
                         (tier == RENAME_TIER_SKIP && include_comments);
             mask[oi] = take;
             if (take) {
@@ -11591,8 +11585,7 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
         cbm_store_t *fresh = compare_open_project_store(effective_project);
         if (fresh) {
             cbm_node_t nn = {0};
-            if (cbm_store_find_node_by_qn(fresh, effective_project, new_qn, &nn) ==
-                CBM_STORE_OK) {
+            if (cbm_store_find_node_by_qn(fresh, effective_project, new_qn, &nn) == CBM_STORE_OK) {
                 new_resolves = true;
                 cbm_edit_free_node(&nn);
             }
@@ -11625,8 +11618,8 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
     cbm_sb_append(&sb, " → ");
     cbm_sb_append(&sb, new_name);
     char num[CBM_SZ_512];
-    snprintf(num, sizeof(num), "\n  renamed: %d occurrence(s) across %d file(s)\n",
-             total_applied, files_written);
+    snprintf(num, sizeof(num), "\n  renamed: %d occurrence(s) across %d file(s)\n", total_applied,
+             files_written);
     cbm_sb_append(&sb, num);
     if (files_failed > 0) {
         snprintf(num, sizeof(num),
@@ -11646,8 +11639,9 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
                            ? "  reindex: incremental OK\n"
                            : "  reindex: FAILED — run index_repository manually before relying "
                              "on graph data\n");
-    snprintf(num, sizeof(num), "  verification: new symbol %s in re-indexed graph; %d old-name "
-                               "occurrence(s) remain on disk (the unapplied tiers above)\n",
+    snprintf(num, sizeof(num),
+             "  verification: new symbol %s in re-indexed graph; %d old-name "
+             "occurrence(s) remain on disk (the unapplied tiers above)\n",
              new_resolves ? "resolves" : "DOES NOT RESOLVE — investigate", remaining_old);
     cbm_sb_append(&sb, num);
     char *text = cbm_sb_finish(&sb);
@@ -11686,8 +11680,7 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
         (strstr(path, "\\..") != NULL && strstr(path, "\\..")[3] == '\0')) {
         free(path);
         free(project);
-        return cbm_mcp_text_result("path must be a project-relative path without '..'",
-                                   true);
+        return cbm_mcp_text_result("path must be a project-relative path without '..'", true);
     }
 
     cbm_store_t *store = resolve_store(srv, project);
@@ -11711,13 +11704,12 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
 
     cbm_project_t proj = {0};
     char root_copy[CBM_SZ_1K] = {0};
-    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
-        !proj.root_path || proj.root_path[0] == '\0') {
+    if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK || !proj.root_path ||
+        proj.root_path[0] == '\0') {
         cbm_project_free_fields(&proj);
         free(path);
         free(project);
-        return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
-                                   true);
+        return cbm_mcp_text_result("project root path unavailable — re-run index_repository", true);
     }
     snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
     cbm_project_free_fields(&proj);
@@ -11797,8 +11789,9 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
             snprintf(num, sizeof(num), "\n  current on disk: (file is missing)");
         }
         cbm_sb_append(&sb, num);
-        snprintf(num, sizeof(num), "\n  restore from: %s\n  backup content: %zu bytes, %d "
-                                   "lines\n",
+        snprintf(num, sizeof(num),
+                 "\n  restore from: %s\n  backup content: %zu bytes, %d "
+                 "lines\n",
                  backup_path, backup_len, backup_lines);
         cbm_sb_append(&sb, num);
         cbm_sb_append(&sb, "  safety: the current content is itself backed up before the "
@@ -11841,8 +11834,7 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
         free(backup_data);
         free(path);
         free(project);
-        return cbm_mcp_text_result("restore failed (filesystem error) — nothing was written",
-                                   true);
+        return cbm_mcp_text_result("restore failed (filesystem error) — nothing was written", true);
     }
 
     /* Post-verify: the file on disk must now equal the backup content. */
