@@ -194,8 +194,7 @@ static bool edit_backup_name_parse(const char *name, long long *epoch_out, long 
     return true;
 }
 
-int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out,
-                           size_t out_sz) {
+int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out, size_t out_sz) {
     if (!backup_dir || !basename || !out || out_sz == 0 || basename[0] == '\0') {
         return CBM_EDIT_ERR_ARGS;
     }

@@ -16,8 +16,7 @@
 #include <string.h>
 
 static bool is_ident_byte(int c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-           c == '_';
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
 bool cbm_edit_is_valid_identifier(const char *s) {
@@ -99,8 +98,8 @@ int cbm_edit_scan_identifier(const char *data, size_t len, const char *name,
             }
         }
         bool left_ok = pos == 0 || !is_ident_byte((unsigned char)data[pos - 1]);
-        bool right_ok = pos + name_len >= len ||
-                        !is_ident_byte((unsigned char)data[pos + name_len]);
+        bool right_ok =
+            pos + name_len >= len || !is_ident_byte((unsigned char)data[pos + name_len]);
         if (left_ok && right_ok && memcmp(data + pos, name, name_len) == 0) {
             occs[n].line = line;
             occs[n].offset = pos;
@@ -120,8 +119,7 @@ int cbm_edit_scan_identifier(const char *data, size_t len, const char *name,
 int cbm_edit_rename_in_buffer(const char *data, size_t len, const char *old_name,
                               const char *new_name, const cbm_edit_occurrence_t *occs,
                               const bool *apply, int count, char **out_data, size_t *out_len) {
-    if (!data || !old_name || !new_name || !occs || !apply || !out_data || !out_len ||
-        count < 1) {
+    if (!data || !old_name || !new_name || !occs || !apply || !out_data || !out_len || count < 1) {
         return CBM_EDIT_ERR_ARGS;
     }
     size_t old_len_name = strlen(old_name);

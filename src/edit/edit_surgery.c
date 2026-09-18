@@ -237,8 +237,8 @@ int cbm_edit_surgery_apply(const char *old_data, size_t old_len, int start_line,
     if (out_stats) {
         out_stats->start_line = start_line;
         out_stats->end_line = end_line;
-        out_stats->lines_removed = (action == CBM_EDIT_REPLACE_BODY) ? (end_line - start_line + 1)
-                                                                     : 0;
+        out_stats->lines_removed =
+            (action == CBM_EDIT_REPLACE_BODY) ? (end_line - start_line + 1) : 0;
         out_stats->lines_added = cbm_edit_count_lines(new_data + r0 + prefix_len, norm_len);
     }
     *out_data = new_data;
