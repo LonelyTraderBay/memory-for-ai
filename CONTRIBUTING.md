@@ -204,3 +204,15 @@ scripts/install-git-hooks.sh
 
 Forgot to sign? `git commit --amend -s` fixes the last commit;
 `git rebase --signoff <base>` fixes a whole branch.
+
+> **Warning — `--no-verify` also skips auto-sign-off.** With
+> `git config commit.signOff true`, the trailer is added automatically on
+> every commit — but `--no-verify` suppresses it too (observed on Git for
+> Windows 2.47.1). When you must bypass hooks, always pass `-s` explicitly:
+>
+> ```bash
+> git commit --no-verify -s -m "..."
+> ```
+>
+> The pre-push DCO gate (`scripts/hooks/pre-push`) will otherwise block the
+> push — it catches exactly this case.
