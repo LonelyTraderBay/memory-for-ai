@@ -27,7 +27,10 @@ while IFS= read -r sha; do
     CHECKED=$((CHECKED + 1))
     author_email=$(git log -1 --format='%ae' "$sha")
     trailers=$(git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha")
-    if ! printf '%s' "$trailers" | grep -qiF "<$author_email>"; then
+    # Case-insensitive substring match in pure bash — GNU grep 3.0 shipped
+    # with Git Bash/MSYS2 aborts (SIGABRT) on `grep -i` in multibyte
+    # locales, which would false-BLOCK every signed commit on Windows.
+    if [[ "${trailers,,}" != *"<${author_email,,}>"* ]]; then
         echo "BLOCKED: $sha lacks a Signed-off-by matching its author:"
         git log -1 --format='  author: %an <%ae>%n  subject: %s' "$sha"
         echo "  fix: git commit --amend -s   (or: git rebase --signoff <base>)"

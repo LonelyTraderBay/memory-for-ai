@@ -11,7 +11,7 @@ Contributions are welcome. This guide covers setup, testing, and PR guidelines.
 ```bash
 git clone https://github.com/LonelyTraderBay/memory-for-ai.git
 cd memory-for-ai
-git config core.hooksPath scripts/hooks  # activates pre-commit security checks
+git config core.hooksPath scripts/hooks  # activates pre-commit checks + pre-push DCO gate
 scripts/build.sh
 ```
 
