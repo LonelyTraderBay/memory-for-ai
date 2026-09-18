@@ -123,7 +123,7 @@ int cbm_edit_surgery_delete(const char *old_data, size_t old_len, int start_line
      * the region ends at EOF, take the blank line right before it instead. */
     if (r1 < old_len) {
         size_t p = r1;
-        if (p < old_len && old_data[p] == '\r') {
+        if (old_data[p] == '\r') {
             p++;
         }
         if (p < old_len && old_data[p] == '\n') {
@@ -133,7 +133,7 @@ int cbm_edit_surgery_delete(const char *old_data, size_t old_len, int start_line
         /* Region ends at EOF. Walk back to the start of the preceding line
          * and swallow it when it is blank (empty or a lone CR). */
         size_t p = r0;
-        if (p > 0 && old_data[p - 1] == '\n') {
+        if (old_data[p - 1] == '\n') {
             p--;
         }
         if (p > 0 && old_data[p - 1] == '\r') {
