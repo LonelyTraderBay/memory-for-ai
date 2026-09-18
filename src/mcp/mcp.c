@@ -10382,8 +10382,8 @@ static char *handle_edit_symbol(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("edit blocked by another mutation for this project", true);
     }
     char backup_dir[CBM_SZ_4K];
-    const char *cache_dir = cbm_workspace_cache_dir();
-    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    const char *ws_cache = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
     char backup_path[CBM_SZ_4K] = {0};
     int wrc = cbm_edit_write_atomic(abs_path, new_data, new_len, &file_state, backup_dir,
                                     backup_path, sizeof(backup_path));
@@ -10817,8 +10817,8 @@ static char *handle_delete_symbol(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("delete blocked by another mutation for this project", true);
     }
     char backup_dir[CBM_SZ_4K];
-    const char *cache_dir = cbm_workspace_cache_dir();
-    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    const char *ws_cache = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
     char backup_path[CBM_SZ_4K] = {0};
     int wrc = cbm_edit_write_atomic(abs_path, new_data, new_len, &file_state, backup_dir,
                                     backup_path, sizeof(backup_path));
@@ -11409,8 +11409,9 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
             snprintf(num, sizeof(num), "    %s: %d/%d/%d\n", files[i].rel_path, h, r, s);
             cbm_sb_append(&sb, num);
         }
-        if (file_ctx_count > rows) {
-            snprintf(num, sizeof(num), "    ... and %d more files\n", file_ctx_count - rows);
+        if (file_ctx_count > RENAME_PLAN_FILE_ROWS) {
+            snprintf(num, sizeof(num), "    ... and %d more files\n",
+                     file_ctx_count - RENAME_PLAN_FILE_ROWS);
             cbm_sb_append(&sb, num);
         }
         /* Sample occurrences with tier labels. */
@@ -11507,8 +11508,8 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("rename blocked by another mutation for this project", true);
     }
     char backup_dir[CBM_SZ_4K];
-    const char *cache_dir = cbm_workspace_cache_dir();
-    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    const char *ws_cache = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
     int files_written = 0;
     int files_failed = 0;
     int total_applied = 0;
@@ -11731,8 +11732,8 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
     }
 
     char backup_dir[CBM_SZ_4K];
-    const char *cache_dir = cbm_workspace_cache_dir();
-    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", cache_dir ? cache_dir : ".");
+    const char *ws_cache = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
 
     char backup_path[CBM_SZ_4K] = {0};
     int brc = cbm_edit_latest_backup(backup_dir, base, backup_path, sizeof(backup_path));
