@@ -188,6 +188,27 @@ static int index_callback(const char *name, const char *path, void *ud) {
     return 0;
 }
 
+/* Detection-budget polling for git-strategy assertions. The watcher's
+ * contract is at-least-once: a transient probe failure (loaded CI runner →
+ * git subprocess exits non-zero) preserves the committed baselines and
+ * retries on a later poll instead of losing the change (#937), and the
+ * COMMAND_FAILED path is deliberately quiet. A single touch+poll therefore
+ * is not guaranteed to observe an edit on a busy machine; poll within a
+ * bounded budget and assert the converged count. Overshoot is impossible
+ * when the dirty state changed exactly once — repeat polls over an
+ * unchanged state stay quiet. */
+#define WATCHER_WAIT_ATTEMPTS 200
+#define WATCHER_WAIT_US 25000
+static void wait_index_count(cbm_watcher_t *w, const char *project, int expected) {
+    for (int i = 0; i < WATCHER_WAIT_ATTEMPTS && index_call_count < expected; i++) {
+        cbm_watcher_touch(w, project);
+        cbm_watcher_poll_once(w);
+        if (index_call_count < expected) {
+            cbm_usleep(WATCHER_WAIT_US);
+        }
+    }
+}
+
 TEST(watcher_poll_no_projects) {
     cbm_store_t *store = cbm_store_open_memory();
     cbm_watcher_t *w = cbm_watcher_new(store, index_callback, NULL);
@@ -2070,8 +2091,7 @@ TEST(watcher_continued_dirty) {
     }
 
     /* First detection */
-    cbm_watcher_touch(w, "cont-repo");
-    cbm_watcher_poll_once(w);
+    wait_index_count(w, "cont-repo", 1);
     ASSERT_EQ(index_call_count, 1);
 
     /* Still dirty but UNCHANGED — must stay quiet (#937) */
@@ -2085,8 +2105,7 @@ TEST(watcher_continued_dirty) {
         snprintf(_p, sizeof(_p), "%s/file.txt", tmpdir);
         th_append_file(_p, "dirtier\n");
     }
-    cbm_watcher_touch(w, "cont-repo");
-    cbm_watcher_poll_once(w);
+    wait_index_count(w, "cont-repo", 2);
     ASSERT_EQ(index_call_count, 2);
 
     /* Commit to clean up, then poll — should not trigger */
