@@ -243,4 +243,4 @@ Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `
 
 ### Dữ liệu còn thiếu
 
-A/B đo được *giá trị mỗi lần dùng*, không đo được *tần suất nhu cầu* — không có telemetry về việc agent thật sự cần move/inline bao nhiêu lần trong session. Hành động kèm theo: mở 1 GitHub issue pinned thu thập use-case move/inline từ người dùng thật; nếu inline không có demand sau 1–2 tháng thì xóa hẳn khỏi roadmap thay vì treo NO-GO vĩnh viễn.
+A/B đo được *giá trị mỗi lần dùng*, không đo được *tần suất nhu cầu* — không có telemetry về việc agent thật sự cần move/inline bao nhiêu lần trong session. Hành động kèm theo: đã mở GitHub issue pinned [#12 — RFC use-case move/inline](https://github.com/LonelyTraderBay/memory-for-ai/issues/12) thu thập use-case từ người dùng thật; nếu inline không có demand sau 1–2 tháng (tính từ 2026-09-19) thì xóa hẳn khỏi roadmap thay vì treo NO-GO vĩnh viễn.
