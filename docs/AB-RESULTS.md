@@ -81,3 +81,44 @@ Full transitive inbound trace of `cbm_fopen`: **11 calls / 17,290 bytes ≈ 4.3K
 ## Reproduce
 
 Follow [MEASURING.md](MEASURING.md) §3 (rigorous A/B protocol) with your own repository, question set, and model. Keep artifacts outside the worktrees, record raw paired counts beside every ratio, and publish your caveats with your numbers — as above.
+
+## A/B — edit tools: `rename_symbol` vs grep + full-file rewrite (2026-09-19)
+
+Second measurement family, this time for the **edit** path (THIET-KE-EDIT-TOOLS.md §8). Mechanical execution by `scripts/ab-edit-tools.py` against the dev build at `beecc49b` — no model in the loop, both conditions executed by the same script, quality proven by diffing the resulting trees (must be byte-identical after CRLF normalization).
+
+**Task:** rename one Python function, fan-out rising from 2 to 12 occurrences across 1–5 files. Two file-size scenarios: `small` (bare fixture, ~10 lines/file) and `padded300` (~300 lines of inert code per file, simulating realistic module size).
+
+- **Condition A (edit tools):** `rename_symbol` dry-run plan → apply (`force=true`) → `search_graph` verify = **3 calls**, plus one up-front `index_repository` (amortized per project, not per rename).
+- **Condition B (manual):** `grep -rnw` → read every matched file **in full** → rewrite every file **in full** → verify grep (MEASURING.md read-whole-file rule).
+- Token estimate = tool-output bytes ÷ 4, same convention as the read-path table above.
+
+| task | files | calls A/B | tokens A (est) | tokens B (est) | token reduction | quality |
+|---|---|---|---|---|---|---|
+| small/t1_fanout_1 | 1 | 3/4 | 935 | 86 | −987.2% | PASS |
+| small/t2_fanout_2 | 2 | 3/6 | 1,035 | 167 | −519.8% | PASS |
+| small/t3_fanout_3 | 3 | 3/8 | 1,084 | 249 | −335.3% | PASS |
+| small/t4_fanout_4 | 4 | 3/10 | 1,133 | 330 | −243.3% | PASS |
+| small/t5_fanout_5 | 5 | 3/12 | 1,186 | 477 | −148.6% | PASS |
+| **total small** | 15 | 15/40 | 5,373 | 1,309 | **−310.5%** | 5/5 PASS |
+| padded300/t1_fanout_1 | 1 | 3/4 | 938 | 3,802 | 75.3% | PASS |
+| padded300/t2_fanout_2 | 2 | 3/6 | 1,039 | 7,599 | 86.3% | PASS |
+| padded300/t3_fanout_3 | 3 | 3/8 | 1,089 | 11,397 | 90.4% | PASS |
+| padded300/t4_fanout_4 | 4 | 3/10 | 1,139 | 15,194 | 92.5% | PASS |
+| padded300/t5_fanout_5 | 5 | 3/12 | 1,193 | 19,057 | 93.7% | PASS |
+| **total padded300** | 15 | 15/40 | 5,398 | 57,049 | **90.5%** | 5/5 PASS |
+
+Raw paired counts: `build/ab-edit-tools/ab_edit_results.csv` (regenerate with `python scripts/ab-edit-tools.py`).
+
+### What this actually shows
+
+1. **Break-even is file size, not fan-out.** A's cost is ~flat (≈1.0–1.2K tokens per rename, dominated by the plan/diff preview) regardless of occurrences or file size. B's cost grows linearly with total bytes of the files touched. On ~10-line files the edit tools **lose** (fixed overhead exceeds rewriting a tiny file); at ~300 lines/file they cut tokens **75–94%**. Real modules are usually closer to the second scenario.
+2. **Call-count win is constant:** 3 calls vs 2·files + 2 (grep + verify). At 5 files that is 3 vs 12.
+3. **Quality is equal by construction** — all 10 tree diffs byte-identical, and A's edits go through syntax-gate + atomic write + journal (crash-safe, undoable), which the mechanical full-file rewrite does not provide.
+4. The honest negative result (`small` scenario) sets the usage rule: **for a rename inside one small file, plain read/edit is cheaper; use `rename_symbol` when the change fans out across files or the files are large** — exactly the workloads where manual rewriting is also the most error-prone.
+
+### Limitations (edit-path specific)
+
+5. **Synthetic fixture, mechanical executor.** No model session: real sessions add reasoning tokens to both conditions, and a model doing condition B might edit only matched line ranges instead of rewriting whole files (cheaper than our B, but then it must locate every safe edit boundary itself — the accuracy risk the graph removes).
+6. **Padding is inert code**, not realistic surrounding logic; it measures the pure "pay for unrelated content" effect, which is the dominant term but not the only one.
+7. **A's fixed cost includes the CLI/daemon response envelope** (~1K tokens/rename); MCP clients with cached tool manifests may see slightly different per-call overhead. Direction and rough magnitude are trustworthy; the exact break-even line count is not.
+8. Same token-estimation caveat as the read path (bytes ÷ 4, not the client's meter).

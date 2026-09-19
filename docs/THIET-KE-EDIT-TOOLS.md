@@ -132,7 +132,7 @@ Khác biệt then chốt so với safe-delete của LSP: usage check dùng **gra
 ### Input bổ sung
 
 - `include_tests` (default false): cho phép xóa cả khi chỉ còn test callers — response liệt kê các test bị mồ côi để agent quyết định dọn tiếp.
-- `recursive_orphans` (default false, *phase 2*): sau khi xóa, quét callee của symbol vừa xóa — callee nào mất hết caller thì gợi ý xóa tiếp (dead-code cascade, chính là pattern "propagate deletions" nhưng chủ động hơn nhờ graph).
+- `recursive_orphans` (default false): sau khi xóa, quét callee của symbol vừa xóa — callee nào mất hết caller thì liệt kê làm orphan gợi ý xóa tiếp (dead-code cascade, chính là pattern "propagate deletions" nhưng chủ động hơn nhờ graph). Cascade resolve theo **node ID** (không phải qualified name), conservative: caller list bị cap hoặc resolve ambiguous thì không liệt kê; tối đa 10 orphan/response. ✅ Đã implement.
 
 ## 6. Tool 3: `rename_symbol`
 
@@ -190,13 +190,13 @@ LSP rename "tin mù" rằng language server thấy hết references. memory-for-
 
 ## 8. Testing strategy
 
-| Tầng | Nội dung |
-|---|---|
-| Unit (`tests/`) | edit_surgery trên buffer: replace/insert/delete ở đầu/giữa/cuối file, CRLF vs LF, file không có trailing newline, nested symbols, unicode |
-| Integration | Fixture repos đa ngôn ngữ (ít nhất Python + TS + Go + C — 4 ngôn ngữ có full Hybrid-LSP): edit → re-index → assert graph mới (node range, edges) đúng |
-| Concurrency | Fault-injection theo pattern sẵn có của `pipeline_incremental.c` (`*_test_fail_*_once`): ép watcher chạy giữa write, ép rename thất bại nửa chừng → assert không file nào corrupt |
-| Rename adversarial | Repo có reflection/string-lookup → assert occurrences rơi đúng tầng REVIEW/SKIP, không bị sửa mò |
-| A/B đo giá trị | Theo `docs/MEASURING.md`: so token/tool-call của "rename bằng edit tools" vs "rename bằng grep + read + write thủ công" trên 5 task chuẩn |
+| Tầng | Nội dung | Trạng thái |
+|---|---|---|
+| Unit (`tests/`) | edit_surgery trên buffer: replace/insert/delete ở đầu/giữa/cuối file, CRLF vs LF, file không có trailing newline, nested symbols, unicode | ✅ suite `edit` 36 test |
+| Integration | Fixture repos đa ngôn ngữ (Python + TS + Go + C — 4 ngôn ngữ có full Hybrid-LSP): edit → re-index đồng bộ → assert disk + graph mới (node range, edges) đúng qua production MCP flow | ✅ suite `edit_integration` 11 test (`tests/test_edit_integration.c`) |
+| Concurrency | Fault-injection theo pattern sẵn có của `pipeline_incremental.c` (`*_test_fail_*_once`): ép write thất bại (`CBM_EDIT_TEST_API=1` + `cbm_edit_write_test_fail_once`) → assert không file nào corrupt, journal/undo vẫn nhất quán | ✅ 2 test fault trong suite `edit_integration` |
+| Rename adversarial | Repo có reflection/string-lookup → assert occurrences rơi đúng tầng REVIEW/SKIP, không bị sửa mò | ✅ (suite `edit`) |
+| A/B đo giá trị | Theo `docs/MEASURING.md`: so token/tool-call của "rename bằng edit tools" vs "rename bằng grep + read + write thủ công" trên 5 task chuẩn × 2 kịch bản kích thước file | ✅ `scripts/ab-edit-tools.py` → kết quả tại `docs/AB-RESULTS.md` §"A/B — edit tools": giảm 90.5% token ở file ~300 dòng, thua trên file ~10 dòng (break-even là kích thước file, không phải fan-out) |
 
 ## 9. Roadmap & effort ước lượng
 
@@ -207,7 +207,7 @@ LSP rename "tin mù" rằng language server thấy hết references. memory-for-
 | 3 | `rename_symbol` 2-phase (plan/apply) + coverage gate + 3 tầng confidence | ~3–4 tuần | Phase 1, 2 | ✅ Xong |
 | 4 | `undo_edit` (restore từ backup) + `expected_counts` + polish docs/AGENT_GUIDE | ~1 tuần | Phase 3 | ✅ Xong |
 
-Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `docs/llms.txt`, và số "18 tools" → tăng tương ứng ở README (hiện tại: 22 tools). Unit test C cho cả 4 tool nằm trong `tests/test_edit.c` (suite `edit`, 36 test); logic parity test (không cần compiler) ở `build/edit_surgery_logic_test.py` (27 ca).
+Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `docs/llms.txt`, và số "18 tools" → tăng tương ứng ở README (hiện tại: 22 tools). Unit test C cho cả 4 tool nằm trong `tests/test_edit.c` (suite `edit`, 36 test); integration + fault-injection trong `tests/test_edit_integration.c` (suite `edit_integration`, 11 test); logic parity test (không cần compiler) ở `build/edit_surgery_logic_test.py` (27 ca).
 
 ## 10. Rủi ro chính & giảm thiểu
 
