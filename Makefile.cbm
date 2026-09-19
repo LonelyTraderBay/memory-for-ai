@@ -358,7 +358,8 @@ EDIT_SRCS = \
     src/edit/edit_surgery.c \
     src/edit/edit_plan.c \
     src/edit/edit_write.c \
-    src/edit/edit_rename.c
+    src/edit/edit_rename.c \
+    src/edit/edit_move.c
 
 # Shared MCP daemon coordination and local transport
 DAEMON_SRCS = \

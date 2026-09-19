@@ -41,8 +41,8 @@ static int expect_delete(const char *old_data, int start, int end, const char *e
     size_t out_len = 0;
     cbm_edit_surgery_stats_t stats;
     memset(&stats, 0, sizeof(stats));
-    int rc = cbm_edit_surgery_delete(old_data, strlen(old_data), start, end, &out, &out_len,
-                                     &stats);
+    int rc =
+        cbm_edit_surgery_delete(old_data, strlen(old_data), start, end, &out, &out_len, &stats);
     ASSERT_EQ(rc, CBM_EDIT_OK);
     ASSERT_NOT_NULL(out);
     ASSERT_EQ((long long)out_len, (long long)strlen(expected));
@@ -128,8 +128,8 @@ TEST(line_offset_basic) {
 /* ── surgery: replace / insert (mirrors Python cases 1-7) ───────── */
 
 TEST(surgery_replace_middle) {
-    EXPECT_SURGERY("int a() { return 1; }\nint b() {\n  return 2;\n}\nint c() { return 3; }\n",
-                   2, 4, CBM_EDIT_REPLACE_BODY, "int b() {\n  return 42;\n}",
+    EXPECT_SURGERY("int a() { return 1; }\nint b() {\n  return 2;\n}\nint c() { return 3; }\n", 2,
+                   4, CBM_EDIT_REPLACE_BODY, "int b() {\n  return 42;\n}",
                    "int a() { return 1; }\nint b() {\n  return 42;\n}\nint c() { return 3; }\n");
     PASS();
 }
@@ -190,8 +190,8 @@ TEST(surgery_range_out_of_bounds_rejected) {
 /* ── surgery: delete (mirrors Python cases 8-13) ────────────────── */
 
 TEST(delete_middle_absorbs_following_blank) {
-    EXPECT_DELETE("int a() { return 1; }\nint b() {\n  return 2;\n}\n\nint c() { return 3; }\n",
-                  2, 4, "int a() { return 1; }\nint c() { return 3; }\n");
+    EXPECT_DELETE("int a() { return 1; }\nint b() {\n  return 2;\n}\n\nint c() { return 3; }\n", 2,
+                  4, "int a() { return 1; }\nint c() { return 3; }\n");
     PASS();
 }
 
@@ -274,8 +274,8 @@ static int expect_rename(const char *data, const char *old_name, const char *new
                          const char *expected) {
     char *out = NULL;
     size_t out_len = 0;
-    int rc = cbm_edit_rename_in_buffer(data, strlen(data), old_name, new_name, occs, apply,
-                                       count, &out, &out_len);
+    int rc = cbm_edit_rename_in_buffer(data, strlen(data), old_name, new_name, occs, apply, count,
+                                       &out, &out_len);
     ASSERT_EQ(rc, CBM_EDIT_OK);
     ASSERT_NOT_NULL(out);
     ASSERT_EQ((long long)out_len, (long long)strlen(expected));
@@ -340,8 +340,8 @@ TEST(rename_stale_occurrence_rejected) {
     bool apply[1] = {true};
     char *out = NULL;
     size_t out_len = 0;
-    int rc = cbm_edit_rename_in_buffer(data, strlen(data), "foo", "baz", occs, apply, 1, &out,
-                                       &out_len);
+    int rc =
+        cbm_edit_rename_in_buffer(data, strlen(data), "foo", "baz", occs, apply, 1, &out, &out_len);
     ASSERT_NEQ(rc, CBM_EDIT_OK);
     PASS();
 }
@@ -373,9 +373,8 @@ TEST(line_looks_like_comment) {
 TEST(plan_preview_replace_contains_markers) {
     const char *old_data = "int a() { return 1; }\nint b() { return 2; }\n";
     const char *content = "int b() { return 42; }";
-    char *preview = cbm_edit_plan_preview(old_data, strlen(old_data), 2, 2,
-                                          CBM_EDIT_REPLACE_BODY, content, strlen(content), 3,
-                                          1 << 16);
+    char *preview = cbm_edit_plan_preview(old_data, strlen(old_data), 2, 2, CBM_EDIT_REPLACE_BODY,
+                                          content, strlen(content), 3, 1 << 16);
     ASSERT_NOT_NULL(preview);
     /* removed lines are prefixed "- ", added lines "+ ", context "  " */
     ASSERT_NOT_NULL(strstr(preview, "- int b() { return 2; }"));
@@ -391,20 +390,18 @@ TEST(plan_preview_respects_max_bytes) {
      * (the truncation marker is appended only when it still fits). Note that
      * max_bytes < 256 is rejected with NULL by contract. */
     const char *old_data = "line one\nline two\n";
-    const char *content =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
-        "cccccccccccccccccccccccccccccc\n"
-        "dddddddddddddddddddddddddddddd\n"
-        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n"
-        "ffffffffffffffffffffffffffffff\n"
-        "gggggggggggggggggggggggggggggg\n"
-        "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\n"
-        "iiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
-        "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjj\n";
-    char *preview = cbm_edit_plan_preview(old_data, strlen(old_data), 1, 1,
-                                          CBM_EDIT_REPLACE_BODY, content, strlen(content), 3,
-                                          256);
+    const char *content = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                          "cccccccccccccccccccccccccccccc\n"
+                          "dddddddddddddddddddddddddddddd\n"
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n"
+                          "ffffffffffffffffffffffffffffff\n"
+                          "gggggggggggggggggggggggggggggg\n"
+                          "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\n"
+                          "iiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
+                          "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjj\n";
+    char *preview = cbm_edit_plan_preview(old_data, strlen(old_data), 1, 1, CBM_EDIT_REPLACE_BODY,
+                                          content, strlen(content), 3, 256);
     ASSERT_NOT_NULL(preview);
     ASSERT_LTE((long long)strlen(preview), 256);
     free(preview);
@@ -585,6 +582,225 @@ TEST(undo_roundtrip_via_latest_backup) {
     PASS();
 }
 
+/* ── move: extract / append / Python import rewrite ─────────────── */
+
+static int expect_extract(const char *data, int start, int end, const char *expected) {
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = cbm_edit_move_extract_lines(data, strlen(data), start, end, &out, &out_len);
+    ASSERT_EQ(rc, CBM_EDIT_OK);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ((long long)out_len, (long long)strlen(expected));
+    ASSERT_MEM_EQ(out, expected, out_len);
+    free(out);
+    return 0;
+}
+
+static int expect_append(const char *data, const char *def, const char *expected) {
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = cbm_edit_move_append_definition(data, strlen(data), def, strlen(def), &out, &out_len);
+    ASSERT_EQ(rc, CBM_EDIT_OK);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ((long long)out_len, (long long)strlen(expected));
+    ASSERT_MEM_EQ(out, expected, out_len);
+    free(out);
+    return 0;
+}
+
+static int expect_py_rewrite(const char *data, const char *old_mod, const char *new_mod,
+                             const char *symbol, const char *expected) {
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = cbm_edit_move_rewrite_python_imports(data, strlen(data), old_mod, new_mod, symbol,
+                                                  &out, &out_len, NULL);
+    ASSERT_EQ(rc, CBM_EDIT_OK);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ((long long)out_len, (long long)strlen(expected));
+    ASSERT_MEM_EQ(out, expected, out_len);
+    free(out);
+    return 0;
+}
+
+#define EXPECT_EXTRACT(...) ASSERT_EQ(expect_extract(__VA_ARGS__), 0)
+#define EXPECT_APPEND(...) ASSERT_EQ(expect_append(__VA_ARGS__), 0)
+#define EXPECT_PY_REWRITE(...) ASSERT_EQ(expect_py_rewrite(__VA_ARGS__), 0)
+
+TEST(move_extract_middle) {
+    EXPECT_EXTRACT("line1\nline2\nline3\nline4\n", 2, 3, "line2\nline3\n");
+    PASS();
+}
+
+TEST(move_extract_unterminated_last_line) {
+    EXPECT_EXTRACT("line1\nline2", 2, 2, "line2");
+    PASS();
+}
+
+TEST(move_extract_out_of_range_rejected) {
+    char *out = NULL;
+    size_t out_len = 0;
+    ASSERT_EQ(cbm_edit_move_extract_lines("line1\n", 6, 2, 2, &out, &out_len), CBM_EDIT_ERR_RANGE);
+    PASS();
+}
+
+TEST(move_append_to_empty_file) {
+    EXPECT_APPEND("", "def f():\n    pass\n", "def f():\n    pass\n");
+    PASS();
+}
+
+TEST(move_append_inserts_one_blank_separator) {
+    EXPECT_APPEND("import os\n", "def f():\n    pass\n", "import os\n\ndef f():\n    pass\n");
+    PASS();
+}
+
+TEST(move_append_no_double_blank_when_already_blank) {
+    EXPECT_APPEND("import os\n\n", "def f():\n    pass\n", "import os\n\ndef f():\n    pass\n");
+    PASS();
+}
+
+TEST(move_append_terminates_unterminated_last_line) {
+    EXPECT_APPEND("import os", "def f():\n    pass\n", "import os\n\ndef f():\n    pass\n");
+    PASS();
+}
+
+TEST(move_append_crlf_file_normalizes_def) {
+    EXPECT_APPEND("import os\r\n", "def f():\n    pass\n",
+                  "import os\r\n\r\ndef f():\r\n    pass\r\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_single_name) {
+    EXPECT_PY_REWRITE("from mod_a import f\n", "mod_a", "mod_b", "f", "from mod_b import f\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_multi_name_split) {
+    EXPECT_PY_REWRITE("from mod_a import f, g\n", "mod_a", "mod_b", "f",
+                      "from mod_a import g\nfrom mod_b import f\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_multi_name_split_keeps_order) {
+    EXPECT_PY_REWRITE("from mod_a import g, f, h\n", "mod_a", "mod_b", "f",
+                      "from mod_a import g, h\nfrom mod_b import f\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_alias_kept) {
+    cbm_edit_move_py_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "from mod_a import f as f1\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_python_imports(data, strlen(data), "mod_a", "mod_b", "f", &out,
+                                                   &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, "from mod_b import f as f1\n");
+    ASSERT_EQ(st.import_lines_rewritten, 1);
+    ASSERT_EQ(st.aliases_kept, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_py_rewrite_trailing_comment_preserved) {
+    EXPECT_PY_REWRITE("from mod_a import f  # legacy\n", "mod_a", "mod_b", "f",
+                      "from mod_b import f  # legacy\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_split_keeps_comment_on_old_line) {
+    EXPECT_PY_REWRITE("from mod_a import f, g  # both\n", "mod_a", "mod_b", "f",
+                      "from mod_a import g  # both\nfrom mod_b import f\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_indented_split_keeps_indent) {
+    EXPECT_PY_REWRITE("def use():\n    from mod_a import f, g\n", "mod_a", "mod_b", "f",
+                      "def use():\n    from mod_a import g\n    from mod_b import f\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_ignores_other_modules) {
+    const char *data = "from other import f\nfrom mod_a import g\n";
+    EXPECT_PY_REWRITE(data, "mod_a", "mod_b", "f", data);
+    PASS();
+}
+
+TEST(move_py_rewrite_exact_module_match_only) {
+    /* `mod_a` must not match `mod_a.sub` or `pkg.mod_a` */
+    const char *data = "from mod_a.sub import f\nfrom pkg.mod_a import f\n";
+    EXPECT_PY_REWRITE(data, "mod_a", "mod_b", "f", data);
+    PASS();
+}
+
+TEST(move_py_rewrite_plain_import_counted_untouched) {
+    cbm_edit_move_py_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "import mod_a\nimport os, mod_a as ma\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_python_imports(data, strlen(data), "mod_a", "mod_b", "f", &out,
+                                                   &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.plain_import_refs, 2);
+    ASSERT_EQ(st.import_lines_rewritten, 0);
+    free(out);
+    PASS();
+}
+
+TEST(move_py_rewrite_star_import_counted_untouched) {
+    cbm_edit_move_py_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "from mod_a import *\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_python_imports(data, strlen(data), "mod_a", "mod_b", "f", &out,
+                                                   &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.star_import_refs, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_py_rewrite_parenthesized_counted_untouched) {
+    cbm_edit_move_py_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "from mod_a import (f,\n                   g)\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_python_imports(data, strlen(data), "mod_a", "mod_b", "f", &out,
+                                                   &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.parenthesized_skipped, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_py_rewrite_all_ref_counted_untouched) {
+    cbm_edit_move_py_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "__all__ = [\"f\", \"g\"]\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_python_imports(data, strlen(data), "mod_a", "mod_b", "f", &out,
+                                                   &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.all_refs, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_py_rewrite_crlf_preserved) {
+    EXPECT_PY_REWRITE("from mod_a import f, g\r\n", "mod_a", "mod_b", "f",
+                      "from mod_a import g\r\nfrom mod_b import f\r\n");
+    PASS();
+}
+
+TEST(move_py_rewrite_symbol_not_in_list_untouched) {
+    const char *data = "from mod_a import g, h\n";
+    EXPECT_PY_REWRITE(data, "mod_a", "mod_b", "f", data);
+    PASS();
+}
+
 /* ── suite ──────────────────────────────────────────────────────── */
 
 SUITE(edit) {
@@ -624,4 +840,27 @@ SUITE(edit) {
     RUN_TEST(latest_backup_picks_newest_epoch_then_pid);
     RUN_TEST(latest_backup_no_match);
     RUN_TEST(undo_roundtrip_via_latest_backup);
+    RUN_TEST(move_extract_middle);
+    RUN_TEST(move_extract_unterminated_last_line);
+    RUN_TEST(move_extract_out_of_range_rejected);
+    RUN_TEST(move_append_to_empty_file);
+    RUN_TEST(move_append_inserts_one_blank_separator);
+    RUN_TEST(move_append_no_double_blank_when_already_blank);
+    RUN_TEST(move_append_terminates_unterminated_last_line);
+    RUN_TEST(move_append_crlf_file_normalizes_def);
+    RUN_TEST(move_py_rewrite_single_name);
+    RUN_TEST(move_py_rewrite_multi_name_split);
+    RUN_TEST(move_py_rewrite_multi_name_split_keeps_order);
+    RUN_TEST(move_py_rewrite_alias_kept);
+    RUN_TEST(move_py_rewrite_trailing_comment_preserved);
+    RUN_TEST(move_py_rewrite_split_keeps_comment_on_old_line);
+    RUN_TEST(move_py_rewrite_indented_split_keeps_indent);
+    RUN_TEST(move_py_rewrite_ignores_other_modules);
+    RUN_TEST(move_py_rewrite_exact_module_match_only);
+    RUN_TEST(move_py_rewrite_plain_import_counted_untouched);
+    RUN_TEST(move_py_rewrite_star_import_counted_untouched);
+    RUN_TEST(move_py_rewrite_parenthesized_counted_untouched);
+    RUN_TEST(move_py_rewrite_all_ref_counted_untouched);
+    RUN_TEST(move_py_rewrite_crlf_preserved);
+    RUN_TEST(move_py_rewrite_symbol_not_in_list_untouched);
 }

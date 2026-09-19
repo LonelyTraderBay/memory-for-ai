@@ -167,6 +167,48 @@ int cbm_edit_rename_in_buffer(const char *data, size_t len, const char *old_name
                               const char *new_name, const cbm_edit_occurrence_t *occs,
                               const bool *apply, int count, char **out_data, size_t *out_len);
 
+/* ── Move support (edit_move.c) — Phase 5 ─────────────────────── */
+
+/* Copy the 1-based inclusive line range [start_line, end_line] out of `data`
+ * (the symbol's definition text, verbatim). On CBM_EDIT_OK, *out_data is a
+ * malloc'd buffer (caller frees). */
+int cbm_edit_move_extract_lines(const char *data, size_t len, int start_line, int end_line,
+                                char **out_data, size_t *out_len);
+
+/* Append `def` at the end of a destination file: the file's dominant line
+ * ending is detected and `def` is normalized to it; an unterminated final
+ * line is terminated first; exactly one blank separator line is inserted
+ * unless the file already ends with a blank line (or is empty).
+ * On CBM_EDIT_OK, *out_data is a malloc'd buffer (caller frees). */
+int cbm_edit_move_append_definition(const char *data, size_t len, const char *def, size_t def_len,
+                                    char **out_data, size_t *out_len);
+
+/* Rewrite tallies for cbm_edit_move_rewrite_python_imports. The *_refs /
+ * *_skipped counters are occurrences LEFT UNTOUCHED — the MCP layer lists
+ * them in the REVIEW tier of the move plan. */
+typedef struct {
+    int import_lines_rewritten; /* from-imports repointed at the new module */
+    int import_lines_split;     /* multi-name lines split old/new */
+    int aliases_kept;           /* rewritten lines keeping an `as` alias */
+    int plain_import_refs;      /* `import mod_a` lines (untouched) */
+    int star_import_refs;       /* `from mod_a import *` lines (untouched) */
+    int parenthesized_skipped;  /* parenthesized/unparsable imports (untouched) */
+    int all_refs;               /* `__all__` lines mentioning the symbol (untouched) */
+} cbm_edit_move_py_stats_t;
+
+/* Rewrite Python from-import lines that import `symbol` from `old_module` so
+ * they import it from `new_module` instead. Single-name lines are repointed
+ * in place (alias and trailing comment preserved); multi-name lines are
+ * split: the remaining names stay on the old-module line and a new
+ * `from new_module import symbol` line is inserted directly after it with
+ * the same indentation. Module matching is an exact dotted-name comparison.
+ * Output is a malloc'd full-file buffer (caller frees); counters are
+ * reported via `stats` when non-NULL. */
+int cbm_edit_move_rewrite_python_imports(const char *data, size_t len, const char *old_module,
+                                         const char *new_module, const char *symbol,
+                                         char **out_data, size_t *out_len,
+                                         cbm_edit_move_py_stats_t *stats);
+
 /* ── File state / atomic write (edit_write.c) ───────────────────── */
 
 typedef struct {
