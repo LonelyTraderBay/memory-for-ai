@@ -209,6 +209,44 @@ int cbm_edit_move_rewrite_python_imports(const char *data, size_t len, const cha
                                          char **out_data, size_t *out_len,
                                          cbm_edit_move_py_stats_t *stats);
 
+/* Rewrite tallies for cbm_edit_move_rewrite_ts_imports. The *_refs /
+ * *_skipped counters are occurrences LEFT UNTOUCHED (REVIEW tier). */
+typedef struct {
+    int import_lines_rewritten; /* named imports repointed at the new spec */
+    int import_lines_split;     /* multi-name lines split old/new */
+    int aliases_kept;           /* rewritten lines keeping an `as` alias */
+    int default_import_refs;    /* default / default+named imports (untouched) */
+    int namespace_import_refs;  /* `import * as m` (untouched) */
+    int side_effect_refs;       /* `import "spec"` (untouched) */
+    int barrel_refs;            /* `export ... from "spec"` (untouched) */
+    int dynamic_import_refs;    /* `import("spec")` / `require("spec")` (untouched) */
+    int multiline_skipped;      /* named imports spanning lines (untouched) */
+} cbm_edit_move_ts_stats_t;
+
+/* Rewrite TypeScript/JavaScript named imports of `symbol` whose module
+ * specifier is exactly `old_spec` so they import from `new_spec` instead.
+ * `old_spec`/`new_spec` are the literal specifier strings as written in the
+ * importing file (the MCP layer computes them per importer with
+ * cbm_edit_move_ts_relative_spec). Single-name lines are repointed in place
+ * (quote style, semicolon, alias, `import type` all preserved); multi-name
+ * lines are split: remaining names stay on the old-spec line and a new
+ * import line for the moved symbol is inserted directly after it with the
+ * same indentation, quote style, padding, and semicolon. Output is a
+ * malloc'd full-file buffer (caller frees); counters via `stats`. */
+int cbm_edit_move_rewrite_ts_imports(const char *data, size_t len, const char *old_spec,
+                                     const char *new_spec, const char *symbol, char **out_data,
+                                     size_t *out_len, cbm_edit_move_ts_stats_t *stats);
+
+/* Compute the TS module specifier for `module_rel` as seen from
+ * `importer_rel` (both project-relative POSIX paths): the relative path from
+ * the importer's directory to the module, without the module's extension,
+ * prefixed "./" when the module is in the same directory or below. Writes a
+ * NUL-terminated string to `out` (CBM_EDIT_SZ-spec sized by the caller).
+ * Examples: ("src/app/main.ts","src/utils.ts") -> "../utils";
+ * ("main.ts","src/mod.ts") -> "./src/mod". */
+int cbm_edit_move_ts_relative_spec(const char *importer_rel, const char *module_rel, char *out,
+                                   size_t out_sz);
+
 /* ── File state / atomic write (edit_write.c) ───────────────────── */
 
 typedef struct {

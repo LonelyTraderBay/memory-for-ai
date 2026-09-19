@@ -801,6 +801,222 @@ TEST(move_py_rewrite_symbol_not_in_list_untouched) {
     PASS();
 }
 
+/* ── move: TypeScript import rewrite + relative spec ────────────── */
+
+static int expect_ts_rewrite(const char *data, const char *old_spec, const char *new_spec,
+                             const char *symbol, const char *expected) {
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = cbm_edit_move_rewrite_ts_imports(data, strlen(data), old_spec, new_spec, symbol, &out,
+                                              &out_len, NULL);
+    ASSERT_EQ(rc, CBM_EDIT_OK);
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ((long long)out_len, (long long)strlen(expected));
+    ASSERT_MEM_EQ(out, expected, out_len);
+    free(out);
+    return 0;
+}
+
+#define EXPECT_TS_REWRITE(...) ASSERT_EQ(expect_ts_rewrite(__VA_ARGS__), 0)
+
+static int expect_rel_spec(const char *importer, const char *module, const char *expected) {
+    char out[1024];
+    int rc = cbm_edit_move_ts_relative_spec(importer, module, out, sizeof(out));
+    ASSERT_EQ(rc, CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, expected);
+    return 0;
+}
+
+#define EXPECT_REL_SPEC(...) ASSERT_EQ(expect_rel_spec(__VA_ARGS__), 0)
+
+TEST(move_ts_rewrite_single_name) {
+    EXPECT_TS_REWRITE("import {f} from \"./mod_a\";\n", "./mod_a", "./mod_b", "f",
+                      "import {f} from \"./mod_b\";\n");
+    PASS();
+}
+
+TEST(move_ts_rewrite_preserves_quote_and_no_semicolon) {
+    EXPECT_TS_REWRITE("import {f} from './mod_a'\n", "./mod_a", "./mod_b", "f",
+                      "import {f} from './mod_b'\n");
+    PASS();
+}
+
+TEST(move_ts_rewrite_multi_name_split) {
+    EXPECT_TS_REWRITE("import {f, g} from \"./mod_a\";\n", "./mod_a", "./mod_b", "f",
+                      "import {g} from \"./mod_a\";\nimport {f} from \"./mod_b\";\n");
+    PASS();
+}
+
+TEST(move_ts_rewrite_split_keeps_padding_and_order) {
+    EXPECT_TS_REWRITE("import { g, f, h } from \"./mod_a\";\n", "./mod_a", "./mod_b", "f",
+                      "import { g, h } from \"./mod_a\";\nimport { f } from \"./mod_b\";\n");
+    PASS();
+}
+
+TEST(move_ts_rewrite_alias_kept) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "import {f as f1} from \"./mod_a\";\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, "import {f as f1} from \"./mod_b\";\n");
+    ASSERT_EQ(st.import_lines_rewritten, 1);
+    ASSERT_EQ(st.aliases_kept, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_import_type_preserved) {
+    EXPECT_TS_REWRITE("import type {f, g} from \"./mod_a\";\n", "./mod_a", "./mod_b", "f",
+                      "import type {g} from \"./mod_a\";\nimport type {f} from \"./mod_b\";\n");
+    PASS();
+}
+
+TEST(move_ts_rewrite_inline_type_entry_preserved) {
+    EXPECT_TS_REWRITE("import {type f, g} from \"./mod_a\";\n", "./mod_a", "./mod_b", "f",
+                      "import {g} from \"./mod_a\";\nimport {type f} from \"./mod_b\";\n");
+    PASS();
+}
+
+TEST(move_ts_rewrite_ignores_other_specs) {
+    const char *data = "import {f} from \"./other\";\nimport {g} from \"./mod_a\";\n";
+    EXPECT_TS_REWRITE(data, "./mod_a", "./mod_b", "f", data);
+    PASS();
+}
+
+TEST(move_ts_rewrite_default_import_counted_untouched) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "import modA from \"./mod_a\";\nimport def, {f} from \"./mod_a\";\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.default_import_refs, 2);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_namespace_counted_untouched) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "import * as modA from \"./mod_a\";\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.namespace_import_refs, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_side_effect_counted_untouched) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "import \"./mod_a\";\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.side_effect_refs, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_barrel_counted_untouched) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "export {f} from \"./mod_a\";\nexport * from \"./mod_a\";\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.barrel_refs, 2);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_dynamic_and_require_counted_untouched) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "const m = await import(\"./mod_a\");\nconst n = require(\"./mod_a\");\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.dynamic_import_refs, 2);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_multiline_counted_untouched) {
+    cbm_edit_move_ts_stats_t st;
+    char *out = NULL;
+    size_t out_len = 0;
+    const char *data = "import {\n    f,\n    g\n} from \"./mod_a\";\n";
+    ASSERT_EQ(cbm_edit_move_rewrite_ts_imports(data, strlen(data), "./mod_a", "./mod_b", "f", &out,
+                                               &out_len, &st),
+              CBM_EDIT_OK);
+    ASSERT_STR_EQ(out, data);
+    ASSERT_EQ(st.multiline_skipped, 1);
+    free(out);
+    PASS();
+}
+
+TEST(move_ts_rewrite_crlf_preserved) {
+    EXPECT_TS_REWRITE("import {f, g} from \"./mod_a\";\r\n", "./mod_a", "./mod_b", "f",
+                      "import {g} from \"./mod_a\";\r\nimport {f} from \"./mod_b\";\r\n");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_same_dir) {
+    EXPECT_REL_SPEC("src/main.ts", "src/utils.ts", "./utils");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_child_dir) {
+    EXPECT_REL_SPEC("src/main.ts", "src/lib/utils.ts", "./lib/utils");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_parent_dir) {
+    EXPECT_REL_SPEC("src/app/main.ts", "src/utils.ts", "../utils");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_sibling_deep) {
+    EXPECT_REL_SPEC("src/app/main.ts", "src/shared/lib/utils.ts", "../shared/lib/utils");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_root_importer) {
+    EXPECT_REL_SPEC("main.ts", "src/utils.ts", "./src/utils");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_module_at_root) {
+    EXPECT_REL_SPEC("src/app/main.ts", "utils.ts", "../../utils");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_strips_extensions) {
+    EXPECT_REL_SPEC("src/main.ts", "src/a.tsx", "./a");
+    EXPECT_REL_SPEC("src/main.ts", "src/b.test.ts", "./b.test");
+    PASS();
+}
+
+TEST(move_ts_rel_spec_index_kept_literal) {
+    EXPECT_REL_SPEC("main.ts", "mod/index.ts", "./mod/index");
+    PASS();
+}
+
 /* ── suite ──────────────────────────────────────────────────────── */
 
 SUITE(edit) {
@@ -863,4 +1079,27 @@ SUITE(edit) {
     RUN_TEST(move_py_rewrite_all_ref_counted_untouched);
     RUN_TEST(move_py_rewrite_crlf_preserved);
     RUN_TEST(move_py_rewrite_symbol_not_in_list_untouched);
+    RUN_TEST(move_ts_rewrite_single_name);
+    RUN_TEST(move_ts_rewrite_preserves_quote_and_no_semicolon);
+    RUN_TEST(move_ts_rewrite_multi_name_split);
+    RUN_TEST(move_ts_rewrite_split_keeps_padding_and_order);
+    RUN_TEST(move_ts_rewrite_alias_kept);
+    RUN_TEST(move_ts_rewrite_import_type_preserved);
+    RUN_TEST(move_ts_rewrite_inline_type_entry_preserved);
+    RUN_TEST(move_ts_rewrite_ignores_other_specs);
+    RUN_TEST(move_ts_rewrite_default_import_counted_untouched);
+    RUN_TEST(move_ts_rewrite_namespace_counted_untouched);
+    RUN_TEST(move_ts_rewrite_side_effect_counted_untouched);
+    RUN_TEST(move_ts_rewrite_barrel_counted_untouched);
+    RUN_TEST(move_ts_rewrite_dynamic_and_require_counted_untouched);
+    RUN_TEST(move_ts_rewrite_multiline_counted_untouched);
+    RUN_TEST(move_ts_rewrite_crlf_preserved);
+    RUN_TEST(move_ts_rel_spec_same_dir);
+    RUN_TEST(move_ts_rel_spec_child_dir);
+    RUN_TEST(move_ts_rel_spec_parent_dir);
+    RUN_TEST(move_ts_rel_spec_sibling_deep);
+    RUN_TEST(move_ts_rel_spec_root_importer);
+    RUN_TEST(move_ts_rel_spec_module_at_root);
+    RUN_TEST(move_ts_rel_spec_strips_extensions);
+    RUN_TEST(move_ts_rel_spec_index_kept_literal);
 }
