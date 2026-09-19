@@ -244,3 +244,84 @@ Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `
 ### Dữ liệu còn thiếu
 
 A/B đo được *giá trị mỗi lần dùng*, không đo được *tần suất nhu cầu* — không có telemetry về việc agent thật sự cần move/inline bao nhiêu lần trong session. Hành động kèm theo: đã mở GitHub issue pinned [#12 — RFC use-case move/inline](https://github.com/LonelyTraderBay/memory-for-ai/issues/12) thu thập use-case từ người dùng thật; nếu inline không có demand sau 1–2 tháng (tính từ 2026-09-19) thì xóa hẳn khỏi roadmap thay vì treo NO-GO vĩnh viễn.
+
+## 12. Thiết kế chi tiết `move_symbol` (Phase 5, 2026-09-19)
+
+Quyết định GO tại §11. Mục tiêu: chuyển một symbol (Function/Class top-level) từ module nguồn sang module đích **cùng project, cùng ngôn ngữ**, viết lại import ở mọi nơi import nó — với evidence tiers, dry-run mặc định, atomic write + backup + undo như 3 tool trước.
+
+### 12.1 Scope chặt (vi phạm → REVIEW hoặc từ chối, KHÔNG làm mò)
+
+| Được hỗ trợ (auto-apply khi có evidence) | REVIEW (chỉ apply với force=true) | Từ chối hẳn |
+|---|---|---|
+| Symbol label Function/Class **top-level** (không lồng trong symbol khác — check bằng node cha trong graph) | Import có alias (`from m import f as g` — giữ alias, chỉ đổi module) | Method/nested function (parent là Class/Function khác) |
+| Python `from mod import f` / TS `import {f} from "./mod"` | Re-export (`__all__` Python, `export {f} from` TS) — liệt kê, không tự sửa | Move sang module khác ngôn ngữ |
+| TS relative path recomputation (`./` vs `../`, path mới tính từ vị trí file importer so với file đích) | Barrel file (index.ts re-export) — liệt kê làm REVIEW | Destination module chưa tồn tại (Phase 5 không tạo file mới — agent tự tạo rồi move sau) |
+| | Circular import phát sinh sau move (dest import lại source) — liệt kê cả 2 chiều | Destination đã có symbol trùng tên (collision → báo lỗi, gợi ý rename_symbol trước) |
+
+### 12.2 Luồng 2-phase (giữ nguyên pattern rename_symbol)
+
+**Plan (dry_run=true, mặc định):**
+1. Resolve symbol → node + file nguồn (dùng `cbm_edit_resolve_symbol`).
+2. Resolve destination: arg `destination_module` (qn của Module node, vd `proj.pkg.utils`) → file đích; kiểm tra tồn tại + cùng extension + không collision.
+3. Lấy toàn bộ IMPORTS edges vào symbol (`cbm_store_find_edges_by_target_type(store, node_id, "IMPORTS", ...)`) — đây là danh sách importer **graph-verified (HIGH tier)**, mỗi edge kèm `local_name` để phát hiện alias.
+4. Sweep bổ sung bằng `cbm_edit_scan_identifier` trên các file import module nguồn nhưng không có edge → REVIEW tier (dynamic import, `importlib`, `require()` động).
+5. Circular check: BFS 1 bước trên IMPORTS edges của module đích — nếu đích (hoặc module mà đích import) import lại nguồn → REVIEW cả move, response vẽ chu trình.
+6. Trả plan: per-file tier table + import diff mẫu + warning re-export/barrel/circular. Không ghi gì.
+
+**Apply (dry_run=false):**
+1. Re-verify: định nghĩa tại nguồn còn khớp source (definition-drift), mọi file importer khớp mtime với lúc plan nếu agent truyền `expected_files` (số file sẽ bị sửa — pin plan→apply giống `expected_counts`).
+2. **Thứ tự ghi (quan trọng cho undo)**:
+   a. Đọc thân symbol từ file nguồn (line range từ graph).
+   b. Ghi file đích: chèn thân symbol vào vị trí `position` (mặc định `end` — cuối file; tuỳ chọn `after_imports`).
+   c. Ghi file nguồn: xoá thân symbol (`cbm_edit_surgery_delete` — đã hấp thụ blank line thừa).
+   d. Ghi từng file importer: viết lại import theo ngôn ngữ (§12.3).
+   Mỗi file: mtime guard + backup + atomic write (máy móc `edit_write.c` y nguyên). Một file fail → dừng, báo rõ file nào đã ghi/chưa ghi + backup paths (không tự rollback — undo_edit từng file, giống rename_symbol).
+3. Reindex 1 lần duy nhất sau khi mọi file ghi xong (`handle_index_repository` nội bộ).
+4. Post-verify trên graph mới: symbol resolve được ở qn đích; IMPORTS edges mới chỉ về module đích; không còn HIGH-tier import nào trỏ module nguồn cho symbol đó.
+
+### 12.3 Import rewriting (phần khó nhất — module mới `src/edit/edit_move.c`)
+
+**Python:**
+- `from mod_a import f` → `from mod_b import f` (đổi module path, giữ nguyên tên/alias).
+- `from mod_a import f, g` (nhiều symbol, chỉ move `f`) → tách thành 2 dòng: `from mod_a import g` + `from mod_b import f` (giữ thứ tự dòng để diff tối thiểu).
+- `import mod_a` + dùng `mod_a.f` → REVIEW (attribute access cần đổi cả call-site, Phase 5 không chạm).
+- Alias `from mod_a import f as f1` → `from mod_b import f as f1` (REVIEW tier vì call-site dùng `f1` không đổi — an toàn nhưng cần người đọc xác nhận ý đồ).
+- `__all__ = [..., "f", ...]` trong file nguồn → REVIEW (liệt kê dòng, không tự sửa).
+
+**TypeScript/JavaScript:**
+- `import {f} from "./mod_a"` → `import {f} from "<relative-path-mới>"` — tính lại relative path từ thư mục của file importer tới file đích (không đuôi `.ts/.js`), chuẩn hoá `./` prefix.
+- `import {f, g} from "./mod_a"` → tách giống Python.
+- Default import / namespace import (`import * as m`) / side-effect import → REVIEW.
+- `export {f} from "./mod_a"` (barrel) → REVIEW (đổi barrel là quyết định API surface, agent phải xác nhận).
+- Path alias (`@/mod_a`, tsconfig paths) → REVIEW (Phase 5 không đọc tsconfig).
+
+**Sau move, file nguồn có thể vẫn cần symbol** (symbol khác trong file nguồn gọi nó): nếu graph có CALLS edge từ trong file nguồn vào symbol → tự thêm `from mod_b import f` / `import {f} from "./mod_b"` vào file nguồn (HIGH tier, vì evidence là CALLS edge). Đây là ca rename_symbol không bao giờ gặp — điểm khác biệt lớn nhất của move.
+
+### 12.4 Schema MCP (dự kiến)
+
+```
+move_symbol(qualified_name, project, destination_module,
+            position="end"|"after_imports",  # default "end"
+            dry_run=true,                    # default: plan only
+            force=false,                     # apply REVIEW tier + bypass drift check
+            expected_files=<int>)            # pin số file sẽ sửa từ plan trước
+```
+
+Response prefixes: `move_symbol: DRY-RUN` / `move_symbol: APPLIED` / `move_symbol: PARTIAL` (một số file fail — kèm danh sách backup để undo).
+
+### 12.5 Test plan
+
+| Tầng | Nội dung |
+|---|---|
+| Unit (suite `edit`) | Import rewriting Python/TS trên buffer: single/multi symbol, alias, tách dòng, relative path recomputation (cùng thư mục, lên 1-2 cấp, xuống cấp), file nguồn cần re-import |
+| Integration (suite `edit_integration`) | Fixture Python + TS: move function 2 file → assert disk (thân ở đích, import đúng) + graph mới (node ở file đích, IMPORTS edges trỏ đích); move tạo circular → REVIEW không apply; destination collision → từ chối |
+| Fault injection | `cbm_edit_write_test_fail_once` giữa chuỗi ghi nhiều file → PARTIAL + không file nào corrupt + backup đủ để undo |
+| A/B | Mở rộng `scripts/ab-edit-tools.py` thêm task move sau khi tool ổn định (không block Phase 5) |
+
+### 12.6 Chia nhỏ implement (mỗi bước 1 commit)
+
+1. **5a** — `src/edit/edit_move.c` core: extract/insert/delete body + Python import rewriting + unit test (chưa nối MCP).
+2. **5b** — TS import rewriting + relative path recomputation + unit test.
+3. **5c** — `handle_move_symbol` trong mcp.c: plan/apply, circular check, re-export detection, schema + tool count 22→23.
+4. **5d** — Integration + fault-injection tests.
+5. **5e** — Docs (AGENT_GUIDE, llms.txt, README 22→23 tools) + bump metadata.
