@@ -206,6 +206,8 @@ LSP rename "tin mù" rằng language server thấy hết references. memory-for-
 | 2 | `delete_symbol` + usage check + orphan cascade (gợi ý) | ~1–2 tuần | Phase 1 | ✅ Xong |
 | 3 | `rename_symbol` 2-phase (plan/apply) + coverage gate + 3 tầng confidence | ~3–4 tuần | Phase 1, 2 | ✅ Xong |
 | 4 | `undo_edit` (restore từ backup) + `expected_counts` + polish docs/AGENT_GUIDE | ~1 tuần | Phase 3 | ✅ Xong |
+| 5 | `move_symbol` (scope chặt theo §11: cùng ngôn ngữ, Python+TS trước, không re-export/circular) | ~3–4 tuần | Phase 3 + số liệu A/B | 🔜 GO — chưa bắt đầu |
+| — | `inline_symbol` | — | Demand evidence | ⏸️ NO-GO, revisit theo §11 |
 
 Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `docs/llms.txt`, và số "18 tools" → tăng tương ứng ở README (hiện tại: 22 tools). Unit test C cho cả 4 tool nằm trong `tests/test_edit.c` (suite `edit`, 36 test); integration + fault-injection trong `tests/test_edit_integration.c` (suite `edit_integration`, 11 test); logic parity test (không cần compiler) ở `build/edit_surgery_logic_test.py` (27 ca).
 
@@ -216,5 +218,29 @@ Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `
 | Edit làm hỏng file user (mất dữ liệu) | Thấp nhưng nghiêm trọng | Atomic write + backup mọi edit + dry-run mặc định + `undo` |
 | Graph stale sau edit → agent đọc thông tin cũ | Trung bình | Re-index đồng bộ *trong* call, không async; response kèm reindex status |
 | Rename sai trên dynamic language | Trung bình | 3 tầng confidence + coverage gate + `expected_counts`; không bao giờ sửa occurrence `unresolved` |
-| Phình scope (agent muốn move symbol, inline…) | Cao | Chốt 3 tool; move/inline để sau khi có số liệu A/B chứng minh nhu cầu |
+| Phình scope (agent muốn move symbol, inline…) | Cao | Đã chốt (§11): move = GO scope chặt Phase 5; inline = NO-GO tới khi có demand evidence |
 | Lock contention với watcher trên repo lớn | Thấp | Per-file lock granularity; edit <1s; watcher backoff đã adaptive |
+
+## 11. Quyết định move/inline sau số liệu A/B (2026-09-19)
+
+Điều kiện §10 đặt ra đã đủ: có số liệu A/B ([AB-RESULTS.md](AB-RESULTS.md) §"A/B — edit tools"). Phân tích và quyết định:
+
+**Suy luận từ số liệu rename:** chi phí edit tools gần như phẳng (~1.0–1.2K token/rename) bất kể fan-out hay kích thước file; chi phí thủ công tăng tuyến tính theo tổng bytes các file bị đụng. Break-even là **kích thước file** — vùng thắng của edit tools là *nhiều file + file lớn* (90.5% token reduction, 3 calls thay 12 ở fan-out 5 file ~300 dòng).
+
+### `move_symbol` → **GO** (Phase 5, scope chặt)
+
+- **Về mặt cấu trúc, move luôn nằm trong vùng thắng**: một move tối thiểu đụng file nguồn + file đích + mọi file import — tức fan-out ≥ 2–3 file ngay cả trong ca đơn giản nhất, đúng chế độ edit tools áp đảo.
+- **Giá trị vượt xa token**: phần khó của move không phải cắt/dán thân hàm mà là **viết lại import cho đúng** — đây cũng là chỗ agent sửa tay hay sai nhất (thiếu import, thừa import, sai đường dẫn tương đối). Graph đã có sẵn IMPORTS edges để liệt kê chính xác ai import symbol, và máy móc 3 tầng confidence + coverage gate của rename tái dùng trực tiếp.
+- **Scope chặt để giữ rủi ro ở mức rename**: cùng ngôn ngữ; Python + TS trước (đã có fixture trong `edit_integration`); KHÔNG theo re-export chain, KHÔNG tự gỡ circular import (đưa vào REVIEW); Go/C (include path, header/impl split) để phase sau khi Python/TS ổn định.
+- Effort ước lượng ~3–4 tuần, ngang rename (import generation là phần khó tương đương coverage gate).
+
+### `inline_symbol` → **NO-GO hiện tại**, revisit khi có demand
+
+- **Rủi ro đúng cao nhất trong các ứng viên**: parameter substitution, name capture, recursion, early return, evaluation order, closure — IDE truyền thống cũng chỉ inline được ca tầm thường. Một inline sai trên 20 call-site là thiệt hại lớn dù có `undo_edit`.
+- **Số liệu A/B không ủng hộ**: inline thường áp dụng cho helper nhỏ nằm trong file nhỏ — đúng vùng edit tools *thua* (small scenario: −310%). Đây là ca sửa tay rẻ hơn cả về token lẫn rủi ro.
+- Hoãn không tốn chi phí kỹ thuật: máy móc REVIEW/SKIP + coverage gate + journal/undo đều tái dùng được nếu sau này làm.
+- **Điều kiện revisit**: có demand thực (issue/feedback người dùng), hoặc sau khi `move_symbol` hoàn thiện và ổn định.
+
+### Dữ liệu còn thiếu
+
+A/B đo được *giá trị mỗi lần dùng*, không đo được *tần suất nhu cầu* — không có telemetry về việc agent thật sự cần move/inline bao nhiêu lần trong session. Hành động kèm theo: mở 1 GitHub issue pinned thu thập use-case move/inline từ người dùng thật; nếu inline không có demand sau 1–2 tháng thì xóa hẳn khỏi roadmap thay vì treo NO-GO vĩnh viễn.
