@@ -725,6 +725,68 @@ TEST(pylsp_crossfile_inheritance) {
     PASS();
 }
 
+TEST(pylsp_diamond_inheritance) {
+    /* D(B, C) where B and C both extend A: the attribute walk must still
+     * resolve self.shared() through the diamond. The visited set cuts the
+     * second walk into A without losing the hit (registry lookups are
+     * deterministic, so the first visit's answer cannot differ). */
+    const char *source = "from svc import B, C\n"
+                         "class D(B, C):\n"
+                         "    def go(self):\n"
+                         "        return self.shared()\n";
+
+    CBMLSPDef defs[6];
+    memset(defs, 0, sizeof(defs));
+    defs[0].qualified_name = "svc.A";
+    defs[0].short_name = "A";
+    defs[0].label = "Class";
+    defs[0].def_module_qn = "svc";
+
+    defs[1].qualified_name = "svc.A.shared";
+    defs[1].short_name = "shared";
+    defs[1].label = "Method";
+    defs[1].receiver_type = "svc.A";
+    defs[1].def_module_qn = "svc";
+
+    defs[2].qualified_name = "svc.B";
+    defs[2].short_name = "B";
+    defs[2].label = "Class";
+    defs[2].def_module_qn = "svc";
+    defs[2].embedded_types = "svc.A";
+
+    defs[3].qualified_name = "svc.C";
+    defs[3].short_name = "C";
+    defs[3].label = "Class";
+    defs[3].def_module_qn = "svc";
+    defs[3].embedded_types = "svc.A";
+
+    defs[4].qualified_name = "test.main.D";
+    defs[4].short_name = "D";
+    defs[4].label = "Class";
+    defs[4].def_module_qn = "test.main";
+    defs[4].embedded_types = "svc.B|svc.C";
+
+    defs[5].qualified_name = "test.main.D.go";
+    defs[5].short_name = "go";
+    defs[5].label = "Method";
+    defs[5].receiver_type = "test.main.D";
+    defs[5].def_module_qn = "test.main";
+
+    const char *imp_names[] = {"B", "C"};
+    const char *imp_qns[] = {"svc.B", "svc.C"};
+
+    CBMArena arena;
+    cbm_arena_init(&arena);
+    CBMResolvedCallArray out = {0};
+
+    cbm_run_py_lsp_cross(&arena, source, (int)strlen(source), "test.main", defs, 6, imp_names,
+                         imp_qns, 2, NULL, &out, NULL);
+
+    ASSERT_GTE(find_resolved_arr(&out, "go", "shared"), 0);
+    cbm_arena_destroy(&arena);
+    PASS();
+}
+
 TEST(pylsp_batch_two_files) {
     const char *src_a =
         "def helper():\n"
@@ -2196,6 +2258,7 @@ SUITE(py_lsp) {
     RUN_TEST(pylsp_fused_self_attr_chain_via_overlay);
     RUN_TEST(pylsp_crossfile_classmethod_on_class_issue228);
     RUN_TEST(pylsp_crossfile_inheritance);
+    RUN_TEST(pylsp_diamond_inheritance);
     RUN_TEST(pylsp_batch_two_files);
     RUN_TEST(pylsp_from_import_alias_equal_module_leaf_targets_imported_member);
     RUN_TEST(pylsp_project_prefixed_direct_alias_same_tail_is_not_from_import_reference);

@@ -1038,12 +1038,29 @@ static void py_resolve_value_references_at(PyLSPContext *ctx, TSNode call) {
 
 /* ── helpers: registry-driven attribute lookup with depth cap ──── */
 
-static const CBMRegisteredFunc *py_lookup_attribute_depth(PyLSPContext *ctx, const char *type_qn,
-                                                          const char *member_name, int depth) {
+/* Diamond-inheritance guard: the walk recurses through alias_of and every
+ * embedded_types entry, so a diamond (D→B,C; B,C→A) revisits A once per path —
+ * without a visited set, N nested diamonds multiply the walk by 2^N even
+ * though the depth cap still bounds any single chain. PHP/Kotlin already
+ * carry this set. */
+enum { PY_LOOKUP_VISITED_MAX = 32 };
+
+static const CBMRegisteredFunc *py_lookup_attribute_seen(PyLSPContext *ctx, const char *type_qn,
+                                                         const char *member_name, int depth,
+                                                         const char **visited, int *visited_count) {
     if (!ctx || !type_qn || !member_name)
         return NULL;
     if (depth > CBM_LSP_MAX_LOOKUP_DEPTH)
         return NULL;
+
+    /* A type already walked from this lookup can never answer differently on
+     * a second visit (registry lookups are deterministic), so cut the branch. */
+    for (int v = 0; v < *visited_count; v++) {
+        if (strcmp(visited[v], type_qn) == 0)
+            return NULL;
+    }
+    if (*visited_count < PY_LOOKUP_VISITED_MAX)
+        visited[(*visited_count)++] = type_qn;
 
     const CBMRegisteredFunc *f = cbm_registry_lookup_method(ctx->registry, type_qn, member_name);
     if (f)
@@ -1052,13 +1069,15 @@ static const CBMRegisteredFunc *py_lookup_attribute_depth(PyLSPContext *ctx, con
     const CBMRegisteredType *rt = cbm_registry_lookup_type(ctx->registry, type_qn);
     if (rt) {
         if (rt->alias_of) {
-            f = py_lookup_attribute_depth(ctx, rt->alias_of, member_name, depth + 1);
+            f = py_lookup_attribute_seen(ctx, rt->alias_of, member_name, depth + 1, visited,
+                                         visited_count);
             if (f)
                 return f;
         }
         if (rt->embedded_types) {
             for (int i = 0; rt->embedded_types[i]; i++) {
-                f = py_lookup_attribute_depth(ctx, rt->embedded_types[i], member_name, depth + 1);
+                f = py_lookup_attribute_seen(ctx, rt->embedded_types[i], member_name, depth + 1,
+                                             visited, visited_count);
                 if (f)
                     return f;
             }
@@ -1069,7 +1088,9 @@ static const CBMRegisteredFunc *py_lookup_attribute_depth(PyLSPContext *ctx, con
 
 static const CBMRegisteredFunc *py_lookup_attribute(PyLSPContext *ctx, const char *type_qn,
                                                     const char *member_name) {
-    return py_lookup_attribute_depth(ctx, type_qn, member_name, 0);
+    const char *visited[PY_LOOKUP_VISITED_MAX];
+    int visited_count = 0;
+    return py_lookup_attribute_seen(ctx, type_qn, member_name, 0, visited, &visited_count);
 }
 
 /* Per-file field overlay: look up a (class_qn, field_name) recorded during resolve
