@@ -126,6 +126,69 @@ static const char *CHAIN_PY = "def leaf_fn():\n"
                               "def top_fn():\n"
                               "    return mid_fn()\n";
 
+/* ── move_symbol fixture (THIET-KE-EDIT-TOOLS.md §12.5) ─────────── */
+
+/* mv_src.py — helper_m is the move target; keeper_m calls it in-file, so the
+ * move must leave a re-import line behind in the source. */
+static const char *MV_SRC_PY = "def helper_m():\n"
+                               "    return 7\n"
+                               "\n"
+                               "def keeper_m():\n"
+                               "    return helper_m()\n";
+
+static const char *MV_SRC_PY_MOVED = "from mv_dest import helper_m\n"
+                                     "def keeper_m():\n"
+                                     "    return helper_m()\n";
+
+/* mv_user.py — external importer of helper_m (IMPORTS edge, HIGH tier). */
+static const char *MV_USER_PY = "from mv_src import helper_m\n"
+                                "\n"
+                                "def use_it():\n"
+                                "    return helper_m()\n";
+
+static const char *MV_USER_PY_MOVED = "from mv_dest import helper_m\n"
+                                      "\n"
+                                      "def use_it():\n"
+                                      "    return helper_m()\n";
+
+/* mv_dest.py — move destination; existing_m is the fault-injection target. */
+static const char *MV_DEST_PY = "def existing_m():\n"
+                                "    return 0\n";
+
+static const char *MV_DEST_PY_MOVED = "def existing_m():\n"
+                                      "    return 0\n"
+                                      "\n"
+                                      "def helper_m():\n"
+                                      "    return 7\n";
+
+/* mv_coll.py — already defines helper_m (collision target). */
+static const char *MV_COLL_PY = "def helper_m():\n"
+                                "    return 99\n";
+
+/* mv_circ.py — imports keeper_m from mv_src: moving keeper_m here makes the
+ * circular check fire (destination already imports the source module). */
+static const char *MV_CIRC_PY = "from mv_src import keeper_m\n"
+                                "\n"
+                                "def circ_user():\n"
+                                "    return keeper_m()\n";
+
+/* TS move fixture: ts_move_me + one importer + one destination (distinct
+ * basenames — module QNs strip the extension, so mv_dest.ts would collide
+ * with mv_dest.py). */
+static const char *MV_TMATH_TS = "export function ts_move_me(x: number): number {\n"
+                                 "    return x + 1;\n"
+                                 "}\n";
+
+static const char *MV_TUSER_TS = "import { ts_move_me } from \"./mv_tmath\";\n"
+                                 "\n"
+                                 "export function useTs(x: number): number {\n"
+                                 "    return ts_move_me(x);\n"
+                                 "}\n";
+
+static const char *MV_TDEST_TS = "export function ts_existing(x: number): number {\n"
+                                 "    return x;\n"
+                                 "}\n";
+
 static int einteg_setup(void) {
     snprintf(g_tmpdir, sizeof(g_tmpdir), "/tmp/cbm_edit_integ_XXXXXX");
     if (!cbm_mkdtemp(g_tmpdir))
@@ -138,6 +201,14 @@ static int einteg_setup(void) {
     write_fixture_file("drift.py", DRIFT_PY);
     write_fixture_file("runner.py", RUNNER_PY);
     write_fixture_file("chain.py", CHAIN_PY);
+    write_fixture_file("mv_src.py", MV_SRC_PY);
+    write_fixture_file("mv_user.py", MV_USER_PY);
+    write_fixture_file("mv_dest.py", MV_DEST_PY);
+    write_fixture_file("mv_coll.py", MV_COLL_PY);
+    write_fixture_file("mv_circ.py", MV_CIRC_PY);
+    write_fixture_file("mv_tmath.ts", MV_TMATH_TS);
+    write_fixture_file("mv_tuser.ts", MV_TUSER_TS);
+    write_fixture_file("mv_tdest.ts", MV_TDEST_TS);
 
     g_project = cbm_project_name_from_path(g_tmpdir);
     if (!g_project)
@@ -267,9 +338,12 @@ static char *call_edit_tool(const char *tool, const char *qn, const char *extra_
 }
 
 /* Resolve a function's qualified_name + line range from the on-disk db.
- * Returns true when exactly the node was found; qn_out (malloc'd, caller
- * frees), start/end lines filled. */
-static bool find_function(const char *name, char **qn_out, int *start_out, int *end_out) {
+ * When `rel_path` is non-NULL the match is restricted to that file (needed
+ * when the fixture deliberately defines the same name in two modules, e.g.
+ * the move collision target). Returns true when the node was found; qn_out
+ * (malloc'd, caller frees), start/end lines filled. */
+static bool find_function_in(const char *name, const char *rel_path, char **qn_out, int *start_out,
+                             int *end_out) {
     cbm_store_t *store = cbm_store_open_path_existing(g_dbpath);
     if (!store)
         return false;
@@ -279,7 +353,8 @@ static bool find_function(const char *name, char **qn_out, int *start_out, int *
     if (cbm_store_find_nodes_by_label(store, g_project, "Function", &funcs, &count) ==
         CBM_STORE_OK) {
         for (int i = 0; i < count; i++) {
-            if (funcs[i].name && strcmp(funcs[i].name, name) == 0 && funcs[i].qualified_name) {
+            if (funcs[i].name && strcmp(funcs[i].name, name) == 0 && funcs[i].qualified_name &&
+                (!rel_path || (funcs[i].file_path && strcmp(funcs[i].file_path, rel_path) == 0))) {
                 *qn_out = cbm_strdup(funcs[i].qualified_name);
                 *start_out = funcs[i].start_line;
                 *end_out = funcs[i].end_line;
@@ -291,6 +366,10 @@ static bool find_function(const char *name, char **qn_out, int *start_out, int *
     }
     cbm_store_close(store);
     return found;
+}
+
+static bool find_function(const char *name, char **qn_out, int *start_out, int *end_out) {
+    return find_function_in(name, NULL, qn_out, start_out, end_out);
 }
 
 static bool file_contains(const char *rel, const char *needle) {
@@ -337,6 +416,44 @@ static bool file_equals(const char *rel, const char *expected) {
     bool eq = actual && strcmp(actual, expected) == 0;
     free(actual);
     return eq;
+}
+
+/* Call move_symbol: builds the destination_module qn from the project name
+ * and a short module name (e.g. "mv_dest"), plus extra JSON properties. */
+static char *call_move_tool(const char *qn, const char *dest_module_short, const char *extra_json) {
+    size_t cap = strlen(g_project) * 2 + strlen(dest_module_short) + strlen(extra_json) + 96;
+    char *extra = malloc(cap);
+    if (!extra) {
+        return NULL;
+    }
+    snprintf(extra, cap, ",\"destination_module\":\"%s.%s\"%s", g_project, dest_module_short,
+             extra_json);
+    char *resp = call_edit_tool("move_symbol", qn, extra);
+    free(extra);
+    return resp;
+}
+
+/* Count IMPORTS edges targeting the node at `qn` on the on-disk db.
+ * Returns -1 when the node does not resolve. */
+static int count_import_edges_to(const char *qn) {
+    cbm_store_t *store = cbm_store_open_path_existing(g_dbpath);
+    if (!store) {
+        return -1;
+    }
+    int result = -1;
+    cbm_node_t node = {0};
+    if (cbm_store_find_node_by_qn(store, g_project, qn, &node) == CBM_STORE_OK) {
+        cbm_edge_t *edges = NULL;
+        int count = 0;
+        if (cbm_store_find_edges_by_target_type(store, node.id, "IMPORTS", &edges, &count) ==
+            CBM_STORE_OK) {
+            result = count;
+            cbm_store_free_edges(edges, count);
+        }
+        cbm_edit_free_node(&node);
+    }
+    cbm_store_close(store);
+    return result;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -600,6 +717,119 @@ TEST(einteg_recursive_orphans_cascade) {
     PASS();
 }
 
+TEST(einteg_move_dry_run_python) {
+    /* Default (dry_run=true) returns the move plan — per-file actions plus
+     * the automatic re-import note — and touches nothing on disk. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function_in("helper_m", "mv_src.py", &qn, &start, &end));
+
+    char *resp = call_move_tool(qn, "mv_dest", "");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "move_symbol: DRY-RUN") != NULL);
+    ASSERT_TRUE(strstr(resp, "re-import") != NULL); /* keeper_m is an internal caller */
+    ASSERT_TRUE(strstr(resp, "mv_user.py [IMPORTER]") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(file_equals("mv_src.py", MV_SRC_PY));
+    ASSERT_TRUE(file_equals("mv_dest.py", MV_DEST_PY));
+    ASSERT_TRUE(file_equals("mv_user.py", MV_USER_PY));
+    free(qn);
+    PASS();
+}
+
+TEST(einteg_move_python_applied) {
+    /* Apply the move: body lands in mv_dest.py, the source keeps a re-import
+     * (internal caller keeper_m), the importer is repointed — and the fresh
+     * graph resolves helper_m at the destination with both IMPORTS edges. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function_in("helper_m", "mv_src.py", &qn, &start, &end));
+
+    char *resp = call_move_tool(qn, "mv_dest", ",\"dry_run\":false,\"expected_files\":3");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "move_symbol: APPLIED") != NULL);
+    ASSERT_TRUE(strstr(resp, "reindex: incremental OK") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(file_equals("mv_dest.py", MV_DEST_PY_MOVED));
+    ASSERT_TRUE(file_equals("mv_src.py", MV_SRC_PY_MOVED));
+    ASSERT_TRUE(file_equals("mv_user.py", MV_USER_PY_MOVED));
+
+    char *qn2 = NULL;
+    int s2 = 0, e2 = 0;
+    ASSERT_TRUE(find_function_in("helper_m", "mv_dest.py", &qn2, &s2, &e2));
+    ASSERT_TRUE(strstr(qn2, ".mv_dest.helper_m") != NULL);
+    ASSERT_EQ(count_import_edges_to(qn2), 2); /* mv_src re-import + mv_user */
+    free(qn2);
+    free(qn);
+    PASS();
+}
+
+TEST(einteg_move_collision_refused) {
+    /* helper_m now lives in mv_dest; mv_coll already defines helper_m — the
+     * collision gate refuses before anything is planned or written. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function_in("helper_m", "mv_dest.py", &qn, &start, &end));
+
+    char *resp = call_move_tool(qn, "mv_coll", ",\"dry_run\":false");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "move refused: a symbol already exists") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(file_equals("mv_coll.py", MV_COLL_PY));
+    ASSERT_TRUE(file_equals("mv_dest.py", MV_DEST_PY_MOVED));
+    free(qn);
+    PASS();
+}
+
+TEST(einteg_move_circular_refused) {
+    /* mv_circ imports keeper_m from mv_src (destination already imports the
+     * source module) → the circular check lists a REVIEW item and apply
+     * without force is REFUSED, writing nothing. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function("keeper_m", &qn, &start, &end));
+
+    char *resp = call_move_tool(qn, "mv_circ", ",\"dry_run\":false");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "move_symbol: REFUSED") != NULL);
+    ASSERT_TRUE(strstr(resp, "circular") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(file_equals("mv_src.py", MV_SRC_PY_MOVED));
+    ASSERT_TRUE(file_equals("mv_circ.py", MV_CIRC_PY));
+    free(qn);
+    PASS();
+}
+
+TEST(einteg_move_ts_applied) {
+    /* TypeScript: the named import in mv_tuser.ts is repointed from
+     * "./mv_tmath" to "./mv_tdest"; no internal caller → no re-import line. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function("ts_move_me", &qn, &start, &end));
+
+    char *resp = call_move_tool(qn, "mv_tdest", ",\"dry_run\":false,\"expected_files\":3");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "move_symbol: APPLIED") != NULL);
+    ASSERT_TRUE(strstr(resp, "reindex: incremental OK") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(!file_contains("mv_tmath.ts", "ts_move_me"));
+    ASSERT_TRUE(file_contains("mv_tdest.ts", "export function ts_move_me"));
+    ASSERT_TRUE(file_contains("mv_tuser.ts", "from \"./mv_tdest\""));
+
+    char *qn2 = NULL;
+    int s2 = 0, e2 = 0;
+    ASSERT_TRUE(find_function("ts_move_me", &qn2, &s2, &e2));
+    ASSERT_TRUE(strstr(qn2, "mv_tdest") != NULL);
+    free(qn2);
+    free(qn);
+    PASS();
+}
+
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
 /* Fault-injection tests (THIET-KE-EDIT-TOOLS.md §8 "Concurrency"): the write
  * path must fail cleanly — no partial bytes, no lost originals — when a
@@ -639,8 +869,8 @@ TEST(einteg_rename_partial_failure_no_corruption) {
 
     cbm_edit_write_test_reset_faults();
     cbm_edit_write_test_fail_once();
-    char *resp = call_edit_tool(
-        "rename_symbol", qn, ",\"new_name\":\"plus\",\"dry_run\":false,\"force\":true");
+    char *resp = call_edit_tool("rename_symbol", qn,
+                                ",\"new_name\":\"plus\",\"dry_run\":false,\"force\":true");
     cbm_edit_write_test_reset_faults();
     ASSERT_NOT_NULL(resp);
     ASSERT_TRUE(strstr(resp, "rename_symbol: APPLIED") != NULL);
@@ -673,6 +903,29 @@ TEST(einteg_rename_partial_failure_no_corruption) {
     free(qn);
     PASS();
 }
+
+TEST(einteg_move_partial_failure_no_corruption) {
+    /* Armed one-shot fault kills the FIRST write of the move (the destination
+     * mv_coll.py): the response is PARTIAL with zero files written and every
+     * involved file stays byte-identical — never a mixed or truncated state. */
+    char *qn = NULL;
+    int start = 0, end = 0;
+    ASSERT_TRUE(find_function("existing_m", &qn, &start, &end));
+
+    cbm_edit_write_test_reset_faults();
+    cbm_edit_write_test_fail_once();
+    char *resp = call_move_tool(qn, "mv_coll", ",\"dry_run\":false");
+    cbm_edit_write_test_reset_faults();
+    ASSERT_NOT_NULL(resp);
+    ASSERT_TRUE(strstr(resp, "move_symbol: PARTIAL") != NULL);
+    ASSERT_TRUE(strstr(resp, "files written: 0 of 2 planned") != NULL);
+    free(resp);
+
+    ASSERT_TRUE(file_equals("mv_coll.py", MV_COLL_PY));
+    ASSERT_TRUE(file_equals("mv_dest.py", MV_DEST_PY_MOVED));
+    free(qn);
+    PASS();
+}
 #endif /* CBM_EDIT_TEST_API */
 
 /* ══════════════════════════════════════════════════════════════════
@@ -697,9 +950,15 @@ SUITE(edit_integration) {
     RUN_TEST(einteg_drift_rejected_without_write);
     RUN_TEST(einteg_orphans_shallow_by_default);
     RUN_TEST(einteg_recursive_orphans_cascade);
+    RUN_TEST(einteg_move_dry_run_python);
+    RUN_TEST(einteg_move_python_applied);
+    RUN_TEST(einteg_move_collision_refused);
+    RUN_TEST(einteg_move_circular_refused);
+    RUN_TEST(einteg_move_ts_applied);
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
     RUN_TEST(einteg_edit_write_failure_keeps_file);
     RUN_TEST(einteg_rename_partial_failure_no_corruption);
+    RUN_TEST(einteg_move_partial_failure_no_corruption);
 #endif
 
     einteg_teardown();

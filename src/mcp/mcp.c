@@ -12583,15 +12583,39 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         }
     }
 
-    /* Importers: graph-verified IMPORTS edges into the symbol (HIGH tier). */
+    /* Importers: graph-verified IMPORTS edges (HIGH tier). Two target sets:
+     * edges into the SYMBOL (Python from-imports resolve to the member) and
+     * edges into the source MODULE node (TS/JS named imports and Python plain
+     * `import mod` resolve to the module). Files are deduped between the two
+     * sweeps — a module-edge importer whose import line doesn't match is
+     * listed as REVIEW (plain import / attribute use), never rewritten. */
     cbm_sb_t review_sb;
     cbm_sb_init(&review_sb);
     int review_items = 0;
     {
-        cbm_edge_t *imp_edges = NULL;
-        int imp_count = 0;
-        if (cbm_store_find_edges_by_target_type(store, node.id, "IMPORTS", &imp_edges,
-                                                &imp_count) == CBM_STORE_OK) {
+        int64_t import_targets[2] = {node.id, 0};
+        cbm_node_t *snodes = NULL;
+        int sn_count = 0;
+        if (cbm_store_find_nodes_by_file(store, effective_project, node.file_path, &snodes,
+                                         &sn_count) == CBM_STORE_OK) {
+            for (int i = 0; i < sn_count; i++) {
+                if (snodes[i].label && strcmp(snodes[i].label, "Module") == 0) {
+                    import_targets[1] = snodes[i].id;
+                    break;
+                }
+            }
+            cbm_store_free_nodes(snodes, sn_count);
+        }
+        for (int t = 0; t < 2; t++) {
+            if (import_targets[t] == 0) {
+                continue;
+            }
+            cbm_edge_t *imp_edges = NULL;
+            int imp_count = 0;
+            if (cbm_store_find_edges_by_target_type(store, import_targets[t], "IMPORTS", &imp_edges,
+                                                    &imp_count) != CBM_STORE_OK) {
+                continue;
+            }
             for (int i = 0; i < imp_count; i++) {
                 cbm_node_t importer = {0};
                 if (cbm_store_find_node_by_id(store, imp_edges[i].source_id, &importer) !=
@@ -12651,9 +12675,11 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 } else {
                     char old_spec[CBM_SZ_1K];
                     char new_spec[CBM_SZ_1K];
-                    if (cbm_edit_move_ts_relative_spec(irel, node.file_path, old_spec,
+                    /* rec->rel_path (owned by the ctx) outlives `importer`,
+                     * whose strings were freed above — never use irel here. */
+                    if (cbm_edit_move_ts_relative_spec(rec->rel_path, node.file_path, old_spec,
                                                        sizeof(old_spec)) != CBM_EDIT_OK ||
-                        cbm_edit_move_ts_relative_spec(irel, dest_rel, new_spec,
+                        cbm_edit_move_ts_relative_spec(rec->rel_path, dest_rel, new_spec,
                                                        sizeof(new_spec)) != CBM_EDIT_OK) {
                         rrc = CBM_EDIT_ERR_ARGS;
                     } else {
@@ -12673,6 +12699,30 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 rec->changed =
                     rec->new_len != rec->len || memcmp(rec->data, rec->new_data, rec->new_len) != 0;
                 if (!rec->changed) {
+                    /* Module-edge sweep (t == 1): the file may import only
+                     * OTHER members of the source module. When the symbol
+                     * name does not occur in the file at all, it is not an
+                     * importer of the moved symbol — drop it silently.
+                     * Otherwise (plain `import mod` + attribute use, star
+                     * import, alias, dynamic) keep it as REVIEW. */
+                    bool name_present = true;
+                    if (t == 1) {
+                        cbm_edit_occurrence_t *occs = NULL;
+                        int occ_count = 0;
+                        if (cbm_edit_scan_identifier(rec->data, rec->len, name, &occs, &occ_count,
+                                                     8) == CBM_EDIT_OK) {
+                            name_present = occ_count > 0;
+                        }
+                        free(occs);
+                    }
+                    if (!name_present) {
+                        free(rec->rel_path);
+                        free(rec->data);
+                        free(rec->new_data);
+                        memset(rec, 0, sizeof(*rec));
+                        file_count--;
+                        continue;
+                    }
                     char msg[CBM_SZ_1K];
                     snprintf(msg, sizeof(msg),
                              "  %s: graph shows an IMPORTS edge but no import line matched the "
