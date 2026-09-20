@@ -320,8 +320,8 @@ Response prefixes: `move_symbol: DRY-RUN` / `move_symbol: APPLIED` / `move_symbo
 
 ### 12.6 Chia nhỏ implement (mỗi bước 1 commit)
 
-1. **5a** — `src/edit/edit_move.c` core: extract/insert/delete body + Python import rewriting + unit test (chưa nối MCP).
-2. **5b** — TS import rewriting + relative path recomputation + unit test.
-3. **5c** — `handle_move_symbol` trong mcp.c: plan/apply, circular check, re-export detection, schema + tool count 22→23.
-4. **5d** — Integration + fault-injection tests.
-5. **5e** — Docs (AGENT_GUIDE, llms.txt, README 22→23 tools) + bump metadata.
+1. **5a** ✅ (`c7825aff`) — `src/edit/edit_move.c` core: extract/insert/delete body + Python import rewriting + unit test.
+2. **5b** ✅ (`c011c1e8`) — TS import rewriting + relative path recomputation + unit test (suite `edit` 82 test).
+3. **5c** ✅ (`54a56cda`) — `handle_move_symbol` trong mcp.c: plan/apply, circular check, re-export detection, schema + tool count 22→23.
+4. **5d** ✅ (`98eab359`) — Integration + fault-injection tests (suite `edit_integration` 17 test). Phát hiện và sửa 2 bug thật: TS importer resolve về Module node (không phải symbol) nên sweep phải nhìn cả 2 target; và use-after-free con trỏ `irel` sau `cbm_edit_free_node`.
+5. **5e** ✅ — Docs (AGENT_GUIDE, llms.txt 22→23 tools) + metadata đã regen ở 5c.
