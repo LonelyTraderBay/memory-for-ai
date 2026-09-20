@@ -129,6 +129,7 @@ enum {
 
 /* JSON-RPC 2.0 standard error codes */
 #define JSONRPC_PARSE_ERROR (-32700)
+#define JSONRPC_INVALID_REQUEST (-32600)
 #define JSONRPC_METHOD_NOT_FOUND (-32601)
 #define JSONRPC_INVALID_PARAMS (-32602)
 #define JSONRPC_INTERNAL_ERROR (-32603)
@@ -205,6 +206,11 @@ int cbm_jsonrpc_parse(const char *line, cbm_jsonrpc_request_t *out) {
             /* JSON-RPC 2.0 §4 permits string ids (Claude Desktop uses them).
              * Preserve verbatim instead of coercing via strtol (issue #253). */
             out->id_str = heap_strdup(yyjson_get_str(v_id));
+        } else {
+            /* bool/float/object/array/explicit-null ids cannot be echoed
+             * through the int/string machinery. JSON-RPC: an id that cannot
+             * be determined makes the request invalid (-32600, id:null). */
+            out->id_invalid = true;
         }
     }
 
@@ -276,6 +282,24 @@ char *cbm_jsonrpc_format_error(int64_t id, int code, const char *message) {
 
     yyjson_mut_obj_add_str(doc, root, "jsonrpc", "2.0");
     yyjson_mut_obj_add_int(doc, root, "id", id);
+
+    yyjson_mut_val *err = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, err, "code", code);
+    yyjson_mut_obj_add_str(doc, err, "message", message);
+    yyjson_mut_obj_add_val(doc, root, "error", err);
+
+    char *out = yy_doc_to_str(doc);
+    yyjson_mut_doc_free(doc);
+    return out;
+}
+
+char *cbm_jsonrpc_format_error_no_id(int code, const char *message) {
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+
+    yyjson_mut_obj_add_str(doc, root, "jsonrpc", "2.0");
+    yyjson_mut_obj_add_null(doc, root, "id");
 
     yyjson_mut_val *err = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_int(doc, err, "code", code);
@@ -1009,6 +1033,46 @@ static bool mcp_tool_allowed(cbm_mcp_tool_profile_t profile, const char *name) {
         }
     }
     return false;
+}
+
+/* True when `name` names a registered tool, independent of the active tool
+ * profile. An unregistered name is a protocol error (-32602); a registered
+ * but profile-disallowed name stays a tool-level isError result. */
+static bool mcp_tool_known(const char *name) {
+    if (!name) {
+        return false;
+    }
+    /* trace_call_path is the legacy alias dispatch_tool accepts for
+     * trace_path; it is deliberately absent from the TOOLS table so it does
+     * not appear in tools/list, but it is still a known tool. */
+    if (strcmp(name, "trace_call_path") == 0) {
+        return true;
+    }
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        if (strcmp(name, TOOLS[i].name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* JSON-RPC error object for an unknown tools/call name. Built with yyjson so
+ * an attacker-influenced name is escaped rather than snprintf-interpolated. */
+static char *mcp_unknown_tool_error_json(const char *tool_name) {
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_int(doc, root, "code", JSONRPC_INVALID_PARAMS);
+    char message[CBM_SZ_256];
+    if (tool_name) {
+        (void)snprintf(message, sizeof(message), "unknown tool: %.200s", tool_name);
+    } else {
+        (void)snprintf(message, sizeof(message), "missing tool name");
+    }
+    yyjson_mut_obj_add_str(doc, root, "message", message);
+    char *out = yy_doc_to_str(doc);
+    yyjson_mut_doc_free(doc);
+    return out;
 }
 
 static const char *mcp_tool_profile_name(cbm_mcp_tool_profile_t profile) {
@@ -17692,7 +17756,17 @@ bool cbm_mcp_jsonrpc_response_prepend_notice(char **response_io, const char *not
 char *cbm_mcp_server_handle(cbm_mcp_server_t *srv, const char *line) {
     cbm_jsonrpc_request_t req = {0};
     if (cbm_jsonrpc_parse(line, &req) < 0) {
-        return cbm_jsonrpc_format_error(0, JSONRPC_PARSE_ERROR, "Parse error");
+        /* JSON-RPC: when the id cannot be detected (parse failure), the
+         * response id MUST be null — not a fabricated numeric id. */
+        return cbm_jsonrpc_format_error_no_id(JSONRPC_PARSE_ERROR, "Parse error");
+    }
+
+    if (req.id_invalid) {
+        /* id present but neither string nor integer: cannot echo it, so the
+         * request is invalid and the error carries id:null (-32600). */
+        cbm_jsonrpc_request_free(&req);
+        return cbm_jsonrpc_format_error_no_id(JSONRPC_INVALID_REQUEST,
+                                              "Invalid Request: id must be a string or integer");
     }
 
     /* Notifications (no id) → handle cancellation, then no response */
@@ -17746,29 +17820,38 @@ char *cbm_mcp_server_handle(cbm_mcp_server_t *srv, const char *line) {
         char *tool_name = req.params_raw ? cbm_mcp_get_tool_name(req.params_raw) : NULL;
         char *tool_args =
             req.params_raw ? cbm_mcp_get_arguments(req.params_raw) : heap_strdup("{}");
-        srv->active_request_id = req.id;
-        free(srv->active_request_id_str);
-        srv->active_request_id_str = req.id_str ? heap_strdup(req.id_str) : NULL;
+        if (!mcp_tool_known(tool_name)) {
+            /* MCP: an unknown tool name is a protocol error (-32602), not a
+             * successful response with isError content. */
+            request_error_json = mcp_unknown_tool_error_json(tool_name);
+            free(tool_name);
+            free(tool_args);
+        } else {
+            srv->active_request_id = req.id;
+            free(srv->active_request_id_str);
+            srv->active_request_id_str = req.id_str ? heap_strdup(req.id_str) : NULL;
 
-        struct timespec t0;
-        cbm_clock_gettime(CLOCK_MONOTONIC, &t0);
-        result_json = cbm_mcp_handle_tool(srv, tool_name, tool_args);
-        srv->active_request_id = CBM_NOT_FOUND;
-        free(srv->active_request_id_str);
-        srv->active_request_id_str = NULL;
-        struct timespec t1;
-        cbm_clock_gettime(CLOCK_MONOTONIC, &t1);
-        long long dur_us = ((long long)(t1.tv_sec - t0.tv_sec) * MCP_S_TO_US) +
-                           ((long long)(t1.tv_nsec - t0.tv_nsec) / MCP_MS_TO_US);
-        bool is_err = (result_json != NULL) && (strstr(result_json, "\"isError\":true") != NULL);
-        cbm_diag_record_query(dur_us, is_err);
-        long long request_dur_us = ((long long)(t1.tv_sec - req_t0.tv_sec) * MCP_S_TO_US) +
-                                   ((long long)(t1.tv_nsec - req_t0.tv_nsec) / MCP_MS_TO_US);
-        cbm_log_mcp_request(req.method, tool_name, is_err, request_dur_us);
-        request_logged = true;
+            struct timespec t0;
+            cbm_clock_gettime(CLOCK_MONOTONIC, &t0);
+            result_json = cbm_mcp_handle_tool(srv, tool_name, tool_args);
+            srv->active_request_id = CBM_NOT_FOUND;
+            free(srv->active_request_id_str);
+            srv->active_request_id_str = NULL;
+            struct timespec t1;
+            cbm_clock_gettime(CLOCK_MONOTONIC, &t1);
+            long long dur_us = ((long long)(t1.tv_sec - t0.tv_sec) * MCP_S_TO_US) +
+                               ((long long)(t1.tv_nsec - t0.tv_nsec) / MCP_MS_TO_US);
+            bool is_err =
+                (result_json != NULL) && (strstr(result_json, "\"isError\":true") != NULL);
+            cbm_diag_record_query(dur_us, is_err);
+            long long request_dur_us = ((long long)(t1.tv_sec - req_t0.tv_sec) * MCP_S_TO_US) +
+                                       ((long long)(t1.tv_nsec - req_t0.tv_nsec) / MCP_MS_TO_US);
+            cbm_log_mcp_request(req.method, tool_name, is_err, request_dur_us);
+            request_logged = true;
 
-        free(tool_name);
-        free(tool_args);
+            free(tool_name);
+            free(tool_args);
+        }
     } else {
         /* Echo the original id (string or numeric, issue #253) on the error. */
         char err_obj[160];
@@ -17946,15 +18029,25 @@ int cbm_mcp_read_message(FILE *in, char **message, bool *content_length_framed) 
             continue;
         }
 
-        if (strncmp(line, "Content-Length:", SLEN("Content-Length:")) != 0) {
+        bool is_content_length = strncmp(line, "Content-Length:", SLEN("Content-Length:")) == 0;
+        if (!is_content_length && strncmp(line, "Content-", SLEN("Content-")) != 0) {
+            /* Newline-delimited JSON mode (JSON messages never start with a
+             * Content-* header prefix). */
             *message = line;
             return SKIP_ONE;
         }
 
+        /* Header order is not fixed by the framing: Content-Type (or another
+         * Content-* header) may precede Content-Length. Treating that first
+         * header line as the message used to desync the whole stream. */
         size_t content_len = 0;
-        if (line_read > MCP_MAX_HEADER_SIZE || !parse_content_length(line, &content_len)) {
-            free(line);
-            return CBM_NOT_FOUND;
+        bool have_content_length = false;
+        if (is_content_length) {
+            if (line_read > MCP_MAX_HEADER_SIZE || !parse_content_length(line, &content_len)) {
+                free(line);
+                return CBM_NOT_FOUND;
+            }
+            have_content_length = true;
         }
 
         bool found_separator = false;
@@ -17984,8 +18077,16 @@ int cbm_mcp_read_message(FILE *in, char **message, bool *content_length_framed) 
                 found_separator = true;
                 break;
             }
+            if (!have_content_length &&
+                strncmp(line, "Content-Length:", SLEN("Content-Length:")) == 0) {
+                if (!parse_content_length(line, &content_len)) {
+                    free(line);
+                    return CBM_NOT_FOUND;
+                }
+                have_content_length = true;
+            }
         }
-        if (!found_separator) {
+        if (!found_separator || !have_content_length) {
             free(line);
             return CBM_NOT_FOUND;
         }

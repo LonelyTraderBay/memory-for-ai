@@ -27,6 +27,7 @@ typedef struct {
     int64_t id;             /* request ID (numeric form; -1 if notification) */
     const char *id_str;     /* non-NULL when id is a JSON string (issue #253) */
     bool has_id;            /* false for notifications */
+    bool id_invalid;        /* id present but not string/integer (spec: -32600) */
     const char *params_raw; /* raw JSON string of params */
 } cbm_jsonrpc_request_t;
 
@@ -50,6 +51,10 @@ char *cbm_jsonrpc_format_response(const cbm_jsonrpc_response_t *resp);
 
 /* Format a JSON-RPC error response. Returns heap-allocated JSON string. */
 char *cbm_jsonrpc_format_error(int64_t id, int code, const char *message);
+
+/* Format a JSON-RPC error with id:null — required when the request id could
+ * not be determined (parse error, invalid id type). */
+char *cbm_jsonrpc_format_error_no_id(int code, const char *message);
 
 /* ── MCP protocol helpers ─────────────────────────────────────── */
 

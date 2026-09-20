@@ -1795,8 +1795,43 @@ TEST(tool_unknown_tool) {
         cbm_mcp_server_handle(srv, "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\","
                                    "\"params\":{\"name\":\"nonexistent_tool\",\"arguments\":{}}}");
     ASSERT_NOT_NULL(resp);
-    /* Should return result with isError */
-    ASSERT_NOT_NULL(strstr(resp, "isError"));
+    /* MCP spec: an unknown tool is a protocol error (-32602) echoing the
+     * request id, not a successful result carrying isError content. */
+    ASSERT_NOT_NULL(strstr(resp, "\"code\":-32602"));
+    ASSERT_NOT_NULL(strstr(resp, "unknown tool: nonexistent_tool"));
+    ASSERT_NOT_NULL(strstr(resp, "\"id\":12"));
+    ASSERT_NULL(strstr(resp, "isError"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+TEST(server_handle_rejects_nonstandard_id) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+
+    /* bool / float / object / explicit-null ids cannot be echoed; JSON-RPC
+     * requires -32600 with id:null rather than a fabricated -1 echo. */
+    const char *const weird[] = {
+        "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"ping\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"ping\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":{\"x\":1},\"method\":\"ping\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}",
+    };
+    for (size_t i = 0; i < sizeof(weird) / sizeof(weird[0]); i++) {
+        char *resp = cbm_mcp_server_handle(srv, weird[i]);
+        ASSERT_NOT_NULL(resp);
+        ASSERT_NOT_NULL(strstr(resp, "\"code\":-32600"));
+        ASSERT_NOT_NULL(strstr(resp, "\"id\":null"));
+        free(resp);
+    }
+
+    /* Parse error: id is undetectable, so the response id must be null. */
+    char *resp = cbm_mcp_server_handle(srv, "{not json");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"code\":-32700"));
+    ASSERT_NOT_NULL(strstr(resp, "\"id\":null"));
+    ASSERT_NULL(strstr(resp, "\"id\":0"));
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -14125,6 +14160,7 @@ SUITE(mcp) {
     RUN_TEST(tool_list_projects_empty);
     RUN_TEST(tool_get_graph_schema_empty);
     RUN_TEST(tool_unknown_tool);
+    RUN_TEST(server_handle_rejects_nonstandard_id);
     RUN_TEST(tool_compare_graphs_registered_issue525);
     RUN_TEST(tool_compare_graphs_streams_stable_deltas_issue525);
     RUN_TEST(tool_compare_graphs_normalizes_legacy_path_separators_issue525);

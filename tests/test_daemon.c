@@ -399,6 +399,27 @@ TEST(daemon_bridge_reads_newline_and_content_length_messages) {
     PASS();
 }
 
+TEST(daemon_bridge_reads_content_type_before_content_length) {
+    /* Header order is not fixed by the framing: a client may send
+     * Content-Type before Content-Length, and the stream must not desync. */
+    const char *body = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}";
+    char wire[512];
+    snprintf(wire, sizeof(wire),
+             "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
+             "Content-Length: %zu\r\n\r\n%s",
+             strlen(body), body);
+    char *message = NULL;
+    bool framed = false;
+    FILE *stream = message_stream(wire);
+    ASSERT_NOT_NULL(stream);
+    ASSERT_EQ(cbm_mcp_read_message(stream, &message, &framed), 1);
+    ASSERT_TRUE(framed);
+    ASSERT_STR_EQ(message, body);
+    free(message);
+    fclose(stream);
+    PASS();
+}
+
 TEST(daemon_bridge_rejects_malformed_content_length) {
     char *message = NULL;
     bool framed = false;
@@ -492,6 +513,7 @@ SUITE(daemon) {
     RUN_TEST(daemon_completed_job_is_not_cancelled_on_later_disconnect);
     RUN_TEST(daemon_frame_header_rejects_wrong_protocol_and_oversize);
     RUN_TEST(daemon_bridge_reads_newline_and_content_length_messages);
+    RUN_TEST(daemon_bridge_reads_content_type_before_content_length);
     RUN_TEST(daemon_bridge_rejects_malformed_content_length);
     RUN_TEST(daemon_bridge_rejects_embedded_nul_body);
     RUN_TEST(daemon_bridge_rejects_oversized_headers);
