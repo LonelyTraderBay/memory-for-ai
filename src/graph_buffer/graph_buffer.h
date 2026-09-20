@@ -167,12 +167,21 @@ int cbm_gbuf_store_token_vector(cbm_gbuf_t *gb, const char *token, const uint8_t
 int cbm_gbuf_dump_to_sqlite(cbm_gbuf_t *gb, const char *path);
 
 /* Flush the buffer to an existing store via the store API.
- * Deletes existing project data first. Returns 0 on success. */
+ * Deletes existing project data first. Every store call is checked: any
+ * failure rolls the transaction back and restores bulk mode/indexes
+ * best-effort. Returns 0 on success, -1 on error. */
 int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store);
 
 /* Merge the buffer into an existing store WITHOUT deleting existing data.
  * Upserts nodes, inserts edges. Used for incremental indexing.
- * Returns 0 on success. */
+ * Same error contract as flush: failure rolls back the transaction.
+ * Returns 0 on success, -1 on error. */
 int cbm_gbuf_merge_into_store(cbm_gbuf_t *gb, cbm_store_t *store);
+
+#ifdef CBM_ENABLE_TEST_SEAMS
+/* Fault injection (test builds only): the next flush/merge fails the write
+ * that would succeed as number successful_writes+1. Pass -1 to disarm. */
+void cbm_gbuf_test_fail_write_after(int successful_writes);
+#endif
 
 #endif /* CBM_GRAPH_BUFFER_H */

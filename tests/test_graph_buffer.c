@@ -993,7 +993,71 @@ TEST(gbuf_merge_into_store_preserves) {
     PASS();
 }
 
-/* ── Shared ID tests ──────────────────────────────────────────── */
+/* ── Flush / merge error contract (fault injection) ───────────── */
+
+TEST(gbuf_flush_rollback_on_write_failure) {
+    cbm_gbuf_t *gb = cbm_gbuf_new("proj", "/tmp/repo");
+    int64_t n1 = cbm_gbuf_upsert_node(gb, "Function", "alpha", "proj::alpha", "a.go", 1, 10, "{}");
+    int64_t n2 = cbm_gbuf_upsert_node(gb, "Class", "Beta", "proj::Beta", "b.go", 1, 20, "{}");
+    cbm_gbuf_insert_edge(gb, n1, n2, "CALLS", "{}");
+
+    cbm_store_t *store = cbm_store_open_memory();
+    ASSERT_NOT_NULL(store);
+
+    /* Fail the second write (first node lands, second node faults). */
+    cbm_gbuf_test_fail_write_after(1);
+    int rc = cbm_gbuf_flush_to_store(gb, store);
+    ASSERT_EQ(rc, -1);
+
+    /* Rollback: nothing of the project survived, not even the first node. */
+    ASSERT_EQ(cbm_store_count_nodes(store, "proj"), 0);
+    ASSERT_EQ(cbm_store_count_edges(store, "proj"), 0);
+
+    /* The store is still fully usable after the rolled-back flush. */
+    cbm_gbuf_test_fail_write_after(-1);
+    rc = cbm_gbuf_flush_to_store(gb, store);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(cbm_store_count_nodes(store, "proj"), 2);
+    ASSERT_EQ(cbm_store_count_edges(store, "proj"), 1);
+
+    cbm_store_close(store);
+    cbm_gbuf_free(gb);
+    PASS();
+}
+
+TEST(gbuf_merge_rollback_on_write_failure) {
+    /* Seed the store with one committed node. */
+    cbm_gbuf_t *gb1 = cbm_gbuf_new("proj", "/tmp/repo");
+    cbm_gbuf_upsert_node(gb1, "Function", "existing", "proj::existing", "e.go", 1, 10, "{}");
+    cbm_store_t *store = cbm_store_open_memory();
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_gbuf_flush_to_store(gb1, store), 0);
+    ASSERT_EQ(cbm_store_count_nodes(store, "proj"), 1);
+
+    /* Merge two more nodes, faulting on the second write. */
+    cbm_gbuf_t *gb2 = cbm_gbuf_new("proj", "/tmp/repo");
+    cbm_gbuf_upsert_node(gb2, "Function", "newone", "proj::newone", "n.go", 1, 5, "{}");
+    cbm_gbuf_upsert_node(gb2, "Function", "newtwo", "proj::newtwo", "m.go", 1, 5, "{}");
+    cbm_gbuf_test_fail_write_after(1);
+    int rc = cbm_gbuf_merge_into_store(gb2, store);
+    ASSERT_EQ(rc, -1);
+
+    /* Rollback: the seeded node survives, no partial merge is visible. */
+    ASSERT_EQ(cbm_store_count_nodes(store, "proj"), 1);
+    cbm_node_t out;
+    ASSERT_EQ(cbm_store_find_node_by_qn(store, "proj", "proj::newone", &out), CBM_STORE_NOT_FOUND);
+
+    /* Disarm and retry: merge now succeeds completely. */
+    cbm_gbuf_test_fail_write_after(-1);
+    rc = cbm_gbuf_merge_into_store(gb2, store);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(cbm_store_count_nodes(store, "proj"), 3);
+
+    cbm_store_close(store);
+    cbm_gbuf_free(gb1);
+    cbm_gbuf_free(gb2);
+    PASS();
+}
 
 TEST(gbuf_shared_ids_unique) {
     _Atomic int64_t shared = 1;
@@ -1147,6 +1211,8 @@ SUITE(graph_buffer) {
     RUN_TEST(gbuf_flush_to_store_null);
     RUN_TEST(gbuf_flush_verify_store_data);
     RUN_TEST(gbuf_merge_into_store_preserves);
+    RUN_TEST(gbuf_flush_rollback_on_write_failure);
+    RUN_TEST(gbuf_merge_rollback_on_write_failure);
     RUN_TEST(gbuf_flush_skips_orphan_edges);
 
     /* Edge property merge determinism */
