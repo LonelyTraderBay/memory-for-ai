@@ -112,12 +112,19 @@ static _Noreturn void host_force_terminate(const char *component);
 
 static void host_log_sink(const char *line) {
     cbm_ui_log_append(line);
-    if (!g_host_log_file || !g_host_log_mutex_initialized) {
+    /* Shutdown race: emit_line() calls the sink without holding any log-core
+     * lock, so a thread can enter here while host_log_close() is tearing the
+     * file down. The file NULL check must be INSIDE the mutex, and the mutex
+     * itself is process-lifetime (never destroyed, flag never cleared) so a
+     * sink that passed this check before close still locks a live mutex. */
+    if (!g_host_log_mutex_initialized) {
         return;
     }
     cbm_mutex_lock(&g_host_log_mutex);
-    (void)fprintf(g_host_log_file, "%s\n", line ? line : "");
-    (void)fflush(g_host_log_file);
+    if (g_host_log_file) {
+        (void)fprintf(g_host_log_file, "%s\n", line ? line : "");
+        (void)fflush(g_host_log_file);
+    }
     cbm_mutex_unlock(&g_host_log_mutex);
 }
 
@@ -141,27 +148,40 @@ static bool host_log_open(char conflict_log_out[HOST_PATH_CAP]) {
         conflict_log_out[0] = '\0';
         return false;
     }
-    cbm_mutex_init(&g_host_log_mutex);
-    g_host_log_mutex_initialized = true;
+    if (!g_host_log_mutex_initialized) {
+        cbm_mutex_init(&g_host_log_mutex);
+        g_host_log_mutex_initialized = true;
+    }
     cbm_log_set_sink(host_log_sink);
     return true;
 }
 
 static void host_log_close(void) {
     cbm_log_set_sink(NULL);
+    /* The mutex and its initialized flag are process-lifetime: a sink thread
+     * that entered host_log_sink() before set_sink(NULL) can still be between
+     * the flag check and the lock, and must find a live mutex plus a NULL
+     * file (checked inside the lock) rather than a destroyed mutex. */
     if (g_host_log_mutex_initialized) {
         cbm_mutex_lock(&g_host_log_mutex);
     }
     FILE *file = g_host_log_file;
     g_host_log_file = NULL;
+    if (g_host_log_mutex_initialized) {
+        cbm_mutex_unlock(&g_host_log_mutex);
+    }
     if (file) {
         (void)fclose(file);
     }
-    if (g_host_log_mutex_initialized) {
-        cbm_mutex_unlock(&g_host_log_mutex);
-        cbm_mutex_destroy(&g_host_log_mutex);
-        g_host_log_mutex_initialized = false;
-    }
+}
+
+bool cbm_daemon_host_log_open_for_test(void) {
+    char conflict_log[HOST_PATH_CAP];
+    return host_log_open(conflict_log);
+}
+
+void cbm_daemon_host_log_close_for_test(void) {
+    host_log_close();
 }
 
 static uint64_t host_deadline_after(uint32_t timeout_ms) {

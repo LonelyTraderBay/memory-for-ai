@@ -68,4 +68,9 @@ bool cbm_daemon_host_http_reconcile_free_refusal_for_test(
  * the failure, the adapter must cancel so the final free succeeds. */
 bool cbm_daemon_host_http_thread_create_failure_lifecycle_for_test(void);
 
+/* Open/close the production daemon operation log so tests can lock the
+ * close-then-log and close-then-reopen lifecycle contract of the sink. */
+bool cbm_daemon_host_log_open_for_test(void);
+void cbm_daemon_host_log_close_for_test(void);
+
 #endif /* CBM_DAEMON_HOST_INTERNAL_H */

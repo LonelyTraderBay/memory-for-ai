@@ -4,6 +4,8 @@
 #include "test_framework.h"
 
 #include "daemon/daemon.h"
+#include "daemon/host_internal.h"
+#include "foundation/log.h"
 #include "mcp/mcp.h"
 
 #include <stdint.h>
@@ -467,6 +469,20 @@ TEST(daemon_sessions_keep_distinct_roots_and_allowed_root_policy) {
     PASS();
 }
 
+TEST(daemon_host_log_sink_close_and_reopen_lifecycle) {
+    /* The sink must survive close (no write to the torn-down file, no use of a
+     * destroyed mutex) and a later re-open must reuse the process-lifetime
+     * mutex without re-init. */
+    ASSERT_TRUE(cbm_daemon_host_log_open_for_test());
+    cbm_log_info("daemon.test", "phase", "one");
+    cbm_daemon_host_log_close_for_test();
+    cbm_log_info("daemon.test", "phase", "two");
+    ASSERT_TRUE(cbm_daemon_host_log_open_for_test());
+    cbm_log_info("daemon.test", "phase", "three");
+    cbm_daemon_host_log_close_for_test();
+    PASS();
+}
+
 SUITE(daemon) {
     RUN_TEST(daemon_client_ids_are_connection_bound);
     RUN_TEST(daemon_shared_job_survives_until_final_subscriber_disconnects);
@@ -480,4 +496,5 @@ SUITE(daemon) {
     RUN_TEST(daemon_bridge_rejects_embedded_nul_body);
     RUN_TEST(daemon_bridge_rejects_oversized_headers);
     RUN_TEST(daemon_sessions_keep_distinct_roots_and_allowed_root_policy);
+    RUN_TEST(daemon_host_log_sink_close_and_reopen_lifecycle);
 }
