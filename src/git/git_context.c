@@ -254,8 +254,11 @@ int cbm_git_context_resolve(const char *path, cbm_git_context_t *out) {
         return CBM_NOT_FOUND;
     }
 
-    struct stat st;
-    out->root_exists = (stat(path, &st) == 0);
+    /* cbm_path_info_utf8, not stat(): stat() reads char* through the ANSI
+     * code page on Windows, so a non-ASCII input path would falsely report
+     * root_exists=false. */
+    cbm_path_info_t info;
+    out->root_exists = (cbm_path_info_utf8(path, &info) == 0);
     if (!out->root_exists) {
         return 0;
     }

@@ -472,8 +472,12 @@ static bool git_has_own_dot_git(const char *root_path) {
     if (written <= 0 || (size_t)written >= sizeof(path)) {
         return false;
     }
-    struct stat st;
-    return stat(path, &st) == 0 && (S_ISDIR(st.st_mode) || S_ISREG(st.st_mode));
+    /* cbm_path_info_utf8, not stat(): stat() reads char* through the ANSI
+     * code page on Windows, so a .git under a non-ASCII path probes the
+     * wrong name. A symlinked .git (worktree setups) counts as existing. */
+    cbm_path_info_t info;
+    return cbm_path_info_utf8(path, &info) == 0 &&
+           (info.is_directory || info.is_regular || info.is_symlink);
 }
 
 /* Does the ancestor repository actually track anything inside this directory?
@@ -586,17 +590,6 @@ static uint64_t sig_fold(uint64_t h, const void *data, size_t len) {
     return h;
 }
 
-/* Platform-portable mtime_ns (mirrors pipeline_incremental.c). */
-static int64_t sig_stat_mtime_ns(const struct stat *st) {
-#ifdef __APPLE__
-    return ((int64_t)st->st_mtimespec.tv_sec * NS_PER_SEC) + (int64_t)st->st_mtimespec.tv_nsec;
-#elif defined(_WIN32)
-    return (int64_t)st->st_mtime * NS_PER_SEC;
-#else
-    return ((int64_t)st->st_mtim.tv_sec * NS_PER_SEC) + (int64_t)st->st_mtim.tv_nsec;
-#endif
-}
-
 /* Fold a listed path's (size, mtime) into the signature so an in-place edit
  * of an already-dirty file still produces a new signature. A failed stat
  * (deleted file, quoting artifact) degrades to the entry text alone — the
@@ -609,10 +602,12 @@ static uint64_t sig_fold_path_stat(uint64_t h, const char *root_path, const char
                                    const char *rel) {
     char abs[CBM_SZ_4K];
     snprintf(abs, sizeof(abs), "%s/%s%s", root_path, cdup ? cdup : "", rel);
-    struct stat st;
-    if (stat(abs, &st) == 0) {
-        int64_t mt = sig_stat_mtime_ns(&st);
-        int64_t sz = (int64_t)st.st_size;
+    /* UTF-8-safe probe: stat() reads char* through the ANSI code page on
+     * Windows and would miss files under non-ASCII paths entirely. */
+    cbm_path_info_t info;
+    if (cbm_path_info_utf8(abs, &info) == 0) {
+        int64_t mt = info.mtime_ns;
+        int64_t sz = info.size;
         h = sig_fold(h, &mt, sizeof(mt));
         h = sig_fold(h, &sz, sizeof(sz));
     }
@@ -1240,8 +1235,10 @@ int cbm_watcher_watch_count(cbm_watcher_t *w) {
 
 /* Init baseline for a project: classify Git, then snapshot its change source. */
 static bool init_baseline(cbm_watcher_t *w, project_state_t *s) {
-    struct stat st;
-    if (stat(s->root_path, &st) != 0) {
+    /* cbm_path_info_utf8, not stat(): on Windows stat() reads the path through
+     * the ANSI code page, so a non-ASCII root would falsely read as "gone". */
+    cbm_path_info_t info;
+    if (cbm_path_info_utf8(s->root_path, &info) != 0) {
         cbm_log_warn("watcher.root_gone", "project", s->project_name, "path", s->root_path);
         s->baseline_done = true;
         s->is_git = false;
