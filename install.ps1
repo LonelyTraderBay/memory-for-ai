@@ -313,6 +313,7 @@ $Dest = Join-Path $InstallDir $BinName
 # Retire the running installation before replacing it. Windows keeps an image
 # lock on a running .exe: the file cannot be overwritten, but it CAN be renamed
 # out of the way, which is what makes an in-place update possible from here.
+$retired = $null
 if (Test-Path -LiteralPath $Dest -PathType Leaf) {
     try { & $Dest daemon stop 2>&1 | Out-Null } catch { }
     $retired = "$Dest.retired-$(Get-Date -Format yyyyMMddHHmmss)"
@@ -327,11 +328,12 @@ if (Test-Path -LiteralPath $Dest -PathType Leaf) {
         Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
         exit 1
     }
-    # A retired image stays locked until its last process exits; delete it when
-    # we can, and leave it for the next run when we cannot. Never fail here.
-    Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue
+    # Keep the retired image until the new install verifies: it is the rollback
+    # copy if the install fails midway. Deleted on success further below.
 }
+# Clear rollback copies left by PREVIOUS runs (never this run's $retired).
 Get-ChildItem -LiteralPath $InstallDir -Filter "$BinName.retired-*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -ne $retired } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 
 $InstallArgs = @("install", "-y", "--force", "--dir=$InstallDir")
@@ -341,9 +343,29 @@ if ($ProjectName -ne "") { $InstallArgs += "--name=$ProjectName" }
 & $DownloadedBinary @InstallArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host "error: installation failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+    # Roll back: restore the retired binary so the user keeps a working
+    # installation instead of none at all.
+    if ($retired -and (Test-Path -LiteralPath $retired -PathType Leaf)) {
+        try {
+            if (Test-Path -LiteralPath $Dest -PathType Leaf) {
+                Remove-Item -LiteralPath $Dest -Force -ErrorAction Stop
+            }
+            Move-Item -LiteralPath $retired -Destination $Dest -Force -ErrorAction Stop
+            Write-Host "restored the previous $BinName" -ForegroundColor Yellow
+            try { & $Dest daemon start 2>&1 | Out-Null } catch { }
+        } catch {
+            Write-Host "warning: could not restore the previous binary: $_" -ForegroundColor Yellow
+            Write-Host "         it is still at: $retired" -ForegroundColor Yellow
+        }
+    }
     Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
     exit 1
 }
+
+# Install succeeded — the rollback copy is no longer needed. A retired image
+# stays locked until its last process exits; delete it when we can and leave
+# it for the next run when we cannot. Never fail here.
+if ($retired) { Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue }
 
 # Place the installer beside the binary so `update` points at a local file
 # rather than a URL, and so the next update runs THIS release's installer.
