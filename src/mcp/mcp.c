@@ -617,9 +617,40 @@ static const tool_def_t TOOLS[] = {
      "the total occurrence count from a previous plan; aborts when the sweep disagrees.\"}},"
      "\"required\":[\"qualified_name\",\"project\",\"new_name\"]}"},
 
+    {"move_symbol", "Move symbol to another module",
+     "Move a top-level Function or Class to another module in the same project and language "
+     "(Python or TypeScript/JavaScript), rewriting every graph-verified import of it. The "
+     "importer list comes from IMPORTS edges (HIGH tier): Python 'from old import f' lines and "
+     "TS named imports are repointed, multi-name lines are split, and TS relative specifiers "
+     "are recomputed per importer. If other symbols in the source file still call the moved "
+     "symbol, a re-import line is added to the source file automatically. SAFE BY DEFAULT: "
+     "without dry_run=false the call returns the move plan (per-file actions + REVIEW items) "
+     "and writes nothing. Guards: nested-symbol refusal, destination collision check, "
+     "same-language check, circular-import detection, definition-drift check, per-file mtime "
+     "re-check, expected_files to pin a plan. REVIEW items (aliases, plain/star/dynamic "
+     "imports, re-exports/barrels, unmatched specifiers, circular imports) require force=true "
+     "to apply. Writes go destination, then source, then importers, each file backed up "
+     "first; a failed write stops the sequence (PARTIAL) with backup paths for undo_edit. "
+     "Afterwards the project is re-indexed and the response verifies the symbol resolves at "
+     "its new qualified_name. Workflow: search_graph → move_symbol (review plan) → "
+     "move_symbol(dry_run=false).",
+     "{\"type\":\"object\",\"properties\":{\"qualified_name\":{\"type\":\"string\",\"description\":"
+     "\"Full qualified_name from search_graph\"},\"project\":{\"type\":\"string\"},"
+     "\"destination_module\":{\"type\":\"string\",\"description\":\"qualified_name of the "
+     "destination Module node (e.g. myproject.pkg.utils) — the file must exist and be "
+     "indexed\"},\"position\":{\"type\":\"string\",\"enum\":[\"end\",\"after_imports\"],"
+     "\"default\":\"end\"},\"dry_run\":{\"type\":\"boolean\",\"default\":true,\"description\":"
+     "\"true (default): return the move plan only, write nothing. false: apply the move.\"},"
+     "\"force\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Apply despite "
+     "REVIEW-tier items (aliases, dynamic/star imports, re-exports, circular-import risk) and "
+     "bypass the definition-drift check.\"},\"expected_files\":{\"type\":\"integer\","
+     "\"description\":\"Assert the number of files the plan will modify; aborts when a fresh "
+     "plan disagrees.\"}},\"required\":[\"qualified_name\",\"project\",\"destination_module\"]}"},
+
     {"undo_edit", "Undo an edit from backup",
      "Restore a file from the most recent backup created by edit_symbol / delete_symbol / "
-     "rename_symbol writes. SAFE BY DEFAULT: without dry_run=false the call returns the plan "
+     "rename_symbol / move_symbol writes. SAFE BY DEFAULT: without dry_run=false the call "
+     "returns the plan "
      "(which backup, current vs backup size/lines) and writes nothing. The restore is atomic "
      "and the pre-undo content is itself backed up first, so an undo is undoable; afterwards "
      "the file is byte-compared against the backup and the project is re-indexed. path is "
@@ -881,6 +912,7 @@ static const tool_annotation_def_t TOOL_ANNOTATIONS[] = {
     {"edit_symbol", false, true, false, false},
     {"delete_symbol", false, true, false, false},
     {"rename_symbol", false, true, false, false},
+    {"move_symbol", false, true, false, false},
     {"undo_edit", false, true, false, false},
     {"get_graph_schema", false, true, true, false},
     {"compare_graphs", true, false, true, false},
@@ -11764,6 +11796,1303 @@ static char *handle_rename_symbol(cbm_mcp_server_t *srv, const char *args) {
 
 /* ── undo_edit ───────────────────────────────────────────────── */
 
+/* ── move_symbol ─────────────────────────────────────────────── */
+
+enum {
+    MOVE_MAX_FILE_BYTES = 8 * 1024 * 1024,
+    MOVE_MAX_IMPORTERS = 256,
+    MOVE_PLAN_FILE_ROWS = 30,
+    MOVE_SCAN_MAX_LINES = 400
+};
+
+enum { MOVE_ROLE_DEST = 0, MOVE_ROLE_SOURCE = 1, MOVE_ROLE_IMPORTER = 2 };
+
+typedef struct {
+    char *rel_path; /* owned */
+    char abs_path[CBM_SZ_4K];
+    char *data; /* owned — original on-disk content */
+    size_t len;
+    cbm_edit_file_state_t state;
+    int role;
+    bool is_py;
+    char *new_data; /* owned — planned content */
+    size_t new_len;
+    bool changed;
+    bool reimport; /* SOURCE only: internal callers force a re-import line */
+    int write_rc;
+    cbm_edit_move_py_stats_t py;
+    cbm_edit_move_ts_stats_t ts;
+} move_file_ctx_t;
+
+static void move_free_files(move_file_ctx_t *files, int count) {
+    if (!files) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        free(files[i].rel_path);
+        free(files[i].data);
+        free(files[i].new_data);
+    }
+    free(files);
+}
+
+static const char *move_rc_name(int rc) {
+    switch (rc) {
+    case CBM_EDIT_OK:
+        return "ok";
+    case CBM_EDIT_ERR_ARGS:
+        return "invalid arguments";
+    case CBM_EDIT_ERR_OOM:
+        return "out of memory";
+    case CBM_EDIT_ERR_IO:
+        return "IO error";
+    case CBM_EDIT_ERR_RANGE:
+        return "line range invalid (stale index)";
+    case CBM_EDIT_ERR_VERIFY:
+        return "source drifted from index";
+    case CBM_EDIT_ERR_MTIME:
+        return "file changed externally (mtime conflict)";
+    default:
+        return "unknown error";
+    }
+}
+
+/* Language gate: Python vs TypeScript/JavaScript, by extension. */
+static bool move_lang_of(const char *path, bool *is_py) {
+    const char *dot = strrchr(path ? path : "", '.');
+    if (!dot) {
+        return false;
+    }
+    if (strcmp(dot, ".py") == 0) {
+        *is_py = true;
+        return true;
+    }
+    if (strcmp(dot, ".ts") == 0 || strcmp(dot, ".tsx") == 0 || strcmp(dot, ".js") == 0 ||
+        strcmp(dot, ".jsx") == 0 || strcmp(dot, ".mts") == 0 || strcmp(dot, ".cts") == 0 ||
+        strcmp(dot, ".mjs") == 0 || strcmp(dot, ".cjs") == 0) {
+        *is_py = false;
+        return true;
+    }
+    return false;
+}
+
+/* Dotted Python module name for a project-relative path: strip the extension,
+ * map slashes to dots, and collapse a trailing ".__init__" (pkg/__init__.py is
+ * imported as "pkg"). */
+static bool move_py_module_of(const char *rel, char *out, size_t out_sz) {
+    const char *dot = strrchr(rel, '.');
+    size_t end = dot ? (size_t)(dot - rel) : strlen(rel);
+    size_t n = 0;
+    for (size_t i = 0; i < end; i++) {
+        char c = rel[i];
+        if (c == '/' || c == '\\') {
+            c = '.';
+        }
+        if (n + 1 >= out_sz) {
+            return false;
+        }
+        out[n++] = c;
+    }
+    out[n] = '\0';
+    static const char init_sfx[] = ".__init__";
+    size_t sl = sizeof(init_sfx) - 1;
+    if (n > sl && memcmp(out + n - sl, init_sfx, sl) == 0) {
+        out[n - sl] = '\0';
+    }
+    return true;
+}
+
+static bool move_contains(const char *hay, size_t hay_len, const char *needle) {
+    size_t nl = strlen(needle);
+    if (nl == 0 || hay_len < nl) {
+        return false;
+    }
+    for (size_t i = 0; i + nl <= hay_len; i++) {
+        if (memcmp(hay + i, needle, nl) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *move_eol_of(const char *data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\n') {
+            return (i > 0 && data[i - 1] == '\r') ? "\r\n" : "\n";
+        }
+    }
+    return "\n";
+}
+
+/* Byte offset where a new top-of-file import line should be inserted: after
+ * the leading run of blank/comment/import lines (and after a Python module
+ * docstring when present). Falls back to 0 (very top of file). */
+static size_t move_import_insert_offset(const char *data, size_t len, bool is_py) {
+    size_t pos = 0;
+    size_t insert = 0;
+    int lines = 0;
+    bool docstring_open = false;
+    char docq = '\0';
+    while (pos < len && lines < MOVE_SCAN_MAX_LINES) {
+        size_t eol = pos;
+        while (eol < len && data[eol] != '\n') {
+            eol++;
+        }
+        size_t tlen = eol - pos;
+        if (tlen > 0 && data[pos + tlen - 1] == '\r') {
+            tlen--;
+        }
+        size_t s = 0;
+        while (s < tlen && (data[pos + s] == ' ' || data[pos + s] == '\t')) {
+            s++;
+        }
+        const char *l = data + pos + s;
+        size_t rem = tlen - s;
+        size_t next = (eol < len) ? eol + 1 : len;
+
+        if (docstring_open) {
+            for (size_t i = 0; i + 3 <= rem; i++) {
+                if (l[i] == docq && l[i + 1] == docq && l[i + 2] == docq) {
+                    docstring_open = false;
+                    insert = next;
+                    break;
+                }
+            }
+            pos = next;
+            lines++;
+            continue;
+        }
+
+        bool blank = rem == 0;
+        bool comment = !blank && (l[0] == '#' || (rem >= 2 && l[0] == '/' && l[1] == '/'));
+        bool importish = false;
+        if (!blank && !comment) {
+            if (rem >= 7 && memcmp(l, "import ", 7) == 0) {
+                importish = true;
+            }
+            if (!importish && is_py && rem >= 5 && memcmp(l, "from ", 5) == 0) {
+                importish = true;
+            }
+            if (!importish && !is_py && rem >= 7 && memcmp(l, "export ", 7) == 0 &&
+                move_contains(l, rem, " from ")) {
+                importish = true;
+            }
+        }
+        if (blank || comment || importish) {
+            insert = next;
+        } else if (is_py && rem >= 3 &&
+                   ((l[0] == '"' && l[1] == '"' && l[2] == '"') ||
+                    (l[0] == '\'' && l[1] == '\'' && l[2] == '\''))) {
+            docq = l[0];
+            bool closed = false;
+            for (size_t i = 3; i + 3 <= rem; i++) {
+                if (l[i] == docq && l[i + 1] == docq && l[i + 2] == docq) {
+                    closed = true;
+                    break;
+                }
+            }
+            if (closed) {
+                insert = next;
+            } else {
+                docstring_open = true;
+            }
+        } else {
+            break;
+        }
+        pos = next;
+        lines++;
+    }
+    return insert;
+}
+
+static int move_splice_at(const char *data, size_t len, size_t offset, const char *text,
+                          size_t text_len, char **out, size_t *out_len) {
+    if (offset > len) {
+        return CBM_EDIT_ERR_RANGE;
+    }
+    char *buf = malloc(len + text_len + 1);
+    if (!buf) {
+        return CBM_EDIT_ERR_OOM;
+    }
+    memcpy(buf, data, offset);
+    memcpy(buf + offset, text, text_len);
+    memcpy(buf + offset + text_len, data + offset, len - offset);
+    size_t total = len + text_len;
+    buf[total] = '\0';
+    *out = buf;
+    *out_len = total;
+    return CBM_EDIT_OK;
+}
+
+/* Normalize every line ending in `data` to `eol` ("\n" or "\r\n"). */
+static char *move_normalize_eol(const char *data, size_t len, const char *eol, size_t *out_len) {
+    bool to_crlf = strcmp(eol, "\r\n") == 0;
+    char *buf = malloc(len * 2 + 1);
+    if (!buf) {
+        return NULL;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = data[i];
+        if (c == '\r' && i + 1 < len && data[i + 1] == '\n') {
+            continue; /* collapse CRLF; the '\n' branch re-emits the pair */
+        }
+        if (c == '\n') {
+            if (to_crlf) {
+                buf[n++] = '\r';
+            }
+            buf[n++] = '\n';
+        } else {
+            buf[n++] = c;
+        }
+    }
+    buf[n] = '\0';
+    *out_len = n;
+    return buf;
+}
+
+/* Extract the local_name (import alias) from an IMPORTS edge's properties
+ * JSON. Returns true when a non-empty value was found. */
+static bool move_edge_local_name(const char *props, char *out, size_t out_sz) {
+    if (!props || !out || out_sz == 0) {
+        return false;
+    }
+    const char *k = strstr(props, "\"local_name\"");
+    if (!k) {
+        return false;
+    }
+    const char *colon = strchr(k + 12, ':');
+    if (!colon) {
+        return false;
+    }
+    const char *q1 = strchr(colon + 1, '"');
+    if (!q1) {
+        return false;
+    }
+    const char *q2 = strchr(q1 + 1, '"');
+    if (!q2) {
+        return false;
+    }
+    size_t n = (size_t)(q2 - q1 - 1);
+    if (n >= out_sz) {
+        n = out_sz - 1;
+    }
+    memcpy(out, q1 + 1, n);
+    out[n] = '\0';
+    return n > 0;
+}
+
+/* stat + read a project file into a move ctx. Returns NULL on success, else a
+ * static error string. */
+static const char *move_load_file(const char *root, const char *rel, int role, bool is_py,
+                                  move_file_ctx_t *out) {
+    int pn = snprintf(out->abs_path, sizeof(out->abs_path), "%s/%s", root, rel);
+    if (pn < 0 || (size_t)pn >= sizeof(out->abs_path)) {
+        return "file path too long";
+    }
+    if (cbm_edit_file_stat(out->abs_path, &out->state) != CBM_EDIT_OK) {
+        return "cannot stat file";
+    }
+    if (out->state.size > MOVE_MAX_FILE_BYTES) {
+        return "file too large (> 8 MiB)";
+    }
+    if (cbm_edit_read_file(out->abs_path, &out->data, &out->len) != CBM_EDIT_OK) {
+        return "cannot read file";
+    }
+    out->rel_path = strdup(rel);
+    if (!out->rel_path) {
+        free(out->data);
+        out->data = NULL;
+        return "out of memory";
+    }
+    out->role = role;
+    out->is_py = is_py;
+    out->write_rc = CBM_EDIT_OK;
+    return NULL;
+}
+
+static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
+    char *qn = cbm_mcp_get_string_arg(args, "qualified_name");
+    char *project = get_project_arg(args);
+    char *dest_module = cbm_mcp_get_string_arg(args, "destination_module");
+    char *position = cbm_mcp_get_string_arg(args, "position");
+    bool dry_run = edit_bool_arg_default(args, "dry_run", true);
+    bool force = cbm_mcp_get_bool_arg(args, "force");
+    int expected_files = cbm_mcp_get_int_arg(args, "expected_files", -1);
+
+    if (!qn || !dest_module) {
+        free(qn);
+        free(project);
+        free(dest_module);
+        free(position);
+        return cbm_mcp_text_result("qualified_name and destination_module are required", true);
+    }
+    bool after_imports = position && strcmp(position, "after_imports") == 0;
+    free(position);
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        char *_err = build_project_list_error("project not found or not indexed");
+        char *_res = cbm_mcp_text_result(_err, true);
+        free(_err);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return _res;
+    }
+
+    char *not_indexed = verify_project_indexed(store, project);
+    if (not_indexed) {
+        free(qn);
+        free(project);
+        free(dest_module);
+        return not_indexed;
+    }
+
+    const char *effective_project = project ? project : srv->current_project;
+
+    cbm_node_t node = {0};
+    cbm_node_t *candidates = NULL;
+    int candidate_count = 0;
+    cbm_edit_resolve_status_t rstatus =
+        cbm_edit_resolve_symbol(store, effective_project, qn, &node, &candidates, &candidate_count);
+    if (rstatus == CBM_EDIT_RESOLVE_AMBIGUOUS) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        char hdr[CBM_SZ_256];
+        snprintf(hdr, sizeof(hdr),
+                 "symbol is ambiguous — %d matches; pass the exact "
+                 "qualified_name:\n",
+                 candidate_count);
+        cbm_sb_append(&sb, hdr);
+        int shown = candidate_count < 10 ? candidate_count : 10;
+        for (int i = 0; i < shown; i++) {
+            char row[CBM_SZ_1K];
+            snprintf(row, sizeof(row), "  %s  (%s, %s:%d-%d)\n",
+                     candidates[i].qualified_name ? candidates[i].qualified_name : "?",
+                     candidates[i].label ? candidates[i].label : "?",
+                     candidates[i].file_path ? candidates[i].file_path : "?",
+                     candidates[i].start_line, candidates[i].end_line);
+            cbm_sb_append(&sb, row);
+        }
+        cbm_store_free_nodes(candidates, candidate_count);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "symbol is ambiguous", true);
+        free(text);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return res;
+    }
+    if (rstatus != CBM_EDIT_RESOLVE_OK) {
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(
+            "symbol not found. Use search_graph(name_pattern=\"...\") first to discover "
+            "the exact qualified_name, then pass it to move_symbol.",
+            true);
+    }
+
+    if (!node.label || (strcmp(node.label, "Function") != 0 && strcmp(node.label, "Class") != 0)) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "label '%s' is not movable by move_symbol — target a top-level Function or "
+                 "Class",
+                 node.label ? node.label : "?");
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    const char *name = node.name;
+    if (!name || !cbm_edit_is_valid_identifier(name)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(
+            "symbol name is not a plain identifier — move_symbol only handles plain "
+            "identifier names",
+            true);
+    }
+
+    /* Top-level gate: refuse when another Function/Class/Method strictly
+     * contains the symbol's range (methods and nested functions). */
+    {
+        cbm_node_t *overlap = NULL;
+        int overlap_count = 0;
+        char parent_buf[CBM_SZ_1K] = {0};
+        if (cbm_store_find_nodes_by_file_overlap(store, effective_project, node.file_path,
+                                                 node.start_line, node.end_line, &overlap,
+                                                 &overlap_count) == CBM_STORE_OK) {
+            for (int i = 0; i < overlap_count; i++) {
+                cbm_node_t *o = &overlap[i];
+                if (o->id == node.id || !o->label) {
+                    continue;
+                }
+                bool container = strcmp(o->label, "Function") == 0 ||
+                                 strcmp(o->label, "Class") == 0 || strcmp(o->label, "Method") == 0;
+                if (container && o->start_line < node.start_line && o->end_line > node.end_line) {
+                    snprintf(parent_buf, sizeof(parent_buf), "%s",
+                             o->qualified_name ? o->qualified_name : o->name);
+                    break;
+                }
+            }
+            cbm_store_free_nodes(overlap, overlap_count);
+        }
+        if (parent_buf[0]) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "move refused: %s is nested inside %s — move_symbol only moves top-level "
+                     "symbols (extract it first)",
+                     node.qualified_name ? node.qualified_name : name, parent_buf);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
+    }
+
+    /* Destination module → file. */
+    char dest_rel[CBM_SZ_1K] = {0};
+    {
+        cbm_node_t dest_mod = {0};
+        if (cbm_store_find_node_by_qn(store, effective_project, dest_module, &dest_mod) !=
+            CBM_STORE_OK) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "destination module '%s' not found — create the destination file first, "
+                     "run index_repository, then retry (move_symbol never creates files)",
+                     dest_module);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
+        if (!dest_mod.label ||
+            (strcmp(dest_mod.label, "Module") != 0 && strcmp(dest_mod.label, "File") != 0)) {
+            char msg[CBM_SZ_512];
+            snprintf(msg, sizeof(msg),
+                     "destination_module resolved to a %s node, not a Module/File — pass the "
+                     "module's qualified_name (e.g. myproject.pkg.utils)",
+                     dest_mod.label ? dest_mod.label : "?");
+            cbm_edit_free_node(&dest_mod);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
+        if (!dest_mod.file_path || !dest_mod.file_path[0] ||
+            strlen(dest_mod.file_path) >= sizeof(dest_rel)) {
+            cbm_edit_free_node(&dest_mod);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "cannot map the destination module to a file path — re-index and retry", true);
+        }
+        snprintf(dest_rel, sizeof(dest_rel), "%s", dest_mod.file_path);
+        cbm_edit_free_node(&dest_mod);
+    }
+
+    /* Language gate: both files must be Python or both TS/JS. */
+    bool src_py = false;
+    bool dst_py = false;
+    if (!node.file_path || !move_lang_of(node.file_path, &src_py)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result("source language not supported — move_symbol handles Python and "
+                                   "TypeScript/JavaScript only",
+                                   true);
+    }
+    if (!move_lang_of(dest_rel, &dst_py)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(
+            "destination language not supported — move_symbol handles Python and "
+            "TypeScript/JavaScript only",
+            true);
+    }
+    if (dst_py != src_py) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "cross-language move refused (%s → %s) — pick a destination file in the same "
+                 "language",
+                 node.file_path, dest_rel);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(msg, true);
+    }
+    if (strcmp(node.file_path, dest_rel) == 0) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result("symbol already lives in the destination module — nothing "
+                                   "to do",
+                                   true);
+    }
+
+    /* Collision gate: dest_module.name must not resolve. */
+    char new_qn[CBM_SZ_1K];
+    {
+        int nn = snprintf(new_qn, sizeof(new_qn), "%s.%s", dest_module, name);
+        if (nn < 0 || (size_t)nn >= sizeof(new_qn)) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result("qualified name too long", true);
+        }
+        cbm_node_t collision = {0};
+        if (cbm_store_find_node_by_qn(store, effective_project, new_qn, &collision) ==
+            CBM_STORE_OK) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "move refused: a symbol already exists at %s (%s, %s:%d-%d) — rename it "
+                     "with rename_symbol first, or pick another destination",
+                     new_qn, collision.label ? collision.label : "?",
+                     collision.file_path ? collision.file_path : "?", collision.start_line,
+                     collision.end_line);
+            cbm_edit_free_node(&collision);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
+    }
+
+    /* Project root. */
+    char root_copy[CBM_SZ_1K] = {0};
+    {
+        cbm_project_t proj = {0};
+        if (cbm_store_get_project(store, effective_project, &proj) != CBM_STORE_OK ||
+            !proj.root_path || proj.root_path[0] == '\0') {
+            cbm_project_free_fields(&proj);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result("project root path unavailable — re-run index_repository",
+                                       true);
+        }
+        snprintf(root_copy, sizeof(root_copy), "%s", proj.root_path);
+        cbm_project_free_fields(&proj);
+    }
+
+    char old_module[CBM_SZ_1K] = {0};
+    char new_module[CBM_SZ_1K] = {0};
+    if (src_py && (!move_py_module_of(node.file_path, old_module, sizeof(old_module)) ||
+                   !move_py_module_of(dest_rel, new_module, sizeof(new_module)))) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result("module path too long", true);
+    }
+
+    move_file_ctx_t *files = calloc(2 + MOVE_MAX_IMPORTERS, sizeof(*files));
+    if (!files) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result("out of memory", true);
+    }
+    int file_count = 2;
+    move_file_ctx_t *dest = &files[0];
+    move_file_ctx_t *source = &files[1];
+    const char *lerr = move_load_file(root_copy, dest_rel, MOVE_ROLE_DEST, src_py, dest);
+    if (!lerr) {
+        lerr = move_load_file(root_copy, node.file_path, MOVE_ROLE_SOURCE, src_py, source);
+    }
+    if (lerr) {
+        char msg[CBM_SZ_1K];
+        snprintf(msg, sizeof(msg), "cannot load %s file: %s",
+                 dest->rel_path ? "source" : "destination", lerr);
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Extract the definition body from the source file. */
+    char *def_text = NULL;
+    size_t def_len = 0;
+    if (cbm_edit_move_extract_lines(source->data, source->len, node.start_line, node.end_line,
+                                    &def_text, &def_len) != CBM_EDIT_OK) {
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(
+            "definition line range is stale for the on-disk source — run index_repository, "
+            "then retry",
+            true);
+    }
+
+    /* Plan the destination buffer. */
+    int rc;
+    if (after_imports) {
+        const char *eol = move_eol_of(dest->data, dest->len);
+        size_t elen = strlen(eol);
+        size_t norm_len = 0;
+        char *norm = move_normalize_eol(def_text, def_len, eol, &norm_len);
+        if (!norm) {
+            rc = CBM_EDIT_ERR_OOM;
+        } else {
+            size_t extra = elen; /* one blank separator line after the definition */
+            if (norm_len == 0 || norm[norm_len - 1] != '\n') {
+                extra += elen;
+            }
+            char *ins = malloc(norm_len + extra + 1);
+            if (!ins) {
+                free(norm);
+                rc = CBM_EDIT_ERR_OOM;
+            } else {
+                memcpy(ins, norm, norm_len);
+                size_t p = norm_len;
+                if (norm_len == 0 || norm[norm_len - 1] != '\n') {
+                    memcpy(ins + p, eol, elen);
+                    p += elen;
+                }
+                memcpy(ins + p, eol, elen);
+                p += elen;
+                ins[p] = '\0';
+                size_t off = move_import_insert_offset(dest->data, dest->len, src_py);
+                rc = move_splice_at(dest->data, dest->len, off, ins, p, &dest->new_data,
+                                    &dest->new_len);
+                free(ins);
+                free(norm);
+            }
+        }
+    } else {
+        rc = cbm_edit_move_append_definition(dest->data, dest->len, def_text, def_len,
+                                             &dest->new_data, &dest->new_len);
+    }
+    free(def_text);
+    if (rc != CBM_EDIT_OK) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg), "failed to plan the destination insert: %s", move_rc_name(rc));
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(msg, true);
+    }
+    dest->changed = true;
+
+    /* Plan the source buffer: delete the body. */
+    rc = cbm_edit_surgery_delete(source->data, source->len, node.start_line, node.end_line,
+                                 &source->new_data, &source->new_len, NULL);
+    if (rc != CBM_EDIT_OK) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg), "failed to plan the source delete: %s", move_rc_name(rc));
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(msg, true);
+    }
+    source->changed = true;
+
+    /* Internal callers (same file as the moved symbol) still need it — add a
+     * re-import line to the source file. The evidence is a CALLS edge whose
+     * source lives in the same file; recursion (the symbol calling itself) is
+     * excluded because the body moves together with its own call sites. */
+    {
+        bool need_reimport = false;
+        static const char *call_types[] = {"CALLS", "ASYNC_CALLS", "HTTP_CALLS"};
+        for (size_t t = 0; t < sizeof(call_types) / sizeof(call_types[0]) && !need_reimport; t++) {
+            cbm_edge_t *ce = NULL;
+            int cn = 0;
+            if (cbm_store_find_edges_by_target_type(store, node.id, call_types[t], &ce, &cn) ==
+                CBM_STORE_OK) {
+                for (int i = 0; i < cn; i++) {
+                    if (ce[i].source_id == node.id) {
+                        continue;
+                    }
+                    cbm_node_t caller = {0};
+                    if (cbm_store_find_node_by_id(store, ce[i].source_id, &caller) ==
+                        CBM_STORE_OK) {
+                        bool internal = caller.file_path && node.file_path &&
+                                        strcmp(caller.file_path, node.file_path) == 0;
+                        cbm_edit_free_node(&caller);
+                        if (internal) {
+                            need_reimport = true;
+                            break;
+                        }
+                    }
+                }
+                cbm_store_free_edges(ce, cn);
+            }
+        }
+        if (need_reimport) {
+            const char *eol = move_eol_of(source->new_data, source->new_len);
+            char line[CBM_SZ_1K];
+            if (src_py) {
+                snprintf(line, sizeof(line), "from %s import %s%s", new_module, name, eol);
+            } else {
+                char spec[CBM_SZ_1K];
+                if (cbm_edit_move_ts_relative_spec(node.file_path, dest_rel, spec, sizeof(spec)) !=
+                    CBM_EDIT_OK) {
+                    move_free_files(files, file_count);
+                    cbm_edit_free_node(&node);
+                    free(qn);
+                    free(project);
+                    free(dest_module);
+                    return cbm_mcp_text_result("failed to compute the re-import path", true);
+                }
+                snprintf(line, sizeof(line), "import {%s} from \"%s\";%s", name, spec, eol);
+            }
+            size_t off = move_import_insert_offset(source->new_data, source->new_len, src_py);
+            char *merged = NULL;
+            size_t merged_len = 0;
+            if (move_splice_at(source->new_data, source->new_len, off, line, strlen(line), &merged,
+                               &merged_len) != CBM_EDIT_OK) {
+                move_free_files(files, file_count);
+                cbm_edit_free_node(&node);
+                free(qn);
+                free(project);
+                free(dest_module);
+                return cbm_mcp_text_result("failed to plan the source re-import", true);
+            }
+            free(source->new_data);
+            source->new_data = merged;
+            source->new_len = merged_len;
+            source->reimport = true;
+        }
+    }
+
+    /* Importers: graph-verified IMPORTS edges into the symbol (HIGH tier). */
+    cbm_sb_t review_sb;
+    cbm_sb_init(&review_sb);
+    int review_items = 0;
+    {
+        cbm_edge_t *imp_edges = NULL;
+        int imp_count = 0;
+        if (cbm_store_find_edges_by_target_type(store, node.id, "IMPORTS", &imp_edges,
+                                                &imp_count) == CBM_STORE_OK) {
+            for (int i = 0; i < imp_count; i++) {
+                cbm_node_t importer = {0};
+                if (cbm_store_find_node_by_id(store, imp_edges[i].source_id, &importer) !=
+                    CBM_STORE_OK) {
+                    continue;
+                }
+                const char *irel = importer.file_path;
+                bool skip = !irel || !irel[0] ||
+                            (node.file_path && strcmp(irel, node.file_path) == 0) ||
+                            strcmp(irel, dest_rel) == 0;
+                if (!skip) {
+                    for (int k = 2; k < file_count; k++) {
+                        if (files[k].rel_path && strcmp(files[k].rel_path, irel) == 0) {
+                            skip = true;
+                            break;
+                        }
+                    }
+                }
+                if (!skip && file_count >= 2 + MOVE_MAX_IMPORTERS) {
+                    char msg[CBM_SZ_1K];
+                    snprintf(msg, sizeof(msg),
+                             "  ...: importer cap (%d) reached — the remaining importers are "
+                             "NOT rewritten; split the move into batches\n",
+                             MOVE_MAX_IMPORTERS);
+                    cbm_sb_append(&review_sb, msg);
+                    review_items++;
+                    skip = true;
+                }
+                if (skip) {
+                    cbm_edit_free_node(&importer);
+                    continue;
+                }
+                char lname[CBM_SZ_256];
+                bool aliased =
+                    move_edge_local_name(imp_edges[i].properties_json, lname, sizeof(lname)) &&
+                    strcmp(lname, name) != 0;
+                move_file_ctx_t *rec = &files[file_count];
+                const char *ferr = move_load_file(root_copy, irel, MOVE_ROLE_IMPORTER, src_py, rec);
+                if (ferr) {
+                    char msg[CBM_SZ_1K];
+                    snprintf(msg, sizeof(msg),
+                             "  %s: cannot load importer (%s) — its import is NOT rewritten\n",
+                             irel, ferr);
+                    cbm_sb_append(&review_sb, msg);
+                    review_items++;
+                    cbm_edit_free_node(&importer);
+                    continue;
+                }
+                file_count++;
+                cbm_edit_free_node(&importer);
+
+                int rrc;
+                if (src_py) {
+                    rrc = cbm_edit_move_rewrite_python_imports(rec->data, rec->len, old_module,
+                                                               new_module, name, &rec->new_data,
+                                                               &rec->new_len, &rec->py);
+                } else {
+                    char old_spec[CBM_SZ_1K];
+                    char new_spec[CBM_SZ_1K];
+                    if (cbm_edit_move_ts_relative_spec(irel, node.file_path, old_spec,
+                                                       sizeof(old_spec)) != CBM_EDIT_OK ||
+                        cbm_edit_move_ts_relative_spec(irel, dest_rel, new_spec,
+                                                       sizeof(new_spec)) != CBM_EDIT_OK) {
+                        rrc = CBM_EDIT_ERR_ARGS;
+                    } else {
+                        rrc = cbm_edit_move_rewrite_ts_imports(rec->data, rec->len, old_spec,
+                                                               new_spec, name, &rec->new_data,
+                                                               &rec->new_len, &rec->ts);
+                    }
+                }
+                if (rrc != CBM_EDIT_OK) {
+                    char msg[CBM_SZ_1K];
+                    snprintf(msg, sizeof(msg), "  %s: import rewrite failed (%s)\n", rec->rel_path,
+                             move_rc_name(rrc));
+                    cbm_sb_append(&review_sb, msg);
+                    review_items++;
+                    continue;
+                }
+                rec->changed =
+                    rec->new_len != rec->len || memcmp(rec->data, rec->new_data, rec->new_len) != 0;
+                if (!rec->changed) {
+                    char msg[CBM_SZ_1K];
+                    snprintf(msg, sizeof(msg),
+                             "  %s: graph shows an IMPORTS edge but no import line matched the "
+                             "canonical specifier — possible path alias, extension-qualified "
+                             "or dynamic import; left untouched\n",
+                             rec->rel_path);
+                    cbm_sb_append(&review_sb, msg);
+                    review_items++;
+                }
+                if (aliased) {
+                    char msg[CBM_SZ_1K];
+                    snprintf(msg, sizeof(msg),
+                             "  %s: imported under alias '%s' — the rewrite keeps the alias; "
+                             "verify the call sites read as intended\n",
+                             rec->rel_path, lname);
+                    cbm_sb_append(&review_sb, msg);
+                    review_items++;
+                }
+                /* Untouched-reference tallies → REVIEW lines. */
+                char msg[CBM_SZ_1K];
+                if (src_py) {
+                    if (rec->py.plain_import_refs > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d plain 'import mod' line(s) — attribute uses like "
+                                 "mod.%s need manual repointing\n",
+                                 rec->rel_path, rec->py.plain_import_refs, name);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                    if (rec->py.star_import_refs > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d star-import line(s) — 'from mod import *' is never "
+                                 "rewritten; verify the symbol resolves after the move\n",
+                                 rec->rel_path, rec->py.star_import_refs);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                    if (rec->py.parenthesized_skipped > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d parenthesized/unparsable import line(s) skipped\n",
+                                 rec->rel_path, rec->py.parenthesized_skipped);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                    if (rec->py.all_refs > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d '__all__' line(s) mention the symbol — re-export "
+                                 "list not edited\n",
+                                 rec->rel_path, rec->py.all_refs);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                } else {
+                    if (rec->ts.default_import_refs > 0 || rec->ts.namespace_import_refs > 0 ||
+                        rec->ts.side_effect_refs > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d default / %d namespace / %d side-effect import "
+                                 "line(s) left untouched\n",
+                                 rec->rel_path, rec->ts.default_import_refs,
+                                 rec->ts.namespace_import_refs, rec->ts.side_effect_refs);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                    if (rec->ts.barrel_refs > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d re-export (barrel) line(s) — changing the API "
+                                 "surface is a manual decision\n",
+                                 rec->rel_path, rec->ts.barrel_refs);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                    if (rec->ts.dynamic_import_refs > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d dynamic import()/require() reference(s) left "
+                                 "untouched\n",
+                                 rec->rel_path, rec->ts.dynamic_import_refs);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                    if (rec->ts.multiline_skipped > 0) {
+                        snprintf(msg, sizeof(msg),
+                                 "  %s: %d multi-line import statement(s) skipped\n", rec->rel_path,
+                                 rec->ts.multiline_skipped);
+                        cbm_sb_append(&review_sb, msg);
+                        review_items++;
+                    }
+                }
+            }
+            cbm_store_free_edges(imp_edges, imp_count);
+        }
+    }
+
+    /* Circular check: the destination file must not already import the source
+     * module — after the move the source may import the destination (internal
+     * callers), which would close a cycle. */
+    {
+        cbm_node_t *dnodes = NULL;
+        int dn = 0;
+        if (cbm_store_find_nodes_by_file(store, effective_project, dest_rel, &dnodes, &dn) ==
+            CBM_STORE_OK) {
+            int64_t dest_file_id = 0;
+            for (int i = 0; i < dn; i++) {
+                if (dnodes[i].label && strcmp(dnodes[i].label, "File") == 0) {
+                    dest_file_id = dnodes[i].id;
+                    break;
+                }
+            }
+            cbm_store_free_nodes(dnodes, dn);
+            if (dest_file_id != 0) {
+                cbm_edge_t *de = NULL;
+                int dc = 0;
+                if (cbm_store_find_edges_by_source_type(store, dest_file_id, "IMPORTS", &de, &dc) ==
+                    CBM_STORE_OK) {
+                    for (int i = 0; i < dc; i++) {
+                        cbm_node_t tgt = {0};
+                        if (cbm_store_find_node_by_id(store, de[i].target_id, &tgt) ==
+                            CBM_STORE_OK) {
+                            bool hit = tgt.file_path && node.file_path &&
+                                       strcmp(tgt.file_path, node.file_path) == 0;
+                            if (hit) {
+                                char msg[CBM_SZ_1K];
+                                snprintf(msg, sizeof(msg),
+                                         "  circular import: %s already imports the source "
+                                         "module (via %s) — the move would close a cycle "
+                                         "dest → source → dest\n",
+                                         dest_rel, tgt.qualified_name ? tgt.qualified_name : "?");
+                                cbm_sb_append(&review_sb, msg);
+                                review_items++;
+                            }
+                            cbm_edit_free_node(&tgt);
+                        }
+                    }
+                    cbm_store_free_edges(de, dc);
+                }
+            }
+        }
+    }
+
+    char *review_text = cbm_sb_finish(&review_sb);
+
+    int changed_files = 0;
+    for (int i = 0; i < file_count; i++) {
+        if (files[i].changed) {
+            changed_files++;
+        }
+    }
+
+    /* expected_files assertion: protects against applying a stale plan. */
+    if (expected_files >= 0 && expected_files != changed_files) {
+        char msg[CBM_SZ_512];
+        snprintf(msg, sizeof(msg),
+                 "expected_files mismatch: you asserted %d but the plan modifies %d file(s) — "
+                 "the codebase changed since your plan; re-run move_symbol for a fresh plan",
+                 expected_files, changed_files);
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        free(review_text);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    if (dry_run) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        cbm_sb_append(&sb, "move_symbol: DRY-RUN (no changes written)\n  symbol: ");
+        cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+        cbm_sb_append(&sb, " → ");
+        cbm_sb_append(&sb, new_qn);
+        char num[CBM_SZ_512];
+        snprintf(num, sizeof(num), "\n  move: %s:%d-%d → %s (%s)\n",
+                 node.file_path ? node.file_path : "?", node.start_line, node.end_line, dest_rel,
+                 after_imports ? "insert after imports" : "append at end");
+        cbm_sb_append(&sb, num);
+        snprintf(num, sizeof(num), "  files to modify: %d\n", changed_files);
+        cbm_sb_append(&sb, num);
+        cbm_sb_append(&sb, "  per-file:\n");
+        int rows = file_count < MOVE_PLAN_FILE_ROWS ? file_count : MOVE_PLAN_FILE_ROWS;
+        for (int i = 0; i < rows; i++) {
+            move_file_ctx_t *rec = &files[i];
+            if (rec->role == MOVE_ROLE_DEST) {
+                snprintf(num, sizeof(num), "    %s [DEST] insert definition (%d line%s)\n",
+                         rec->rel_path, node.end_line - node.start_line + 1,
+                         node.end_line > node.start_line ? "s" : "");
+            } else if (rec->role == MOVE_ROLE_SOURCE) {
+                snprintf(num, sizeof(num), "    %s [SOURCE] delete lines %d-%d%s\n", rec->rel_path,
+                         node.start_line, node.end_line,
+                         rec->reimport ? " + re-import from destination (internal callers)" : "");
+            } else if (rec->changed) {
+                int rw = src_py ? rec->py.import_lines_rewritten : rec->ts.import_lines_rewritten;
+                int sp = src_py ? rec->py.import_lines_split : rec->ts.import_lines_split;
+                snprintf(num, sizeof(num), "    %s [IMPORTER] rewrite %d import line(s)%s\n",
+                         rec->rel_path, rw, sp > 0 ? " (multi-name lines split)" : "");
+            } else {
+                snprintf(num, sizeof(num),
+                         "    %s [IMPORTER] no matching import line — NOT "
+                         "modified (see REVIEW)\n",
+                         rec->rel_path);
+            }
+            cbm_sb_append(&sb, num);
+        }
+        if (file_count > MOVE_PLAN_FILE_ROWS) {
+            snprintf(num, sizeof(num), "    ... and %d more files\n",
+                     file_count - MOVE_PLAN_FILE_ROWS);
+            cbm_sb_append(&sb, num);
+        }
+        if (review_items > 0) {
+            snprintf(num, sizeof(num), "  REVIEW (%d item(s) — apply requires force=true):\n",
+                     review_items);
+            cbm_sb_append(&sb, num);
+            cbm_sb_append(&sb, review_text ? review_text : "");
+        }
+        cbm_sb_append(&sb, "  to apply: re-run with dry_run=false (optionally with "
+                           "expected_files=");
+        snprintf(num, sizeof(num), "%d to pin this plan)\n", changed_files);
+        cbm_sb_append(&sb, num);
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "plan failed", !text);
+        free(text);
+        free(review_text);
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return res;
+    }
+
+    /* Apply gate: REVIEW items require force=true. */
+    if (review_items > 0 && !force) {
+        cbm_sb_t sb;
+        cbm_sb_init(&sb);
+        char hdr[CBM_SZ_256];
+        snprintf(hdr, sizeof(hdr), "move_symbol: REFUSED — %d REVIEW item(s) need a decision:\n",
+                 review_items);
+        cbm_sb_append(&sb, hdr);
+        cbm_sb_append(&sb, review_text ? review_text : "");
+        cbm_sb_append(&sb, "Inspect the listed files, then re-run with force=true to apply anyway, "
+                           "or adjust the imports manually.\n");
+        char *text = cbm_sb_finish(&sb);
+        char *res = cbm_mcp_text_result(text ? text : "move refused", true);
+        free(text);
+        free(review_text);
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return res;
+    }
+
+    /* Drift gate on the source definition line (force bypasses). */
+    if (!force) {
+        bool drift = true;
+        size_t lo = 0;
+        if (cbm_edit_line_offset(source->data, source->len, node.start_line, &lo) == CBM_EDIT_OK) {
+            size_t le = lo;
+            while (le < source->len && source->data[le] != '\n' && (le - lo) < (CBM_SZ_512 - 1)) {
+                le++;
+            }
+            char line_buf[CBM_SZ_512];
+            memcpy(line_buf, source->data + lo, le - lo);
+            line_buf[le - lo] = '\0';
+            drift = !strstr(line_buf, name);
+        }
+        if (drift) {
+            move_free_files(files, file_count);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            free(review_text);
+            return cbm_mcp_text_result(
+                "source drifted from index: the definition line no longer contains the symbol "
+                "name — run index_repository, then retry (or force=true to bypass)",
+                true);
+        }
+    }
+
+    /* Apply: one lease for the whole multi-file write. Order matters for
+     * undo: destination first, then source, then importers. Stop at the first
+     * failed write (PARTIAL) — backups cover every written file. */
+    if (!mcp_project_mutation_begin(srv, effective_project)) {
+        move_free_files(files, file_count);
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        free(review_text);
+        return cbm_mcp_text_result("move blocked by another mutation for this project", true);
+    }
+    char backup_dir[CBM_SZ_4K];
+    const char *ws_cache = cbm_workspace_cache_dir();
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
+    int files_written = 0;
+    int files_failed = 0;
+    const char *failed_rel = NULL;
+    int failed_rc = CBM_EDIT_OK;
+    for (int i = 0; i < file_count; i++) {
+        move_file_ctx_t *rec = &files[i];
+        if (!rec->changed) {
+            rec->write_rc = CBM_EDIT_OK;
+            continue;
+        }
+        char backup_path[CBM_SZ_4K] = {0};
+        rec->write_rc =
+            cbm_edit_write_atomic(rec->abs_path, rec->new_data, rec->new_len, &rec->state,
+                                  backup_dir, backup_path, sizeof(backup_path));
+        if (rec->write_rc == CBM_EDIT_OK) {
+            files_written++;
+        } else {
+            files_failed++;
+            failed_rel = rec->rel_path;
+            failed_rc = rec->write_rc;
+            break;
+        }
+    }
+    mcp_project_mutation_end(srv, effective_project);
+    bool partial = files_failed > 0 || files_written < changed_files;
+
+    /* Re-index through the existing index path (auto-routes to incremental). */
+    char *esc_root = edit_json_escape(root_copy);
+    char *reindex_args = NULL;
+    char *reindex_result = NULL;
+    if (esc_root) {
+        size_t alen = strlen(esc_root) + 32;
+        reindex_args = malloc(alen);
+        if (reindex_args) {
+            snprintf(reindex_args, alen, "{\"repo_path\":\"%s\"}", esc_root);
+            reindex_result = handle_index_repository(srv, reindex_args);
+        }
+    }
+    bool reindex_ok = reindex_result && !strstr(reindex_result, "\"isError\":true");
+    free(esc_root);
+    free(reindex_args);
+    free(reindex_result);
+
+    /* Post-reindex verification: the symbol resolves at its destination qn
+     * and its inbound IMPORTS edges are counted on the fresh graph. */
+    bool new_resolves = false;
+    int new_import_edges = 0;
+    {
+        cbm_store_t *fresh = compare_open_project_store(effective_project);
+        if (fresh) {
+            cbm_node_t nn = {0};
+            if (cbm_store_find_node_by_qn(fresh, effective_project, new_qn, &nn) == CBM_STORE_OK) {
+                new_resolves = true;
+                cbm_edge_t *ie = NULL;
+                int ic = 0;
+                if (cbm_store_find_edges_by_target_type(fresh, nn.id, "IMPORTS", &ie, &ic) ==
+                    CBM_STORE_OK) {
+                    new_import_edges = ic;
+                    cbm_store_free_edges(ie, ic);
+                }
+                cbm_edit_free_node(&nn);
+            }
+            cbm_store_close(fresh);
+        }
+    }
+
+    cbm_sb_t sb;
+    cbm_sb_init(&sb);
+    cbm_sb_append(&sb, partial ? "move_symbol: PARTIAL\n  symbol: "
+                               : "move_symbol: APPLIED\n  symbol: ");
+    cbm_sb_append(&sb, node.qualified_name ? node.qualified_name : "?");
+    cbm_sb_append(&sb, " → ");
+    cbm_sb_append(&sb, new_qn);
+    char num[CBM_SZ_1K];
+    snprintf(num, sizeof(num), "\n  files written: %d of %d planned\n", files_written,
+             changed_files);
+    cbm_sb_append(&sb, num);
+    if (partial) {
+        snprintf(num, sizeof(num),
+                 "  FAILED at %s (%s) — files listed above it were already written; use "
+                 "undo_edit per written file to revert, or fix the cause and re-run\n",
+                 failed_rel ? failed_rel : "?", move_rc_name(failed_rc));
+        cbm_sb_append(&sb, num);
+    }
+    for (int i = 0; i < file_count; i++) {
+        move_file_ctx_t *rec = &files[i];
+        if (!rec->changed) {
+            continue;
+        }
+        const char *role = rec->role == MOVE_ROLE_DEST     ? "DEST"
+                           : rec->role == MOVE_ROLE_SOURCE ? "SOURCE"
+                                                           : "IMPORTER";
+        snprintf(num, sizeof(num), "    %s [%s] %s%s\n", rec->rel_path, role,
+                 rec->write_rc == CBM_EDIT_OK ? "written" : "NOT WRITTEN",
+                 rec->reimport ? " (+ re-import)" : "");
+        cbm_sb_append(&sb, num);
+    }
+    if (review_items > 0) {
+        snprintf(num, sizeof(num), "  REVIEW item(s) bypassed via force: %d\n", review_items);
+        cbm_sb_append(&sb, num);
+        cbm_sb_append(&sb, review_text ? review_text : "");
+    }
+    snprintf(num, sizeof(num), "  backups: %s (per file, before any write)\n", backup_dir);
+    cbm_sb_append(&sb, num);
+    cbm_sb_append(&sb, reindex_ok
+                           ? "  reindex: incremental OK\n"
+                           : "  reindex: FAILED — run index_repository manually before relying "
+                             "on graph data\n");
+    snprintf(num, sizeof(num),
+             "  verification: new symbol %s in the re-indexed graph; %d IMPORTS edge(s) now "
+             "target it\n",
+             new_resolves ? "resolves" : "DOES NOT RESOLVE — investigate", new_import_edges);
+    cbm_sb_append(&sb, num);
+    char *text = cbm_sb_finish(&sb);
+    char *res = cbm_mcp_text_result(text ? text : "move applied", !text);
+    free(text);
+    free(review_text);
+    move_free_files(files, file_count);
+    cbm_edit_free_node(&node);
+    free(qn);
+    free(project);
+    free(dest_module);
+    return res;
+}
+
 static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
     char *path = cbm_mcp_get_string_arg(args, "path");
     char *project = get_project_arg(args);
@@ -15981,6 +17310,9 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
     }
     if (strcmp(tool_name, "rename_symbol") == 0) {
         return handle_rename_symbol(srv, args_json);
+    }
+    if (strcmp(tool_name, "move_symbol") == 0) {
+        return handle_move_symbol(srv, args_json);
     }
     if (strcmp(tool_name, "undo_edit") == 0) {
         return handle_undo_edit(srv, args_json);

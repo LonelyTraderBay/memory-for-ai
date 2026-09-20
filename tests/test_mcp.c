@@ -30,8 +30,7 @@
 #include <sys/stat.h> /* chmod / stat for read-only query reproductions */
 
 static bool mcp_runtime_authorization_denied(void *context, const char *project,
-                                             const char *producer_id,
-                                             const char *producer_epoch,
+                                             const char *producer_id, const char *producer_epoch,
                                              const char *semantic_version);
 #ifdef _WIN32
 #include <direct.h>
@@ -949,6 +948,7 @@ TEST(mcp_tools_have_behavior_annotations) {
         {"edit_symbol", false, true, false, false},
         {"delete_symbol", false, true, false, false},
         {"rename_symbol", false, true, false, false},
+        {"move_symbol", false, true, false, false},
         {"undo_edit", false, true, false, false},
         {"get_graph_schema", false, true, true, false},
         {"compare_graphs", true, false, true, false},
@@ -1362,9 +1362,9 @@ static int issue403_initialize_count_calls(const char *session_root, bool approv
     cbm_setenv("MFA_CACHE_DIR", cache, 1);
 
     char err[1024];
-    bool approved = !approve_sensitive ||
-                    cbm_workspace_grant_add(cache, cbm_workspace_home_dir(), session_root, true,
-                                            err, sizeof(err));
+    bool approved =
+        !approve_sensitive || cbm_workspace_grant_add(cache, cbm_workspace_home_dir(), session_root,
+                                                      true, err, sizeof(err));
     cbm_config_t *cfg = approved ? cbm_config_open(cache) : NULL;
     cbm_mcp_server_t *srv = cfg ? cbm_mcp_server_new(NULL) : NULL;
     int calls = -2;
@@ -1394,8 +1394,8 @@ static int issue403_initialize_count_calls(const char *session_root, bool approv
 }
 
 TEST(mcp_issue403_sensitive_root_stops_before_discovery_count) {
-    int sensitive = issue403_initialize_count_calls(
-        "C:/Users/dev/AppData/Local/Programs/Antigravity", false);
+    int sensitive =
+        issue403_initialize_count_calls("C:/Users/dev/AppData/Local/Programs/Antigravity", false);
     int ordinary = issue403_initialize_count_calls("C:/Users/dev/projects/app", false);
     ASSERT_EQ(sensitive, 0);
     ASSERT_EQ(ordinary, 1);
@@ -1460,9 +1460,8 @@ TEST(server_handle_tools_list_defaults_to_all_tools_and_accepts_cursor) {
     ASSERT_NOT_NULL(strstr(resp, "ingest_traces"));
     free(resp);
 
-    resp = cbm_mcp_server_handle(
-        srv,
-        "{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/list\",\"params\":{\"cursor\":\"14\"}}");
+    resp = cbm_mcp_server_handle(srv, "{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/"
+                                      "list\",\"params\":{\"cursor\":\"16\"}}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"id\":201"));
     ASSERT_NULL(strstr(resp, "\"nextCursor\""));
@@ -1490,9 +1489,9 @@ TEST(server_handle_analysis_profile_filters_and_rejects_mutators) {
     resp = cbm_mcp_server_handle(srv, "{\"jsonrpc\":\"2.0\",\"id\":220,\"method\":\"tools/list\"}");
     ASSERT_NOT_NULL(resp);
     static const char *const analysis_tools[] = {
-        "search_graph",     "query_graph",    "trace_path",           "get_code_snippet",
-        "get_graph_schema", "compare_graphs", "get_architecture",     "search_code",
-        "get_code_actions", "list_projects",  "index_status",          "check_index_coverage",
+        "search_graph",     "query_graph",        "trace_path",       "get_code_snippet",
+        "get_graph_schema", "compare_graphs",     "get_architecture", "search_code",
+        "get_code_actions", "list_projects",      "index_status",     "check_index_coverage",
         "detect_changes",   "get_runtime_traces",
     };
     ASSERT_EQ(mcp_response_tool_count(resp), sizeof(analysis_tools) / sizeof(analysis_tools[0]));
@@ -8617,10 +8616,10 @@ TEST(tool_ingest_traces_authorization_and_privacy_policy) {
     cbm_mcp_server_set_project(srv, "runtime-policy");
     cbm_mcp_server_set_runtime_authorizer(srv, mcp_runtime_authorization_denied, NULL);
 
-    char *resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-policy\",\"source_batch_id\":\"batch-1\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}" );
+    char *resp =
+        cbm_mcp_handle_tool(srv, "ingest_traces",
+                            "{\"project\":\"runtime-policy\",\"source_batch_id\":\"batch-1\","
+                            "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "not authorized"));
     ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
@@ -8638,11 +8637,10 @@ TEST(tool_ingest_traces_authorization_and_privacy_policy) {
     sqlite3_finalize(stmt);
 
     cbm_mcp_server_set_runtime_authorizer(srv, NULL, NULL);
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-policy\",\"source_batch_id\":\"batch-2\","
-        "\"traces\":[{\"caller\":\"https://user:secret@example.test/api\","
-        "\"callee\":\"b\"}]}" );
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"project\":\"runtime-policy\",\"source_batch_id\":\"batch-2\","
+                               "\"traces\":[{\"caller\":\"https://user:secret@example.test/api\","
+                               "\"callee\":\"b\"}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "privacy-sensitive"));
     ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
@@ -8660,10 +8658,9 @@ TEST(tool_ingest_traces_basic) {
     ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/runtime-ingest"), CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, project);
 
-    const char *request =
-        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-1\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":2,"
-        "\"duration_ns\":5,\"error\":true}]}";
+    const char *request = "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-1\","
+                          "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":2,"
+                          "\"duration_ns\":5,\"error\":true}]}";
     char *resp = cbm_mcp_handle_tool(srv, "ingest_traces", request);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
@@ -8694,20 +8691,18 @@ TEST(tool_ingest_traces_basic) {
     free(resp);
 
     /* Canonical retries tolerate JSON key-order changes. */
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"source_batch_id\":\"batch-1\","
-        "\"traces\":[{\"error\":true,\"callee\":\"b\",\"duration_ns\":5,"
-        "\"caller\":\"a\",\"count\":2}],\"project\":\"runtime-ingest\"}");
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"source_batch_id\":\"batch-1\","
+                               "\"traces\":[{\"error\":true,\"callee\":\"b\",\"duration_ns\":5,"
+                               "\"caller\":\"a\",\"count\":2}],\"project\":\"runtime-ingest\"}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"idempotent\":true"));
     free(resp);
 
     /* Reusing the source batch identity with a changed payload is a conflict. */
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-1\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":3}]}" );
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-1\","
+                               "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":3}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"conflict\""));
     ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
@@ -8720,10 +8715,9 @@ TEST(tool_ingest_traces_basic) {
                            "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
                            NULL, NULL, NULL),
               SQLITE_OK);
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-3\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}" );
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-3\","
+                               "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"error\""));
     ASSERT_NOT_NULL(strstr(resp, "\"persisted\":false"));
@@ -8736,21 +8730,19 @@ TEST(tool_ingest_traces_basic) {
                            "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
                            NULL, NULL, NULL),
               SQLITE_OK);
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-4\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
-        "{\"caller\":\"a\",\"callee\":\"b\",\"count\":1}]}");
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"project\":\"runtime-ingest\",\"source_batch_id\":\"batch-4\","
+                               "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
+                               "{\"caller\":\"a\",\"callee\":\"b\",\"count\":1}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"error\""));
     ASSERT_NOT_NULL(strstr(resp, "\"persisted\":false"));
     free(resp);
 
-    ASSERT_EQ(sqlite3_prepare_v2(
-                  cbm_store_get_db(store),
-                  "SELECT call_count FROM runtime_trace_edges "
-                  "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
-                  -1, &stmt, NULL),
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(store),
+                                 "SELECT call_count FROM runtime_trace_edges "
+                                 "WHERE project='runtime-ingest' AND caller='a' AND callee='b';",
+                                 -1, &stmt, NULL),
               SQLITE_OK);
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     ASSERT_TRUE(sqlite3_column_int64(stmt, 0) == (sqlite3_int64)9223372036854775806LL);
@@ -8761,8 +8753,7 @@ TEST(tool_ingest_traces_basic) {
 }
 
 static bool mcp_runtime_authorization_denied(void *context, const char *project,
-                                             const char *producer_id,
-                                             const char *producer_epoch,
+                                             const char *producer_id, const char *producer_epoch,
                                              const char *semantic_version) {
     (void)context;
     (void)project;
@@ -8780,19 +8771,17 @@ TEST(tool_ingest_traces_canonical_array_order) {
               CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, "runtime-canonical");
 
-    const char *first =
-        "{\"project\":\"runtime-canonical\",\"source_batch_id\":\"batch-2\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
-        "{\"caller\":\"c\",\"callee\":\"d\",\"count\":3}]}";
+    const char *first = "{\"project\":\"runtime-canonical\",\"source_batch_id\":\"batch-2\","
+                        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
+                        "{\"caller\":\"c\",\"callee\":\"d\",\"count\":3}]}";
     char *resp = cbm_mcp_handle_tool(srv, "ingest_traces", first);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     free(resp);
 
-    const char *reordered =
-        "{\"source_batch_id\":\"batch-2\",\"project\":\"runtime-canonical\","
-        "\"traces\":[{\"count\":3,\"callee\":\"d\",\"caller\":\"c\"},"
-        "{\"callee\":\"b\",\"caller\":\"a\",\"count\":1}]}";
+    const char *reordered = "{\"source_batch_id\":\"batch-2\",\"project\":\"runtime-canonical\","
+                            "\"traces\":[{\"count\":3,\"callee\":\"d\",\"caller\":\"c\"},"
+                            "{\"callee\":\"b\",\"caller\":\"a\",\"count\":1}]}";
     resp = cbm_mcp_handle_tool(srv, "ingest_traces", reordered);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"idempotent\":true"));
@@ -8802,8 +8791,8 @@ TEST(tool_ingest_traces_canonical_array_order) {
     sqlite3_stmt *stmt = NULL;
     ASSERT_EQ(sqlite3_prepare_v2(
                   cbm_store_get_db(store),
-                  "SELECT COUNT(*) FROM runtime_trace_edges WHERE project='runtime-canonical';",
-                  -1, &stmt, NULL),
+                  "SELECT COUNT(*) FROM runtime_trace_edges WHERE project='runtime-canonical';", -1,
+                  &stmt, NULL),
               SQLITE_OK);
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     ASSERT_EQ(sqlite3_column_int(stmt, 0), 2);
@@ -8821,17 +8810,16 @@ TEST(tool_ingest_traces_canonical_v2_deduplicates_spans) {
               CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, "runtime-canonical-v2");
 
-    const char *first =
-        "{\"runtime_semantic_version\":\"canonical-v2\","
-        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
-        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-1\","
-        "\"traces\":["
-        "{\"trace_id\":\"00000000000000000000000000000001\","
-        "\"span_id\":\"0000000000000001\",\"caller\":\"a\",\"callee\":\"b\","
-        "\"count\":2,\"duration_ns\":5},"
-        "{\"trace_id\":\"00000000000000000000000000000002\","
-        "\"span_id\":\"0000000000000002\",\"caller\":\"c\",\"callee\":\"d\","
-        "\"count\":3,\"duration_ns\":7}]}";
+    const char *first = "{\"runtime_semantic_version\":\"canonical-v2\","
+                        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+                        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-1\","
+                        "\"traces\":["
+                        "{\"trace_id\":\"00000000000000000000000000000001\","
+                        "\"span_id\":\"0000000000000001\",\"caller\":\"a\",\"callee\":\"b\","
+                        "\"count\":2,\"duration_ns\":5},"
+                        "{\"trace_id\":\"00000000000000000000000000000002\","
+                        "\"span_id\":\"0000000000000002\",\"caller\":\"c\",\"callee\":\"d\","
+                        "\"count\":3,\"duration_ns\":7}]}";
     char *resp = cbm_mcp_handle_tool(srv, "ingest_traces", first);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
@@ -8858,17 +8846,16 @@ TEST(tool_ingest_traces_canonical_v2_deduplicates_spans) {
 
     /* A different contribution may contain a replayed span, but it must not
      * add that span twice; only the new span contributes to the aggregate. */
-    const char *second =
-        "{\"runtime_semantic_version\":\"canonical-v2\","
-        "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
-        "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-2\","
-        "\"traces\":["
-        "{\"trace_id\":\"00000000000000000000000000000001\","
-        "\"span_id\":\"0000000000000001\",\"caller\":\"a\",\"callee\":\"b\","
-        "\"count\":2,\"duration_ns\":5},"
-        "{\"trace_id\":\"00000000000000000000000000000003\","
-        "\"span_id\":\"0000000000000003\",\"caller\":\"a\",\"callee\":\"b\","
-        "\"count\":4,\"duration_ns\":11}]}";
+    const char *second = "{\"runtime_semantic_version\":\"canonical-v2\","
+                         "\"project\":\"runtime-canonical-v2\",\"producer_id\":\"agent-a\","
+                         "\"producer_epoch\":\"epoch-1\",\"source_batch_id\":\"batch-2\","
+                         "\"traces\":["
+                         "{\"trace_id\":\"00000000000000000000000000000001\","
+                         "\"span_id\":\"0000000000000001\",\"caller\":\"a\",\"callee\":\"b\","
+                         "\"count\":2,\"duration_ns\":5},"
+                         "{\"trace_id\":\"00000000000000000000000000000003\","
+                         "\"span_id\":\"0000000000000003\",\"caller\":\"a\",\"callee\":\"b\","
+                         "\"count\":4,\"duration_ns\":11}]}";
     resp = cbm_mcp_handle_tool(srv, "ingest_traces", second);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
@@ -8921,11 +8908,10 @@ TEST(tool_ingest_traces_canonical_v2_deduplicates_spans) {
     free(resp);
 
     sqlite3_stmt *stmt = NULL;
-    ASSERT_EQ(sqlite3_prepare_v2(
-                  cbm_store_get_db(store),
-                  "SELECT COUNT(*) FROM runtime_trace_contributions "
-                  "WHERE project='runtime-canonical-v2';",
-                  -1, &stmt, NULL),
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(store),
+                                 "SELECT COUNT(*) FROM runtime_trace_contributions "
+                                 "WHERE project='runtime-canonical-v2';",
+                                 -1, &stmt, NULL),
               SQLITE_OK);
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     ASSERT_EQ(sqlite3_column_int(stmt, 0), 2);
@@ -8964,22 +8950,20 @@ TEST(tool_get_runtime_traces_returns_sorted_pages) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     cbm_store_t *store = cbm_mcp_server_store(srv);
     ASSERT_NOT_NULL(store);
-    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-query", "/tmp/runtime-query"),
-              CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_upsert_project(store, "runtime-query", "/tmp/runtime-query"), CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, "runtime-query");
 
-    char *resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-query\",\"source_batch_id\":\"batch-1\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
-        "{\"caller\":\"c\",\"callee\":\"d\",\"count\":3}]}");
+    char *resp =
+        cbm_mcp_handle_tool(srv, "ingest_traces",
+                            "{\"project\":\"runtime-query\",\"source_batch_id\":\"batch-1\","
+                            "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"count\":1},"
+                            "{\"caller\":\"c\",\"callee\":\"d\",\"count\":3}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     free(resp);
 
-    resp = cbm_mcp_handle_tool(
-        srv, "get_runtime_traces",
-        "{\"project\":\"runtime-query\",\"limit\":1}");
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces",
+                               "{\"project\":\"runtime-query\",\"limit\":1}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"ok\""));
     ASSERT_NOT_NULL(strstr(resp, "\"runtime_semantic_version\":\"compact-v1\""));
@@ -8989,9 +8973,8 @@ TEST(tool_get_runtime_traces_returns_sorted_pages) {
     ASSERT_NOT_NULL(strstr(resp, "\"caller\":\"c\""));
     free(resp);
 
-    resp = cbm_mcp_handle_tool(
-        srv, "get_runtime_traces",
-        "{\"project\":\"runtime-query\",\"caller\":\"a\",\"limit\":10}");
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces",
+                               "{\"project\":\"runtime-query\",\"caller\":\"a\",\"limit\":10}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"total\":1"));
     ASSERT_NOT_NULL(strstr(resp, "\"callee\":\"b\""));
@@ -9022,7 +9005,7 @@ TEST(tool_get_runtime_traces_pinned_overlay_publication) {
         srv, "ingest_traces",
         "{\"project\":\"runtime-overlay\",\"source_batch_id\":\"batch-1\","
         "\"traces\":[{\"caller\":\"handler\",\"callee\":\"https://api.example/v1\","
-        "\"count\":2}]}" );
+        "\"count\":2}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     free(resp);
@@ -9032,9 +9015,8 @@ TEST(tool_get_runtime_traces_pinned_overlay_publication) {
     ASSERT_TRUE(first.available);
     ASSERT_TRUE(first.runtime_generation[0] != '\0');
 
-    resp = cbm_mcp_handle_tool(
-        srv, "get_runtime_traces",
-        "{\"project\":\"runtime-overlay\",\"include_overlay\":true}");
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces",
+                               "{\"project\":\"runtime-overlay\",\"include_overlay\":true}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"overlay_available\":true"));
     ASSERT_NOT_NULL(strstr(resp, "\"overlay_edge_type\":\"RUNTIME_CALL\""));
@@ -9046,27 +9028,24 @@ TEST(tool_get_runtime_traces_pinned_overlay_publication) {
     free(resp);
 
     sqlite3_stmt *resolution_stmt = NULL;
-    ASSERT_EQ(sqlite3_prepare_v2(
-                  cbm_store_get_db(store),
-                  "SELECT resolution_status, resolver_version FROM runtime_resolutions "
-                  "WHERE project='runtime-overlay' AND runtime_generation=?1 "
-                  "AND endpoint_identity=?2;",
-                  -1, &resolution_stmt, NULL),
+    ASSERT_EQ(
+        sqlite3_prepare_v2(cbm_store_get_db(store),
+                           "SELECT resolution_status, resolver_version FROM runtime_resolutions "
+                           "WHERE project='runtime-overlay' AND runtime_generation=?1 "
+                           "AND endpoint_identity=?2;",
+                           -1, &resolution_stmt, NULL),
+        SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(resolution_stmt, 1, first.runtime_generation, -1, SQLITE_TRANSIENT),
               SQLITE_OK);
-    ASSERT_EQ(sqlite3_bind_text(resolution_stmt, 1, first.runtime_generation, -1,
-                                SQLITE_TRANSIENT),
-              SQLITE_OK);
-    ASSERT_EQ(sqlite3_bind_text(resolution_stmt, 2, "handler", -1, SQLITE_TRANSIENT),
-              SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(resolution_stmt, 2, "handler", -1, SQLITE_TRANSIENT), SQLITE_OK);
     ASSERT_EQ(sqlite3_step(resolution_stmt), SQLITE_ROW);
     ASSERT_STR_EQ((const char *)sqlite3_column_text(resolution_stmt, 0), "resolved");
     ASSERT_STR_EQ((const char *)sqlite3_column_text(resolution_stmt, 1), "qualified-name-v1");
     sqlite3_finalize(resolution_stmt);
 
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-overlay\",\"source_batch_id\":\"batch-2\","
-        "\"traces\":[{\"caller\":\"other\",\"callee\":\"missing\"}]}" );
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"project\":\"runtime-overlay\",\"source_batch_id\":\"batch-2\","
+                               "\"traces\":[{\"caller\":\"other\",\"callee\":\"missing\"}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     free(resp);
@@ -9078,7 +9057,8 @@ TEST(tool_get_runtime_traces_pinned_overlay_publication) {
     char pinned[512];
     snprintf(pinned, sizeof(pinned),
              "{\"project\":\"runtime-overlay\",\"include_overlay\":true,"
-             "\"runtime_generation\":\"%s\"}", first.runtime_generation);
+             "\"runtime_generation\":\"%s\"}",
+             first.runtime_generation);
     resp = cbm_mcp_handle_tool(srv, "get_runtime_traces", pinned);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"runtime_generation\":\""));
@@ -9086,10 +9066,9 @@ TEST(tool_get_runtime_traces_pinned_overlay_publication) {
     ASSERT_NOT_NULL(strstr(resp, "\"callee\":\"https://api.example/v1\""));
     free(resp);
 
-    resp = cbm_mcp_handle_tool(
-        srv, "get_runtime_traces",
-        "{\"project\":\"runtime-overlay\",\"include_overlay\":true,"
-        "\"runtime_generation\":\"stale-generation\"}");
+    resp = cbm_mcp_handle_tool(srv, "get_runtime_traces",
+                               "{\"project\":\"runtime-overlay\",\"include_overlay\":true,"
+                               "\"runtime_generation\":\"stale-generation\"}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "runtime publication generation is stale"));
     ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
@@ -9107,11 +9086,11 @@ TEST(tool_get_runtime_traces_overlay_cursor_is_pinned) {
               CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, "runtime-cursor");
 
-    char *resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-cursor\",\"source_batch_id\":\"batch-1\","
-        "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"duration_ns\":2},"
-        "{\"caller\":\"c\",\"callee\":\"d\",\"duration_ns\":8}]}" );
+    char *resp =
+        cbm_mcp_handle_tool(srv, "ingest_traces",
+                            "{\"project\":\"runtime-cursor\",\"source_batch_id\":\"batch-1\","
+                            "\"traces\":[{\"caller\":\"a\",\"callee\":\"b\",\"duration_ns\":2},"
+                            "{\"caller\":\"c\",\"callee\":\"d\",\"duration_ns\":8}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     free(resp);
@@ -9135,17 +9114,17 @@ TEST(tool_get_runtime_traces_overlay_cursor_is_pinned) {
     char next_request[512];
     snprintf(next_request, sizeof(next_request),
              "{\"project\":\"runtime-cursor\",\"include_overlay\":true,"
-             "\"limit\":1,\"cursor\":\"%s\"}", cursor);
+             "\"limit\":1,\"cursor\":\"%s\"}",
+             cursor);
     resp = cbm_mcp_handle_tool(srv, "get_runtime_traces", next_request);
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"ok\""));
     ASSERT_NOT_NULL(strstr(resp, "\"returned\":1"));
     free(resp);
 
-    resp = cbm_mcp_handle_tool(
-        srv, "ingest_traces",
-        "{\"project\":\"runtime-cursor\",\"source_batch_id\":\"batch-2\","
-        "\"traces\":[{\"caller\":\"e\",\"callee\":\"f\"}]}" );
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces",
+                               "{\"project\":\"runtime-cursor\",\"source_batch_id\":\"batch-2\","
+                               "\"traces\":[{\"caller\":\"e\",\"callee\":\"f\"}]}");
     ASSERT_NOT_NULL(resp);
     ASSERT_NOT_NULL(strstr(resp, "\"status\":\"accepted\""));
     free(resp);

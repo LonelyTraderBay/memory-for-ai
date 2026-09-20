@@ -4,7 +4,7 @@
   "repository": "LonelyTraderBay/memory-for-ai",
   "repository_url": "https://github.com/LonelyTraderBay/memory-for-ai",
   "version": "0.11.0",
-  "mcp_tool_count": 22,
+  "mcp_tool_count": 23,
   "mcp_tools": [
     "index_repository",
     "search_graph",
@@ -13,6 +13,7 @@
     "get_code_snippet",
     "delete_symbol",
     "rename_symbol",
+    "move_symbol",
     "undo_edit",
     "get_graph_schema",
     "edit_symbol",
