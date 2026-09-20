@@ -184,6 +184,8 @@ static uint64_t fnv1a64(const char *s, size_t len) {
     return h;
 }
 
+static char *extract_local_name(const char *props); /* defined below; real-JSON parse */
+
 /* IMPORTS edges carry exactly one imported symbol's local_name (#768): two
  * named imports from the same specifier resolve to the same (source,
  * target) pair but are distinct symbols. Key on local_name too so the
@@ -205,18 +207,21 @@ static uint64_t fnv1a64(const char *s, size_t len) {
 static void make_edge_key(char *buf, size_t bufsz, int64_t src, int64_t tgt, const char *type,
                           const char *properties_json) {
     if (properties_json && strcmp(type, "IMPORTS") == 0) {
-        static const char local_name_key[] = "\"local_name\":\"";
-        const char *ln = strstr(properties_json, local_name_key);
+        /* Parse the local_name with real JSON (yyjson), not strstr: the byte
+         * scan missed the key whenever the blob had whitespace after the
+         * colon ("local_name": "x") and cut values at embedded \" escapes —
+         * both collapse two distinct IMPORTS edges onto one dedup key and
+         * silently drop an edge. */
+        char *ln = extract_local_name(properties_json);
         if (ln) {
-            ln += sizeof(local_name_key) - 1;
-            const char *end = strchr(ln, '"');
-            size_t ln_len = end ? (size_t)(end - ln) : strlen(ln);
-            int n = snprintf(buf, bufsz, "%lld:%lld:%s:%.*s", (long long)src, (long long)tgt, type,
-                             (int)ln_len, ln);
+            size_t ln_len = strlen(ln);
+            int n =
+                snprintf(buf, bufsz, "%lld:%lld:%s:%s", (long long)src, (long long)tgt, type, ln);
             if (n < 0 || (size_t)n >= bufsz) {
                 snprintf(buf, bufsz, "%lld:%lld:%s:\x01%016llx", (long long)src, (long long)tgt,
                          type, (unsigned long long)fnv1a64(ln, ln_len));
             }
+            free(ln);
             return;
         }
     }
@@ -1071,17 +1076,21 @@ void cbm_gbuf_foreach_edge(const cbm_gbuf_t *gb, cbm_gbuf_edge_visitor_fn fn, vo
 
 /* Read "confidence":<double> out of an edge property blob. Absent/unparseable
  * reads as -1 so any edge that carries a confidence outranks one that does
- * not. */
+ * not. Parses real JSON: a strstr for the key also matches that text inside
+ * a string VALUE, which would fabricate a confidence that is not there. The
+ * strstr stays as a cheap pre-filter only. */
 static double edge_props_confidence(const char *props_json) {
-    if (!props_json) {
+    if (!props_json || !strstr(props_json, "\"confidence\"")) {
         return CBM_EDGE_CONF_ABSENT;
     }
-    static const char conf_key[] = "\"confidence\":";
-    const char *p = strstr(props_json, conf_key);
-    if (!p) {
+    yyjson_doc *doc = yyjson_read(props_json, strlen(props_json), 0);
+    if (!doc) {
         return CBM_EDGE_CONF_ABSENT;
     }
-    return strtod(p + sizeof(conf_key) - SKIP_ONE, NULL);
+    yyjson_val *v = yyjson_obj_get(yyjson_doc_get_root(doc), "confidence");
+    double out = (v && yyjson_is_num(v)) ? yyjson_get_num(v) : CBM_EDGE_CONF_ABSENT;
+    yyjson_doc_free(doc);
+    return out;
 }
 
 /* Decide whether an incoming property blob replaces the stored one on a

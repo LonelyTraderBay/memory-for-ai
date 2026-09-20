@@ -46,6 +46,7 @@ enum {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <yyjson/yyjson.h> /* property extraction must match json_extract semantics */
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -2539,77 +2540,45 @@ static const char *node_prop(const cbm_node_t *n, const char *prop, cbm_store_t 
     return "";
 }
 
-/* Extract a string value from JSON properties_json by key.
+/* Extract a value from JSON properties_json by key.
  * Writes result to buf (up to buf_sz). Returns buf if found, "" otherwise.
- * Handles both string values ("key":"value") and numeric values ("key":1.5). */
+ *
+ * Parses real JSON (yyjson) instead of scanning bytes: a strstr for "key":
+ * also matches that text INSIDE a string value, returning a false property,
+ * and byte slicing cuts string values at embedded \" escapes. yyjson yields
+ * the same unescaped value as SQLite json_extract, which is the reference
+ * semantic for these blobs. The strstr on the bare quoted key stays as a
+ * cheap pre-filter — a false positive just costs one parse that finds no
+ * such key. */
 static const char *json_extract_prop(const char *json, const char *key, char *buf, size_t buf_sz) {
+    buf[0] = '\0';
     if (!json || !key) {
-        buf[0] = '\0';
         return buf;
     }
-    /* Build search pattern: "key": */
     char pattern[CBM_SZ_256];
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    const char *p = strstr(json, pattern);
-    if (!p) {
-        buf[0] = '\0';
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    if (!strstr(json, pattern)) {
         return buf;
     }
-    p += strlen(pattern);
-    /* Skip whitespace */
-    while (*p == ' ' || *p == '\t') {
-        p++;
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    if (!doc) {
+        return buf; /* unparseable blob — treat the property as absent */
     }
-    if (*p == '"') {
-        /* String value — honor backslash escapes: without this, an embedded \"
-         * cuts the value short at the first escaped quote. */
-        p++;
-        size_t i = 0;
-        while (*p && *p != '"' && i < buf_sz - SKIP_ONE) {
-            if (*p == '\\' && p[SKIP_ONE] && i + SKIP_ONE < buf_sz - SKIP_ONE) {
-                buf[i++] = *p++; /* keep the escape pair intact */
-            }
-            buf[i++] = *p++;
-        }
-        buf[i] = '\0';
-    } else if (*p == '[' || *p == '{') {
-        /* Array/object value — copy the whole balanced construct. A scan-to-comma
-         * truncates at the first comma INSIDE the value: e.g. a decorators array
-         * ["@Roles('OWNER', 'ADMIN')","@Get()"] came back as ["@Roles('OWNER'. */
-        char open = *p;
-        char close = (open == '[') ? ']' : '}';
-        int depth = 0;
-        int in_str = 0;
-        size_t i = 0;
-        while (*p && i < buf_sz - SKIP_ONE) {
-            char c = *p;
-            if (in_str) {
-                if (c == '\\' && p[SKIP_ONE] && i + SKIP_ONE < buf_sz - SKIP_ONE) {
-                    buf[i++] = *p++; /* escape pair stays intact */
-                } else if (c == '"') {
-                    in_str = 0;
-                }
-            } else if (c == '"') {
-                in_str = 1;
-            } else if (c == open) {
-                depth++;
-            } else if (c == close) {
-                depth--;
-            }
-            buf[i++] = *p++;
-            if (!in_str && depth == 0) {
-                break; /* outer bracket closed */
+    yyjson_val *v = yyjson_obj_get(yyjson_doc_get_root(doc), key);
+    if (v) {
+        if (yyjson_is_str(v)) {
+            snprintf(buf, buf_sz, "%s", yyjson_get_str(v));
+        } else {
+            /* Numbers, booleans, arrays, objects: the raw JSON text, matching
+             * what the old byte scanner returned for non-string values. */
+            char *raw = yyjson_val_write(v, 0, NULL);
+            if (raw) {
+                snprintf(buf, buf_sz, "%s", raw);
+                free(raw);
             }
         }
-        buf[i] = '\0';
-    } else {
-        /* Numeric or other scalar value */
-        size_t i = 0;
-        while (*p && *p != ',' && *p != '}' && *p != ' ' && i < buf_sz - SKIP_ONE) {
-            buf[i++] = *p++;
-        }
-        buf[i] = '\0';
     }
+    yyjson_doc_free(doc);
     return buf;
 }
 

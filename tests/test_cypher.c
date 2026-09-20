@@ -3988,7 +3988,11 @@ TEST(cypher_exec_prop_array_with_internal_commas) {
 }
 
 /* A string property must not end at an ESCAPED quote: the scan stopped at the
- * first '"' regardless of a preceding backslash, cutting the value short. */
+ * first '"' regardless of a preceding backslash, cutting the value short.
+ * Extraction now goes through yyjson, so the result is the UNESCAPED value —
+ * the same semantic as SQLite json_extract, which is the reference for these
+ * blobs (the old scanner kept the escape pairs intact as an implementation
+ * detail). */
 TEST(cypher_exec_prop_string_with_escaped_quote) {
     cbm_store_t *s = cbm_store_open_memory();
     cbm_store_upsert_project(s, "test", "/tmp/test");
@@ -4004,7 +4008,34 @@ TEST(cypher_exec_prop_string_with_escaped_quote) {
     int rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.signature", "test", 0, &r);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ(r.row_count, 1);
-    ASSERT_STR_EQ(r.rows[0][0], "(sep: \\\"a,b\\\") => void"); /* was: (sep: \ */
+    ASSERT_STR_EQ(r.rows[0][0],
+                  "(sep: \"a,b\") => void"); /* was: (sep: \, then \"a,b\" kept escaped */
+    cbm_cypher_result_free(&r);
+    cbm_store_close(s);
+    PASS();
+}
+
+/* The quoted key text inside a string VALUE must not count as the key: the
+ * old strstr scanner matched `"url_path":` inside the note and returned
+ * garbage. yyjson only sees real object keys. */
+TEST(cypher_exec_prop_key_text_inside_string_value) {
+    cbm_store_t *s = cbm_store_open_memory();
+    cbm_store_upsert_project(s, "test", "/tmp/test");
+    cbm_node_t n = {
+        .project = "test",
+        .label = "Function",
+        .name = "parse",
+        .qualified_name = "test.parse",
+        .file_path = "p.ts",
+        .properties_json =
+            "{\"note\":\"docs say \\\"url_path\\\": none\",\"url_path\":\"real/path\"}"};
+    cbm_store_upsert_node(s, &n);
+
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.url_path", "test", 0, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 1);
+    ASSERT_STR_EQ(r.rows[0][0], "real/path"); /* was: garbage cut from inside the note value */
     cbm_cypher_result_free(&r);
     cbm_store_close(s);
     PASS();
@@ -4294,4 +4325,5 @@ SUITE(cypher) {
     /* Composite property projection (arrays/objects, escaped quotes) */
     RUN_TEST(cypher_exec_prop_array_with_internal_commas);
     RUN_TEST(cypher_exec_prop_string_with_escaped_quote);
+    RUN_TEST(cypher_exec_prop_key_text_inside_string_value);
 }

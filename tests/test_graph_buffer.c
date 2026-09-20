@@ -304,6 +304,39 @@ TEST(gbuf_imports_multi_symbol_dedup) {
     PASS();
 }
 
+/* The dedup key must survive REAL JSON formatting: whitespace after the
+ * colon and escaped characters inside the local_name. The old byte scanner
+ * missed `"local_name": "B"` entirely (space after colon), collapsing it onto
+ * the plain key of the A edge and silently dropping one IMPORTS edge. */
+TEST(gbuf_imports_dedup_spaced_and_escaped_json) {
+    cbm_gbuf_t *gb = cbm_gbuf_new("test", "/tmp");
+    int64_t consumer =
+        cbm_gbuf_upsert_node(gb, "File", "consumer.ts", "pkg.consumer", "consumer.ts", 1, 1, "{}");
+    int64_t lib = cbm_gbuf_upsert_node(gb, "File", "lib.ts", "pkg.lib", "lib.ts", 1, 1, "{}");
+
+    int64_t eid_a = cbm_gbuf_insert_edge(gb, consumer, lib, "IMPORTS", "{\"local_name\":\"A\"}");
+    int64_t eid_b = cbm_gbuf_insert_edge(gb, consumer, lib, "IMPORTS", "{\"local_name\": \"B\"}");
+    ASSERT_NEQ(eid_a, eid_b);
+    ASSERT_EQ(cbm_gbuf_edge_count(gb), 2);
+
+    /* Idempotent re-index must still dedup regardless of formatting. */
+    ASSERT_EQ(cbm_gbuf_insert_edge(gb, consumer, lib, "IMPORTS", "{\"local_name\": \"A\"}"), eid_a);
+    ASSERT_EQ(cbm_gbuf_insert_edge(gb, consumer, lib, "IMPORTS", "{\"local_name\":\"B\"}"), eid_b);
+    ASSERT_EQ(cbm_gbuf_edge_count(gb), 2);
+
+    /* An escaped quote inside the local_name is part of the VALUE, not the
+     * end of it: the byte scanner cut at \" and keyed on a truncated name. */
+    int64_t eid_c =
+        cbm_gbuf_insert_edge(gb, consumer, lib, "IMPORTS", "{\"local_name\":\"we\\\"ird\"}");
+    ASSERT_GT(eid_c, 0);
+    ASSERT_EQ(cbm_gbuf_insert_edge(gb, consumer, lib, "IMPORTS", "{\"local_name\": \"we\\\"ird\"}"),
+              eid_c);
+    ASSERT_EQ(cbm_gbuf_edge_count(gb), 3);
+
+    cbm_gbuf_free(gb);
+    PASS();
+}
+
 /* #768 hardening: the dedup key lives in a fixed-size stack buffer. Two long
  * local_names sharing a prefix must NOT silently collide when the verbatim
  * key would be truncated — the key builder re-keys oversized local_names with
@@ -1180,6 +1213,7 @@ SUITE(graph_buffer) {
     RUN_TEST(gbuf_insert_edge);
     RUN_TEST(gbuf_edge_dedup);
     RUN_TEST(gbuf_imports_multi_symbol_dedup);
+    RUN_TEST(gbuf_imports_dedup_spaced_and_escaped_json);
     RUN_TEST(gbuf_imports_long_local_name_no_collision);
     RUN_TEST(gbuf_find_edges_by_source_type);
     RUN_TEST(gbuf_find_edges_by_target_type);
