@@ -862,11 +862,21 @@ int cbm_gbuf_delete_by_label(cbm_gbuf_t *gb, const char *label) {
         make_id_key(id_buf, sizeof(id_buf), n->id);
         cbm_ht_set(deleted_set, strdup(id_buf), intptr_to_ptr(SKIP_ONE));
 
+        /* Remove from secondary indexes — the name index was missed here once,
+         * leaving ghost nodes that find_by_name could still return. */
+        remove_node_from_ptr_array(cbm_ht_get(gb->nodes_by_name, n->name), n->id);
+
         /* Remove from primary indexes */
         cbm_ht_delete(gb->node_by_qn, n->qualified_name);
         if (n->id >= 0 && n->id < gb->by_id_cap) {
             gb->by_id[n->id] = NULL;
         }
+
+        /* NULL out QN so dump's liveness check (cbm_ht_get by QN) fails even
+         * if a new node with the same QN is inserted later — same hardening
+         * as delete_by_file. */
+        free(n->qualified_name);
+        ((cbm_gbuf_node_t *)n)->qualified_name = NULL;
     }
 
     /* Clear the label array */

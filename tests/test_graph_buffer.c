@@ -136,6 +136,17 @@ TEST(gbuf_delete_by_label) {
     ASSERT_NULL(cbm_gbuf_find_by_qn(gb, "pkg.bar"));
     ASSERT_NOT_NULL(cbm_gbuf_find_by_qn(gb, "pkg.Baz"));
 
+    /* Ghost-node regression: the name index must not return deleted nodes. */
+    const cbm_gbuf_node_t **by_name = NULL;
+    int name_count = -1;
+    ASSERT_EQ(cbm_gbuf_find_by_name(gb, "foo", &by_name, &name_count), 0);
+    ASSERT_EQ(name_count, 0);
+    ASSERT_EQ(cbm_gbuf_find_by_name(gb, "bar", &by_name, &name_count), 0);
+    ASSERT_EQ(name_count, 0);
+    /* The surviving Class is still findable by name. */
+    ASSERT_EQ(cbm_gbuf_find_by_name(gb, "Baz", &by_name, &name_count), 0);
+    ASSERT_EQ(name_count, 1);
+
     cbm_gbuf_free(gb);
     PASS();
 }
