@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatGraphLimitNotice } from "./GraphTab";
+import { formatGraphLimitNotice, preserveEnabledFilters } from "./GraphTab";
 import type { GraphData } from "../lib/types";
 
 describe("formatGraphLimitNotice", () => {
@@ -32,5 +32,29 @@ describe("formatGraphLimitNotice", () => {
     } satisfies GraphData;
 
     expect(formatGraphLimitNotice(data)).toBeNull();
+  });
+});
+
+describe("preserveEnabledFilters", () => {
+  const prev = new Set(["Function", "Class"]);
+
+  it("keeps labels the user disabled across a reload", () => {
+    const available = new Set(["Function", "Class"]);
+    const enabled = new Set(["Class"]); // user disabled "Function"
+    expect(preserveEnabledFilters(available, prev, enabled)).toEqual(new Set(["Class"]));
+  });
+
+  it("drops labels that vanished and enables brand-new ones", () => {
+    const available = new Set(["Function", "Interface"]); // Class gone, Interface new
+    const enabled = new Set(["Function", "Class"]);
+    expect(preserveEnabledFilters(available, prev, enabled)).toEqual(
+      new Set(["Function", "Interface"]),
+    );
+  });
+
+  it("does not resurrect a label the user disabled that is still present", () => {
+    const available = new Set(["Function", "Class"]);
+    const enabled = new Set<string>(); // user disabled everything
+    expect(preserveEnabledFilters(available, prev, enabled)).toEqual(new Set());
   });
 });

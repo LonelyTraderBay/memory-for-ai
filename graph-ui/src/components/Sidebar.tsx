@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { GraphNode } from "../lib/types";
 import { useUiMessages } from "../lib/i18n";
@@ -108,13 +108,21 @@ function TreeItem({ dir, depth, onSelect, selectedPath }: {
 export function Sidebar({ nodes, onSelectPath, selectedPath }: SidebarProps) {
   const t = useUiMessages();
   const [search, setSearch] = useState("");
+  /* Filter against a debounced copy of the query: the input stays responsive
+   * while the O(n) scan over every node runs at most once per pause in
+   * typing instead of once per keystroke. */
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(search), 150);
+    return () => clearTimeout(id);
+  }, [search]);
   const tree = useMemo(() => flattenSingleChild(buildFileTree(nodes)), [nodes]);
 
   const filtered = useMemo(() => {
-    if (!search) return null;
-    const q = search.toLowerCase();
+    if (!query) return null;
+    const q = query.toLowerCase();
     return nodes.filter((n) => n.name.toLowerCase().includes(q) || (n.file_path ?? "").toLowerCase().includes(q)).slice(0, 50);
-  }, [nodes, search]);
+  }, [nodes, query]);
 
   const topLevel = useMemo(() => [...tree.children.values()].sort((a, b) => a.name.localeCompare(b.name)), [tree.children]);
 

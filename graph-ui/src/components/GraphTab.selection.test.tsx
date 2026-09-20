@@ -120,13 +120,14 @@ describe("GraphTab selection", () => {
 
     expect(await screen.findByText("Filters")).toBeInTheDocument();
 
-    /* Search for the orphan node. */
+    /* Search for the orphan node. Sidebar debounces the query (150 ms), so
+     * wait for the result to appear instead of asserting synchronously. */
     const searchInput = screen.getByPlaceholderText("Search...");
     fireEvent.change(searchInput, { target: { value: "orphan" } });
 
     /* Click the search result — Sidebar passes "" for path (no file_path)
      * but still passes the GraphNode as the third argument. */
-    fireEvent.click(screen.getByRole("button", { name: /orphanFn/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /orphanFn/ }));
 
     /* The detail panel must still appear. */
     expect(screen.getByRole("heading", { name: "orphanFn" })).toBeInTheDocument();

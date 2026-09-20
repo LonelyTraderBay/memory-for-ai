@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import {
   useGraphData,
@@ -76,6 +76,21 @@ export function formatGraphLimitNotice(data: GraphData | null): string | null {
   return `Showing ${data.nodes.length.toLocaleString("en-US")} of ${data.total_nodes.toLocaleString("en-US")} nodes (${data.edges.length.toLocaleString("en-US")} edges). Raise the node budget or use filters.`;
 }
 
+/* Merge the user's filter choices into the label/edge-type set of a reloaded
+ * graph: choices for items that still exist are kept, items that vanished
+ * are dropped, and brand-new items default to enabled. */
+export function preserveEnabledFilters(
+  available: Set<string>,
+  previouslyAvailable: Set<string>,
+  enabled: Set<string>,
+): Set<string> {
+  const next = new Set<string>();
+  for (const item of available) {
+    if (enabled.has(item) || !previouslyAvailable.has(item)) next.add(item);
+  }
+  return next;
+}
+
 export function GraphTab({ project }: GraphTabProps) {
   const { data, loading, error, progress, fetchOverview, fetchDetail } = useGraphData();
   const [highlightedIds, setHighlightedIds] = useState<Set<number> | null>(null);
@@ -135,7 +150,16 @@ export function GraphTab({ project }: GraphTabProps) {
   const [hideEntryPoints, setHideEntryPoints] = useState(false);
   const [hideTests, setHideTests] = useState(false);
 
-  /* Initialize filters when data loads */
+  /* Initialize filters when data loads — but do NOT wipe the user's choices
+   * on a reload of the same project (budget change, watcher-driven refetch):
+   * labels/edge types the user disabled stay disabled, brand-new ones
+   * default to enabled. A project switch still resets everything because
+   * labels are only meaningful within one project. */
+  const filterAvailRef = useRef<{
+    project: string | null;
+    labels: Set<string>;
+    edgeTypes: Set<string>;
+  } | null>(null);
   useEffect(() => {
     if (!data) return;
     const labels = new Set(data.nodes.map((n) => n.label));
@@ -145,9 +169,16 @@ export function GraphTab({ project }: GraphTabProps) {
       for (const e of lp.edges) types.add(e.type);
       for (const e of lp.cross_edges) types.add(e.type);
     }
-    setEnabledLabels(labels);
-    setEnabledEdgeTypes(types);
-  }, [data]);
+    const prev = filterAvailRef.current;
+    if (!prev || prev.project !== project) {
+      setEnabledLabels(labels);
+      setEnabledEdgeTypes(types);
+    } else {
+      setEnabledLabels((enabled) => preserveEnabledFilters(labels, prev.labels, enabled));
+      setEnabledEdgeTypes((enabled) => preserveEnabledFilters(types, prev.edgeTypes, enabled));
+    }
+    filterAvailRef.current = { project, labels, edgeTypes: types };
+  }, [data, project]);
 
   /* Compute filtered data */
   const filteredData: GraphData | null = useMemo(() => {
