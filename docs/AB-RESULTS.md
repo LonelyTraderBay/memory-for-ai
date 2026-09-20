@@ -82,11 +82,11 @@ Full transitive inbound trace of `cbm_fopen`: **11 calls / 17,290 bytes ≈ 4.3K
 
 Follow [MEASURING.md](MEASURING.md) §3 (rigorous A/B protocol) with your own repository, question set, and model. Keep artifacts outside the worktrees, record raw paired counts beside every ratio, and publish your caveats with your numbers — as above.
 
-## A/B — edit tools: `rename_symbol` vs grep + full-file rewrite (2026-09-19)
+## A/B — edit tools: `rename_symbol` / `move_symbol` vs grep + full-file rewrite (2026-09-19/20)
 
 Second measurement family, this time for the **edit** path (THIET-KE-EDIT-TOOLS.md §8). Mechanical execution by `scripts/ab-edit-tools.py` against the dev build at `beecc49b` — no model in the loop, both conditions executed by the same script, quality proven by diffing the resulting trees (must be byte-identical after CRLF normalization).
 
-**Task:** rename one Python function, fan-out rising from 2 to 12 occurrences across 1–5 files. Two file-size scenarios: `small` (bare fixture, ~10 lines/file) and `padded300` (~300 lines of inert code per file, simulating realistic module size).
+**Rename task:** rename one Python function, fan-out rising from 2 to 12 occurrences across 1–5 files. **Move task (2026-09-20):** move one Python function to an existing destination module, fan-out rising from 0 to 4 importer files (2–6 files touched). Two file-size scenarios: `small` (bare fixture, ~10 lines/file) and `padded300` (~300 lines of inert code per file, simulating realistic module size).
 
 - **Condition A (edit tools):** `rename_symbol` dry-run plan → apply (`force=true`) → `search_graph` verify = **3 calls**, plus one up-front `index_repository` (amortized per project, not per rename).
 - **Condition B (manual):** `grep -rnw` → read every matched file **in full** → rewrite every file **in full** → verify grep (MEASURING.md read-whole-file rule).
@@ -106,6 +106,25 @@ Second measurement family, this time for the **edit** path (THIET-KE-EDIT-TOOLS.
 | padded300/t4_fanout_4 | 4 | 3/10 | 1,139 | 15,194 | 92.5% | PASS |
 | padded300/t5_fanout_5 | 5 | 3/12 | 1,193 | 19,057 | 93.7% | PASS |
 | **total padded300** | 15 | 15/40 | 5,398 | 57,049 | **90.5%** | 5/5 PASS |
+
+**Move results** (same protocol; condition A = `move_symbol` dry-run plan → apply with `expected_files` parsed from the plan → `search_graph` verify = 3 calls; condition B additionally reads the destination module in full, which grep alone never surfaces):
+
+| task | files | calls A/B | tokens A (est) | tokens B (est) | token reduction | quality |
+|---|---|---|---|---|---|---|
+| small/m1_fanout_0 | 2 | 3/6 | 962 | 95 | −912.6% | PASS |
+| small/m2_fanout_1 | 3 | 3/8 | 991 | 176 | −463.1% | PASS |
+| small/m3_fanout_2 | 4 | 3/10 | 1,019 | 257 | −296.5% | PASS |
+| small/m4_fanout_3 | 5 | 3/12 | 1,047 | 338 | −209.8% | PASS |
+| small/m5_fanout_4 | 6 | 3/14 | 1,075 | 420 | −156.0% | PASS |
+| **total small** | 20 | 15/50 | 5,094 | 1,286 | **−296.1%** | 5/5 PASS |
+| padded300/m1_fanout_0 | 2 | 3/6 | 970 | 7,526 | 87.1% | PASS |
+| padded300/m2_fanout_1 | 3 | 3/8 | 999 | 11,323 | 91.2% | PASS |
+| padded300/m3_fanout_2 | 4 | 3/10 | 1,027 | 15,120 | 93.2% | PASS |
+| padded300/m4_fanout_3 | 5 | 3/12 | 1,055 | 18,917 | 94.4% | PASS |
+| padded300/m5_fanout_4 | 6 | 3/14 | 1,083 | 22,715 | 95.2% | PASS |
+| **total padded300** | 20 | 15/50 | 5,134 | 75,601 | **93.2%** | 5/5 PASS |
+
+Move mirrors rename almost exactly on the A side (≈1.0–1.1K tokens flat, the plan is a per-file table plus a REVIEW section) and is slightly *more* favourable than rename at padded300 (93.2% vs 90.5% total reduction) because a manual move must also read the destination module in full — content that never mentions the symbol and that grep alone cannot surface.
 
 Raw paired counts: `build/ab-edit-tools/ab_edit_results.csv` (regenerate with `python scripts/ab-edit-tools.py`).
 

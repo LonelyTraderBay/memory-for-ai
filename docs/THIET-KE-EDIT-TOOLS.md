@@ -316,7 +316,7 @@ Response prefixes: `move_symbol: DRY-RUN` / `move_symbol: APPLIED` / `move_symbo
 | Unit (suite `edit`) | Import rewriting Python/TS trên buffer: single/multi symbol, alias, tách dòng, relative path recomputation (cùng thư mục, lên 1-2 cấp, xuống cấp), file nguồn cần re-import |
 | Integration (suite `edit_integration`) | Fixture Python + TS: move function 2 file → assert disk (thân ở đích, import đúng) + graph mới (node ở file đích, IMPORTS edges trỏ đích); move tạo circular → REVIEW không apply; destination collision → từ chối |
 | Fault injection | `cbm_edit_write_test_fail_once` giữa chuỗi ghi nhiều file → PARTIAL + không file nào corrupt + backup đủ để undo |
-| A/B | Mở rộng `scripts/ab-edit-tools.py` thêm task move sau khi tool ổn định (không block Phase 5) |
+| A/B | ✅ Mở rộng `scripts/ab-edit-tools.py` thêm task move (5 mức fan-out × 2 kịch bản, quality byte-identical 10/10) — kết quả tại `docs/AB-RESULTS.md` §"A/B — edit tools": giảm 93.2% token ở padded300 |
 
 ### 12.6 Chia nhỏ implement (mỗi bước 1 commit)
 
