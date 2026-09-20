@@ -1339,7 +1339,59 @@ TEST(store_batch_count_degrees) {
     PASS();
 }
 
-/* ── GlobToLike edge cases ──────────────────────────────────────── */
+/* Chunk-boundary regression: ids beyond one ST_DEGREE_IN_CHUNK (500) once
+ * overflowed the 4K IN-clause buffer — the extra binds failed SQLITE_RANGE
+ * (silently ignored) and tail ids came back with degree 0. 1200 ids span
+ * three chunks; every id must get its degree. */
+TEST(store_batch_count_degrees_chunks) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    cbm_store_upsert_project(s, "test", "/tmp/test");
+
+    enum { N = 1200 };
+    int64_t *ids = malloc((size_t)N * sizeof(*ids));
+    int *in = malloc((size_t)N * sizeof(*in));
+    int *out = malloc((size_t)N * sizeof(*out));
+    ASSERT_NOT_NULL(ids);
+    ASSERT_NOT_NULL(in);
+    ASSERT_NOT_NULL(out);
+
+    /* Hub node H; every other node i gets one edge i -> H. */
+    cbm_node_t hub = {
+        .project = "test", .label = "Function", .name = "H", .qualified_name = "test.H"};
+    int64_t idH = cbm_store_upsert_node(s, &hub);
+    ASSERT_TRUE(idH > 0);
+
+    for (int i = 0; i < N; i++) {
+        char qn[64];
+        snprintf(qn, sizeof(qn), "test.n%d", i);
+        cbm_node_t n = {.project = "test", .label = "Function", .name = qn, .qualified_name = qn};
+        ids[i] = cbm_store_upsert_node(s, &n);
+        ASSERT_TRUE(ids[i] > 0);
+        cbm_edge_t e = {.project = "test", .source_id = ids[i], .target_id = idH, .type = "CALLS"};
+        ASSERT_TRUE(cbm_store_insert_edge(s, &e) > 0);
+    }
+
+    int rc = cbm_store_batch_count_degrees(s, ids, N, "CALLS", in, out);
+    ASSERT_EQ(rc, CBM_STORE_OK);
+    for (int i = 0; i < N; i++) {
+        /* Every id — including those in the second and third chunk — has
+         * out-degree 1 and in-degree 0. */
+        ASSERT_EQ(out[i], 1);
+        ASSERT_EQ(in[i], 0);
+    }
+
+    /* The hub's in-degree is the full fan-in across all chunks. */
+    rc = cbm_store_batch_count_degrees(s, &idH, 1, "CALLS", in, out);
+    ASSERT_EQ(rc, CBM_STORE_OK);
+    ASSERT_EQ(in[0], N);
+
+    free(ids);
+    free(in);
+    free(out);
+    cbm_store_close(s);
+    PASS();
+}
 
 TEST(store_glob_to_like_empty) {
     char *got = cbm_glob_to_like("");
@@ -1835,6 +1887,7 @@ SUITE(store_search) {
     RUN_TEST(store_ensure_case_insensitive);
     RUN_TEST(store_strip_case_flag);
     RUN_TEST(store_batch_count_degrees);
+    RUN_TEST(store_batch_count_degrees_chunks);
     /* Edge case tests */
     RUN_TEST(store_glob_to_like_empty);
     RUN_TEST(store_glob_to_like_only_star);
