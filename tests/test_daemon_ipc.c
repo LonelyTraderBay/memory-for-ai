@@ -90,7 +90,10 @@ static void ipc_test_copy_path_impl(char *out, size_t cap, const char *path) {
 
 static bool ipc_test_full_path(char out[TEST_PATH_CAP], const char *path) {
 #ifdef _WIN32
-    return path && _fullpath(out, path, TEST_PATH_CAP) != NULL;
+    /* Production canonicalization resolves the opened directory handle, so a
+     * junction/AppX alias cannot produce a second IPC namespace.  Use the
+     * same handle-based contract here; _fullpath() is lexical only. */
+    return path && cbm_canonical_path(path, out, TEST_PATH_CAP) != 0;
 #else
     return path && realpath(path, out) != NULL;
 #endif

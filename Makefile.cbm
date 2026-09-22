@@ -36,10 +36,12 @@ TS_INCLUDE = $(CBM_DIR)/vendored/ts_runtime/include
 TS_SRC = $(CBM_DIR)/vendored/ts_runtime/src
 
 # GCC-only warning suppressions (Clang rejects unknown -Wno-* with -Werror).
-# Detect GCC by checking for __GNUC__ without __clang__ — handles all versions.
-IS_GCC := $(shell echo | $(CC) -dM -E - 2>/dev/null | grep -q '__GNUC__' && ! echo | $(CC) -dM -E - 2>/dev/null | grep -q '__clang__' && echo yes || echo no)
+# Detect GCC from the compiler command instead of piping preprocessor output
+# through grep.  The latter is not available in the native Windows toolchain,
+# which silently disabled these documented GCC-only flags and made the full
+# test build fail on every format-truncation diagnostic.
 GCC_ONLY_FLAGS :=
-ifeq ($(IS_GCC),yes)
+ifneq (,$(findstring gcc,$(CC)))
 GCC_ONLY_FLAGS := -Wno-format-truncation -Wno-unused-result \
                   -Wno-stringop-truncation -Wno-alloc-size-larger-than
 endif
@@ -161,8 +163,15 @@ CXXFLAGS_TSAN = $(CXXFLAGS_COMMON) -DCBM_SANITIZED_BUILD=1 -g -O1 \
 # (CommandLineToArgvW — the UTF-8 argv path in main.c, #423/#20), and
 # advapi32 (owner-only activation-candidate ACLs), plus
 # --allow-multiple-definition (MinGW CRT symbol clashes).
-# Auto-detected via compiler; no manual override needed.
-IS_MINGW := $(shell echo | $(CC) -dM -E - 2>/dev/null | grep -q 'define _WIN32 ' && echo yes || echo no)
+# Auto-detected without a POSIX shell pipeline; native Windows builds do not
+# guarantee that grep exists.  The Windows make environment is sufficient to
+# select the MinGW system libraries for both GCC and clang-based Windows builds.
+IS_MINGW :=
+ifeq ($(OS),Windows_NT)
+IS_MINGW := yes
+else ifneq (,$(findstring mingw,$(CC)))
+IS_MINGW := yes
+endif
 
 # Prod hardening flag set (consumed by CFLAGS_PROD/CXXFLAGS_PROD above via
 # deferred expansion). Stack canaries work on every supported toolchain
@@ -192,7 +201,11 @@ endif
 # allocations already reach mimalloc here, but the profiler needs the same
 # observation point as Windows or the platform comparison is not like-for-like.
 # macOS ld has no --wrap, so it stays census-only.
+ifeq ($(OS),Windows_NT)
+IS_LINUX := no
+else
 IS_LINUX := $(shell uname -s 2>/dev/null | grep -q Linux && echo yes || echo no)
+endif
 MIMALLOC_WRAP_SYMS_POSIX := malloc calloc realloc free strdup
 MIMALLOC_WRAP_FLAGS_POSIX :=
 ifeq ($(IS_LINUX),yes)
@@ -808,8 +821,13 @@ PP_OBJ_TSAN = $(BUILD_DIR)/tsan_preprocessor.o
 
 .PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint metadata-check lint-tidy lint-tidy-diff lint-cppcheck lint-format security
 
+ifeq ($(OS),Windows_NT)
+$(BUILD_DIR):
+	@if not exist "$(BUILD_DIR)" mkdir "$(BUILD_DIR)"
+else
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+endif
 
 # ── Foundation-only test: rule lives below, after OBJS_VENDORED_TEST ──
 # (prerequisites expand at parse time; a rule above the variable definition
@@ -1144,11 +1162,17 @@ MAIN_SRC = src/main.c
 BUILD_CONFIG_SIG := TEST_SEAMS=$(TEST_SEAMS)|CFLAGS_EXTRA=$(CFLAGS_EXTRA)|SANITIZE=$(SANITIZE)|LTO=$(LTO)
 .PHONY: build-config-check
 build-config-check:
+
+ifeq ($(OS),Windows_NT)
+$(BUILD_DIR)/.build-config: build-config-check | $(BUILD_DIR)
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command "$$signature = '$(BUILD_CONFIG_SIG)'; $$tmp = '$(BUILD_DIR)/.build-config.tmp'; $$stamp = '$(BUILD_DIR)/.build-config'; [IO.File]::WriteAllText($$tmp, $$signature + [Environment]::NewLine, [Text.UTF8Encoding]::new($$false)); if (Test-Path -LiteralPath $$stamp) { if ([IO.File]::ReadAllText($$stamp) -eq [IO.File]::ReadAllText($$tmp)) { Remove-Item -LiteralPath $$tmp -Force } else { Move-Item -LiteralPath $$tmp -Destination $$stamp -Force; if (Test-Path -LiteralPath '$(BUILD_DIR)/memory-for-ai.exe') { Remove-Item -LiteralPath '$(BUILD_DIR)/memory-for-ai.exe' -Force }; Write-Output '=== build config changed -> full rebuild: $(BUILD_CONFIG_SIG) ===' } } else { Move-Item -LiteralPath $$tmp -Destination $$stamp -Force }"
+else
 $(BUILD_DIR)/.build-config: build-config-check | $(BUILD_DIR)
 	@printf '%s\n' '$(BUILD_CONFIG_SIG)' > $@.tmp
 	@if cmp -s $@.tmp $@; then rm -f $@.tmp; \
 	else mv -f $@.tmp $@; rm -f $(BUILD_DIR)/memory-for-ai; \
 	echo "=== build config changed -> full rebuild: $(BUILD_CONFIG_SIG) ==="; fi
+endif
 
 $(BUILD_DIR)/memory-for-ai: $(MAIN_SRC) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_PROD) $(BUILD_DIR)/.build-config $(PROJECT_HDRS) Makefile.cbm | $(BUILD_DIR)
 	$(CC) $(CFLAGS_PROD) -o $@ \
@@ -1192,13 +1216,20 @@ clean-c:
 
 # clang-tidy and clang-format: use Homebrew LLVM on macOS, overridable via make args
 # e.g. make lint-format CLANG_FORMAT=clang-format-18
+ifeq ($(OS),Windows_NT)
+LLVM_BIN :=
+CLANG_TIDY ?= clang-tidy
+CLANG_FORMAT ?= clang-format
+SYSROOT =
+else
 LLVM_BIN := $(shell brew --prefix llvm 2>/dev/null)/bin
 CLANG_TIDY ?= $(shell [ -x "$(LLVM_BIN)/clang-tidy" ] && echo "$(LLVM_BIN)/clang-tidy" || echo clang-tidy)
 CLANG_FORMAT ?= $(shell [ -x "$(LLVM_BIN)/clang-format" ] && echo "$(LLVM_BIN)/clang-format" || echo clang-format)
+SYSROOT = $(shell xcrun --show-sdk-path 2>/dev/null)
+endif
 CPPCHECK ?= cppcheck
 
 # macOS SDK sysroot (needed for Homebrew LLVM to find system headers)
-SYSROOT = $(shell xcrun --show-sdk-path 2>/dev/null)
 SYSROOT_FLAG = $(if $(SYSROOT),-isysroot $(SYSROOT),)
 
 # Our source files (excluding vendored, grammars, tree-sitter runtime)
@@ -1324,7 +1355,11 @@ diag:
 # catch a deliberately leaked allocation. So the lane is simply "the normal
 # ASan test build, compiled by Homebrew LLVM instead of Apple clang, run with
 # leak detection turned on".
+ifeq ($(OS),Windows_NT)
+LSAN_LLVM_BIN ?=
+else
 LSAN_LLVM_BIN ?= $(shell brew --prefix llvm 2>/dev/null)/bin
+endif
 LSAN_SUITES ?=
 test-lsan:
 	@echo "=== macOS leak lane: $(shell $(LSAN_LLVM_BIN)/clang --version | head -1) ==="

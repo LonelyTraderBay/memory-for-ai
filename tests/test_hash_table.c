@@ -254,7 +254,7 @@ TEST(ht_foreach_null_fn) {
 TEST(ht_delete_readd_stress) {
     /* Stress backward-shift deletion: add 100, delete all, re-add all */
     CBMHashTable *ht = cbm_ht_create(8);
-    char keys[100][16];
+    char keys[100][24];
     int vals[100];
     for (int i = 0; i < 100; i++) {
         snprintf(keys[i], sizeof(keys[i]), "key_%03d", i);

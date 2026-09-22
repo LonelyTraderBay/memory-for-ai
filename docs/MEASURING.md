@@ -53,7 +53,7 @@ If either count is zero, report "N/A" for that line — do not add pseudocounts.
 
 - One question is a **smoke signal, not a benchmark**. Repeat with 5–10 questions of different shapes (discovery, callers, impact, architecture, cross-service) before making any claim about "your repo".
 - Structural questions are where the graph wins by an order of magnitude. Pure text-lookup questions ("where is this error string printed?") may show little or no advantage — that's expected, and `search_code` exists for that class.
-- **Count the fixed cost**: the tool manifest (`tools/list`, 22 tools) is roughly 9K tokens of per-session overhead in a client that lists all tools. A one-question session can lose to grep on pure tokens; the win amortizes over a real working session. For short sessions, scoped tool profiles (Scout/Verify/Auditor) or CLI mode shrink this cost.
+- **Count the fixed cost**: the tool manifest (`tools/list`, 23 tools) is roughly 9K tokens of per-session overhead in a client that lists all tools. A one-question session can lose to grep on pure tokens; the win amortizes over a real working session. For short sessions, scoped tool profiles (Scout/Verify/Auditor) or CLI mode shrink this cost.
 
 ## 2. Built-in measurement surfaces
 

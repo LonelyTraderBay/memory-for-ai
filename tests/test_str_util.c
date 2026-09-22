@@ -460,7 +460,11 @@ TEST(snprintf_append_fills_exactly) {
 TEST(snprintf_append_overflow) {
     char buf[8];
     int off = 0;
-    CBM_SNPRINTF_APPEND(buf, sizeof(buf), off, "hello world this is way too long");
+    /* Keep the truncation intentional without making GCC's static formatter
+     * warning mistake this test for an unchecked production write. */
+    volatile int text_width = 31;
+    CBM_SNPRINTF_APPEND(buf, sizeof(buf), off, "%.*s", text_width,
+                        "hello world this is way too long");
     /* offset clamped to sizeof(buf) - 1 */
     ASSERT_EQ(off, 7);
     /* buffer is null-terminated and truncated */

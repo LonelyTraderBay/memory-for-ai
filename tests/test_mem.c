@@ -1201,6 +1201,10 @@ TEST(mem_map_attributes_a_known_allocation) {
     enum { PROBE_BLOCKS = 4000, PROBE_SIZE = 3000 };
     cbm_mem_map_t before;
     cbm_mem_map_t after;
+    /* Earlier suites can leave fully free mimalloc pages retained. Purge them
+     * before the probe so the OS residual measures this allocation's commit,
+     * not allocator history from an unrelated test. */
+    cbm_mem_collect();
     ASSERT_TRUE(cbm_mem_map_collect(&before));
 
     /* Allocate through mi_* explicitly. The map walks the mimalloc heap, and
@@ -1274,6 +1278,7 @@ TEST(mem_map_attributes_a_known_allocation) {
         mi_free(kept[i]);
     }
     free(kept);
+    cbm_mem_collect();
     PASS();
 }
 

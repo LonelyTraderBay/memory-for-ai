@@ -643,7 +643,10 @@ static const tool_def_t TOOLS[] = {
 
     {"move_symbol", "Move symbol to another module",
      "Move a top-level Function or Class to another module in the same project and language "
-     "(Python or TypeScript/JavaScript), rewriting every graph-verified import of it. The "
+     "(Python, TypeScript/JavaScript, Go, or C), rewriting every graph-verified import where "
+     "the language has a safe import mechanism. Go moves stay within one package and use "
+     "destination_file; C moves relocate non-static .c definitions and leave header work for "
+     "review. The "
      "importer list comes from IMPORTS edges (HIGH tier): Python 'from old import f' lines and "
      "TS named imports are repointed, multi-name lines are split, and TS relative specifiers "
      "are recomputed per importer. If other symbols in the source file still call the moved "
@@ -661,8 +664,10 @@ static const tool_def_t TOOLS[] = {
      "{\"type\":\"object\",\"properties\":{\"qualified_name\":{\"type\":\"string\",\"description\":"
      "\"Full qualified_name from search_graph\"},\"project\":{\"type\":\"string\"},"
      "\"destination_module\":{\"type\":\"string\",\"description\":\"qualified_name of the "
-     "destination Module node (e.g. myproject.pkg.utils) — the file must exist and be "
-     "indexed\"},\"position\":{\"type\":\"string\",\"enum\":[\"end\",\"after_imports\"],"
+     "destination Module node (e.g. myproject.pkg.utils); for Go, pass the shared package "
+     "qualified_name — the destination file must be supplied separately\"},"
+     "\"destination_file\":{\"type\":\"string\",\"description\":\"Go only: existing "
+     "project-relative .go file in the same package as the source\"},\"position\":{\"type\":\"string\",\"enum\":[\"end\",\"after_imports\"],"
      "\"default\":\"end\"},\"dry_run\":{\"type\":\"boolean\",\"default\":true,\"description\":"
      "\"true (default): return the move plan only, write nothing. false: apply the move.\"},"
      "\"force\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Apply despite "
@@ -11871,6 +11876,13 @@ enum {
 
 enum { MOVE_ROLE_DEST = 0, MOVE_ROLE_SOURCE = 1, MOVE_ROLE_IMPORTER = 2 };
 
+typedef enum {
+    MOVE_LANG_PY = 0,
+    MOVE_LANG_TS,
+    MOVE_LANG_GO, /* same-package moves only: files share package scope */
+    MOVE_LANG_C   /* .c definitions only: importers reference headers, not .c files */
+} move_lang_t;
+
 typedef struct {
     char *rel_path; /* owned */
     char abs_path[CBM_SZ_4K];
@@ -11878,7 +11890,7 @@ typedef struct {
     size_t len;
     cbm_edit_file_state_t state;
     int role;
-    bool is_py;
+    move_lang_t lang;
     char *new_data; /* owned — planned content */
     size_t new_len;
     bool changed;
@@ -11921,21 +11933,95 @@ static const char *move_rc_name(int rc) {
     }
 }
 
-/* Language gate: Python vs TypeScript/JavaScript, by extension. */
-static bool move_lang_of(const char *path, bool *is_py) {
+/* Language gate by extension: Python, TypeScript/JavaScript, Go (.go,
+ * excluding _test.go), C (.c only — headers hold declarations). */
+static bool move_lang_of(const char *path, move_lang_t *out) {
     const char *dot = strrchr(path ? path : "", '.');
     if (!dot) {
         return false;
     }
     if (strcmp(dot, ".py") == 0) {
-        *is_py = true;
+        *out = MOVE_LANG_PY;
         return true;
     }
     if (strcmp(dot, ".ts") == 0 || strcmp(dot, ".tsx") == 0 || strcmp(dot, ".js") == 0 ||
         strcmp(dot, ".jsx") == 0 || strcmp(dot, ".mts") == 0 || strcmp(dot, ".cts") == 0 ||
         strcmp(dot, ".mjs") == 0 || strcmp(dot, ".cjs") == 0) {
-        *is_py = false;
+        *out = MOVE_LANG_TS;
         return true;
+    }
+    if (strcmp(dot, ".go") == 0) {
+        *out = MOVE_LANG_GO;
+        return true;
+    }
+    if (strcmp(dot, ".c") == 0) {
+        *out = MOVE_LANG_C;
+        return true;
+    }
+    return false;
+}
+
+/* True when `path` names a Go test file (suffix _test.go) — those compile in
+ * a separate test binary, so moving symbols across that boundary changes
+ * visibility semantics. */
+static bool move_go_is_test_file(const char *path) {
+    size_t n = strlen(path ? path : "");
+    return n >= 8 && memcmp(path + n - 8, "_test.go", 8) == 0;
+}
+
+/* True when two project-relative paths share the same directory. */
+static bool move_same_dir(const char *a, const char *b) {
+    if (!a || !b) {
+        return false;
+    }
+    const char *sa = strrchr(a, '/');
+    const char *sb = strrchr(b, '/');
+    size_t da = sa ? (size_t)(sa - a) : 0;
+    size_t db = sb ? (size_t)(sb - b) : 0;
+    return da == db && (da == 0 || memcmp(a, b, da) == 0);
+}
+
+static bool move_ident_byte(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '_';
+}
+
+/* Extract the `package <ident>` clause of a Go buffer. */
+static bool move_go_package_clause(const char *data, size_t len, char *out, size_t out_sz) {
+    size_t pos = 0;
+    int lines = 0;
+    while (pos < len && lines < MOVE_SCAN_MAX_LINES) {
+        size_t eol = pos;
+        while (eol < len && data[eol] != '\n') {
+            eol++;
+        }
+        size_t tlen = eol - pos;
+        if (tlen > 0 && data[pos + tlen - 1] == '\r') {
+            tlen--;
+        }
+        size_t s = 0;
+        while (s < tlen && (data[pos + s] == ' ' || data[pos + s] == '\t')) {
+            s++;
+        }
+        const char *l = data + pos + s;
+        size_t rem = tlen - s;
+        if (rem == 0 || (rem >= 2 && l[0] == '/' && l[1] == '/')) {
+            pos = (eol < len) ? eol + 1 : len;
+            lines++;
+            continue;
+        }
+        if (rem <= 8 || memcmp(l, "package ", 8) != 0) {
+            return false; /* first non-comment line is not a package clause */
+        }
+        size_t n = 0;
+        for (size_t i = 8; i < rem && move_ident_byte(l[i]); i++) {
+            if (n + 1 >= out_sz) {
+                return false;
+            }
+            out[n++] = l[i];
+        }
+        out[n] = '\0';
+        return n > 0;
     }
     return false;
 }
@@ -11988,15 +12074,19 @@ static const char *move_eol_of(const char *data, size_t len) {
     return "\n";
 }
 
-/* Byte offset where a new top-of-file import line should be inserted: after
- * the leading run of blank/comment/import lines (and after a Python module
- * docstring when present). Falls back to 0 (very top of file). */
-static size_t move_import_insert_offset(const char *data, size_t len, bool is_py) {
+/* Byte offset where a new top-of-file import line (or a definition with
+ * position=after_imports) should be inserted: after the leading run of
+ * blank/comment/import lines — plus, per language, the Python module
+ * docstring, the Go package clause and import block, and the C preprocessor
+ * run. Falls back to 0 (very top of file). */
+static size_t move_import_insert_offset(const char *data, size_t len, move_lang_t lang) {
     size_t pos = 0;
     size_t insert = 0;
     int lines = 0;
     bool docstring_open = false;
     char docq = '\0';
+    bool go_import_block = false;
+    bool c_comment_open = false;
     while (pos < len && lines < MOVE_SCAN_MAX_LINES) {
         size_t eol = pos;
         while (eol < len && data[eol] != '\n') {
@@ -12026,6 +12116,29 @@ static size_t move_import_insert_offset(const char *data, size_t len, bool is_py
             lines++;
             continue;
         }
+        if (go_import_block) {
+            /* Everything up to the closing ')' of a parenthesized Go import
+             * block belongs to the import run. */
+            if (rem > 0 && l[0] == ')') {
+                go_import_block = false;
+            }
+            insert = next;
+            pos = next;
+            lines++;
+            continue;
+        }
+        if (c_comment_open) {
+            for (size_t i = 0; i + 2 <= rem; i++) {
+                if (l[i] == '*' && l[i + 1] == '/') {
+                    c_comment_open = false;
+                    break;
+                }
+            }
+            insert = next;
+            pos = next;
+            lines++;
+            continue;
+        }
 
         bool blank = rem == 0;
         bool comment = !blank && (l[0] == '#' || (rem >= 2 && l[0] == '/' && l[1] == '/'));
@@ -12033,18 +12146,35 @@ static size_t move_import_insert_offset(const char *data, size_t len, bool is_py
         if (!blank && !comment) {
             if (rem >= 7 && memcmp(l, "import ", 7) == 0) {
                 importish = true;
+                if (lang == MOVE_LANG_GO && rem >= 8 && l[7] == '(') {
+                    go_import_block = true;
+                }
             }
-            if (!importish && is_py && rem >= 5 && memcmp(l, "from ", 5) == 0) {
+            if (!importish && lang == MOVE_LANG_PY && rem >= 5 && memcmp(l, "from ", 5) == 0) {
                 importish = true;
             }
-            if (!importish && !is_py && rem >= 7 && memcmp(l, "export ", 7) == 0 &&
+            if (!importish && lang == MOVE_LANG_TS && rem >= 7 && memcmp(l, "export ", 7) == 0 &&
                 move_contains(l, rem, " from ")) {
                 importish = true;
+            }
+            if (!importish && lang == MOVE_LANG_GO && rem >= 8 && memcmp(l, "package ", 8) == 0) {
+                importish = true; /* the package clause precedes the import run */
+            }
+            if (!importish && lang == MOVE_LANG_C && l[0] == '#') {
+                importish = true; /* preprocessor run (#include, #define, #if…) */
             }
         }
         if (blank || comment || importish) {
             insert = next;
-        } else if (is_py && rem >= 3 &&
+        } else if (lang == MOVE_LANG_C && rem >= 2 && l[0] == '/' && l[1] == '*') {
+            bool closed = move_contains(l + 2, rem - 2, "*/");
+            if (closed) {
+                insert = next;
+            } else {
+                c_comment_open = true;
+                insert = next;
+            }
+        } else if (lang == MOVE_LANG_PY && rem >= 3 &&
                    ((l[0] == '"' && l[1] == '"' && l[2] == '"') ||
                     (l[0] == '\'' && l[1] == '\'' && l[2] == '\''))) {
             docq = l[0];
@@ -12148,7 +12278,7 @@ static bool move_edge_local_name(const char *props, char *out, size_t out_sz) {
 
 /* stat + read a project file into a move ctx. Returns NULL on success, else a
  * static error string. */
-static const char *move_load_file(const char *root, const char *rel, int role, bool is_py,
+static const char *move_load_file(const char *root, const char *rel, int role, move_lang_t lang,
                                   move_file_ctx_t *out) {
     int pn = snprintf(out->abs_path, sizeof(out->abs_path), "%s/%s", root, rel);
     if (pn < 0 || (size_t)pn >= sizeof(out->abs_path)) {
@@ -12170,7 +12300,7 @@ static const char *move_load_file(const char *root, const char *rel, int role, b
         return "out of memory";
     }
     out->role = role;
-    out->is_py = is_py;
+    out->lang = lang;
     out->write_rc = CBM_EDIT_OK;
     return NULL;
 }
@@ -12179,6 +12309,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
     char *qn = cbm_mcp_get_string_arg(args, "qualified_name");
     char *project = get_project_arg(args);
     char *dest_module = cbm_mcp_get_string_arg(args, "destination_module");
+    char *dest_file = cbm_mcp_get_string_arg(args, "destination_file");
     char *position = cbm_mcp_get_string_arg(args, "position");
     bool dry_run = edit_bool_arg_default(args, "dry_run", true);
     bool force = cbm_mcp_get_bool_arg(args, "force");
@@ -12188,11 +12319,31 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         free(qn);
         free(project);
         free(dest_module);
+        free(dest_file);
         free(position);
         return cbm_mcp_text_result("qualified_name and destination_module are required", true);
     }
     bool after_imports = position && strcmp(position, "after_imports") == 0;
     free(position);
+
+    /* Copy destination_file to the stack immediately so the many error exits
+     * below never touch the heap copy again. */
+    char dest_file_buf[CBM_SZ_1K] = {0};
+    if (dest_file) {
+        size_t df_len = strlen(dest_file);
+        if (df_len == 0 || df_len >= sizeof(dest_file_buf) || strstr(dest_file, "..") ||
+            dest_file[0] == '/' || (df_len > 2 && dest_file[1] == ':')) {
+            free(dest_file);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "destination_file must be a project-relative path inside the project", true);
+        }
+        memcpy(dest_file_buf, dest_file, df_len + 1);
+    }
+    free(dest_file);
+    dest_file = NULL;
 
     cbm_store_t *store = resolve_store(srv, project);
     if (!store) {
@@ -12321,9 +12472,113 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         }
     }
 
-    /* Destination module → file. */
+    /* Language gate on the SOURCE file first: it decides how the destination
+     * is resolved (Go addresses a file inside the package, not a module). */
+    move_lang_t src_lang = MOVE_LANG_PY;
+    bool source_is_go_test = node.file_path && move_go_is_test_file(node.file_path);
+    if (!node.file_path || !move_lang_of(node.file_path, &src_lang)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        if (source_is_go_test) {
+            return cbm_mcp_text_result(
+                "Go _test.go files compile in a separate test binary — move_symbol refuses "
+                "them; move the symbol between non-test files instead",
+                true);
+        }
+        return cbm_mcp_text_result(
+            "source language not supported — move_symbol handles Python, TypeScript/JavaScript, "
+            "Go (same-package) and C (.c files; headers hold declarations)",
+            true);
+    }
+    if (src_lang == MOVE_LANG_GO && move_go_is_test_file(node.file_path)) {
+        cbm_edit_free_node(&node);
+        free(qn);
+        free(project);
+        free(dest_module);
+        return cbm_mcp_text_result(
+            "Go _test.go files compile in a separate test binary — move_symbol refuses "
+            "them; move the symbol between non-test files instead",
+            true);
+    }
+
+    /* Destination → file. */
     char dest_rel[CBM_SZ_1K] = {0};
-    {
+    if (src_lang == MOVE_LANG_GO) {
+        /* A Go package is the containing directory: every file in it shares
+         * one module qn, so destination_module cannot name a file. The
+         * package qn must equal the source's (cross-package moves would
+         * rewrite qualifiers at every call site — out of scope), and
+         * destination_file picks the exact file inside the package. */
+        if (!dest_file_buf[0]) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "Go packages span multiple files — pass destination_file (project-relative path "
+                "of an existing .go file in the same package)",
+                true);
+        }
+        move_lang_t df_lang = MOVE_LANG_GO;
+        if (!move_lang_of(dest_file_buf, &df_lang) || df_lang != MOVE_LANG_GO) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result("destination_file must be a .go file", true);
+        }
+        if (move_go_is_test_file(dest_file_buf)) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "destination_file is a _test.go file — move_symbol refuses Go test files", true);
+        }
+        if (!move_same_dir(node.file_path, dest_file_buf)) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "cross-package move refused (%s → %s) — Go moves are same-package only "
+                     "because qualifiers at every call site would need rewriting; move within "
+                     "the package directory or repoint the call sites manually",
+                     node.file_path, dest_file_buf);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
+        /* destination_module must name the shared package: the source's
+         * module qn is its qualified_name minus the trailing ".name". */
+        const char *dot = node.qualified_name ? strrchr(node.qualified_name, '.') : NULL;
+        size_t mlen = dot ? (size_t)(dot - node.qualified_name) : 0;
+        if (!dot || mlen != strlen(dest_module) ||
+            memcmp(node.qualified_name, dest_module, mlen) != 0) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "destination_module must be the package qn shared with the source "
+                     "('%.*s') — Go moves stay inside one package",
+                     dot ? (int)mlen : 0, node.qualified_name ? node.qualified_name : "?");
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
+        snprintf(dest_rel, sizeof(dest_rel), "%s", dest_file_buf);
+    } else {
+        if (dest_file_buf[0]) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "destination_file is only used for Go moves — other languages address the "
+                "destination by destination_module",
+                true);
+        }
         cbm_node_t dest_mod = {0};
         if (cbm_store_find_node_by_qn(store, effective_project, dest_module, &dest_mod) !=
             CBM_STORE_OK) {
@@ -12364,41 +12619,30 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         }
         snprintf(dest_rel, sizeof(dest_rel), "%s", dest_mod.file_path);
         cbm_edit_free_node(&dest_mod);
-    }
 
-    /* Language gate: both files must be Python or both TS/JS. */
-    bool src_py = false;
-    bool dst_py = false;
-    if (!node.file_path || !move_lang_of(node.file_path, &src_py)) {
-        cbm_edit_free_node(&node);
-        free(qn);
-        free(project);
-        free(dest_module);
-        return cbm_mcp_text_result("source language not supported — move_symbol handles Python and "
-                                   "TypeScript/JavaScript only",
-                                   true);
-    }
-    if (!move_lang_of(dest_rel, &dst_py)) {
-        cbm_edit_free_node(&node);
-        free(qn);
-        free(project);
-        free(dest_module);
-        return cbm_mcp_text_result(
-            "destination language not supported — move_symbol handles Python and "
-            "TypeScript/JavaScript only",
-            true);
-    }
-    if (dst_py != src_py) {
-        char msg[CBM_SZ_512];
-        snprintf(msg, sizeof(msg),
-                 "cross-language move refused (%s → %s) — pick a destination file in the same "
-                 "language",
-                 node.file_path, dest_rel);
-        cbm_edit_free_node(&node);
-        free(qn);
-        free(project);
-        free(dest_module);
-        return cbm_mcp_text_result(msg, true);
+        move_lang_t dst_lang = MOVE_LANG_PY;
+        if (!move_lang_of(dest_rel, &dst_lang)) {
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "destination language not supported — move_symbol handles Python, "
+                "TypeScript/JavaScript, Go (same-package) and C (.c files)",
+                true);
+        }
+        if (dst_lang != src_lang) {
+            char msg[CBM_SZ_512];
+            snprintf(msg, sizeof(msg),
+                     "cross-language move refused (%s → %s) — pick a destination file in the "
+                     "same language",
+                     node.file_path, dest_rel);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
     }
     if (strcmp(node.file_path, dest_rel) == 0) {
         cbm_edit_free_node(&node);
@@ -12423,7 +12667,11 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         }
         cbm_node_t collision = {0};
         if (cbm_store_find_node_by_qn(store, effective_project, new_qn, &collision) ==
-            CBM_STORE_OK) {
+                CBM_STORE_OK &&
+            !(src_lang == MOVE_LANG_GO && collision.id == node.id)) {
+            /* Go same-package moves keep the symbol's qn (the module is the
+             * directory), so the lookup finds the symbol itself — that is not
+             * a collision. A DIFFERENT node at the same qn still refuses. */
             char msg[CBM_SZ_1K];
             snprintf(msg, sizeof(msg),
                      "move refused: a symbol already exists at %s (%s, %s:%d-%d) — rename it "
@@ -12438,6 +12686,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
             free(dest_module);
             return cbm_mcp_text_result(msg, true);
         }
+        cbm_edit_free_node(&collision); /* Go self-match path: no collision */
     }
 
     /* Project root. */
@@ -12460,8 +12709,9 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
 
     char old_module[CBM_SZ_1K] = {0};
     char new_module[CBM_SZ_1K] = {0};
-    if (src_py && (!move_py_module_of(node.file_path, old_module, sizeof(old_module)) ||
-                   !move_py_module_of(dest_rel, new_module, sizeof(new_module)))) {
+    if (src_lang == MOVE_LANG_PY &&
+        (!move_py_module_of(node.file_path, old_module, sizeof(old_module)) ||
+         !move_py_module_of(dest_rel, new_module, sizeof(new_module)))) {
         cbm_edit_free_node(&node);
         free(qn);
         free(project);
@@ -12480,9 +12730,9 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
     int file_count = 2;
     move_file_ctx_t *dest = &files[0];
     move_file_ctx_t *source = &files[1];
-    const char *lerr = move_load_file(root_copy, dest_rel, MOVE_ROLE_DEST, src_py, dest);
+    const char *lerr = move_load_file(root_copy, dest_rel, MOVE_ROLE_DEST, src_lang, dest);
     if (!lerr) {
-        lerr = move_load_file(root_copy, node.file_path, MOVE_ROLE_SOURCE, src_py, source);
+        lerr = move_load_file(root_copy, node.file_path, MOVE_ROLE_SOURCE, src_lang, source);
     }
     if (lerr) {
         char msg[CBM_SZ_1K];
@@ -12494,6 +12744,27 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         free(project);
         free(dest_module);
         return cbm_mcp_text_result(msg, true);
+    }
+
+    /* Go: both files must declare the SAME package clause — same directory is
+     * necessary but not sufficient (e.g. package foo next to package main). */
+    if (src_lang == MOVE_LANG_GO) {
+        char src_pkg[CBM_SZ_256];
+        char dst_pkg[CBM_SZ_256];
+        if (!move_go_package_clause(source->data, source->len, src_pkg, sizeof(src_pkg)) ||
+            !move_go_package_clause(dest->data, dest->len, dst_pkg, sizeof(dst_pkg)) ||
+            strcmp(src_pkg, dst_pkg) != 0) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "package mismatch (%s vs %s) — Go moves stay inside one package clause",
+                     src_pkg[0] ? src_pkg : "?", dst_pkg[0] ? dst_pkg : "?");
+            move_free_files(files, file_count);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(msg, true);
+        }
     }
 
     /* Extract the definition body from the source file. */
@@ -12510,6 +12781,36 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
             "definition line range is stale for the on-disk source — run index_repository, "
             "then retry",
             true);
+    }
+
+    /* C: a static definition has file scope — moving it breaks in-file
+     * callers with no import mechanism to repair them. */
+    if (src_lang == MOVE_LANG_C) {
+        size_t fl = 0;
+        while (fl < def_len && def_text[fl] != '\n') {
+            fl++;
+        }
+        bool is_static = false;
+        for (size_t i = 0; i + 6 < fl; i++) {
+            if (memcmp(def_text + i, "static", 6) == 0 &&
+                (i == 0 || !move_ident_byte(def_text[i - 1])) &&
+                !move_ident_byte(def_text[i + 6])) {
+                is_static = true;
+                break;
+            }
+        }
+        if (is_static) {
+            free(def_text);
+            move_free_files(files, file_count);
+            cbm_edit_free_node(&node);
+            free(qn);
+            free(project);
+            free(dest_module);
+            return cbm_mcp_text_result(
+                "move refused: the definition is 'static' (file-local) — in-file callers would "
+                "break. Declare it in a shared header and drop 'static' first",
+                true);
+        }
     }
 
     /* Plan the destination buffer. */
@@ -12540,7 +12841,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 memcpy(ins + p, eol, elen);
                 p += elen;
                 ins[p] = '\0';
-                size_t off = move_import_insert_offset(dest->data, dest->len, src_py);
+                size_t off = move_import_insert_offset(dest->data, dest->len, src_lang);
                 rc = move_splice_at(dest->data, dest->len, off, ins, p, &dest->new_data,
                                     &dest->new_len);
                 free(ins);
@@ -12579,14 +12880,22 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
     }
     source->changed = true;
 
-    /* Internal callers (same file as the moved symbol) still need it — add a
-     * re-import line to the source file. The evidence is a CALLS edge whose
-     * source lives in the same file; recursion (the symbol calling itself) is
-     * excluded because the body moves together with its own call sites. */
+    cbm_sb_t review_sb;
+    cbm_sb_init(&review_sb);
+    int review_items = 0;
+
+    /* Internal callers (same file as the moved symbol) still need it. Python
+     * and TS get a re-import line spliced into the source file (the evidence
+     * is a CALLS edge whose source lives in the same file; recursion — the
+     * symbol calling itself — is excluded because the body moves together
+     * with its own call sites). Go moves stay inside one package, so in-file
+     * callers resolve unchanged. C has no import mechanism to repair: a
+     * remaining in-file caller becomes a REVIEW item telling the agent to
+     * keep a declaration visible. */
     {
-        bool need_reimport = false;
+        int internal_callers = 0;
         static const char *call_types[] = {"CALLS", "ASYNC_CALLS", "HTTP_CALLS"};
-        for (size_t t = 0; t < sizeof(call_types) / sizeof(call_types[0]) && !need_reimport; t++) {
+        for (size_t t = 0; t < sizeof(call_types) / sizeof(call_types[0]); t++) {
             cbm_edge_t *ce = NULL;
             int cn = 0;
             if (cbm_store_find_edges_by_target_type(store, node.id, call_types[t], &ce, &cn) ==
@@ -12602,18 +12911,27 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                                         strcmp(caller.file_path, node.file_path) == 0;
                         cbm_edit_free_node(&caller);
                         if (internal) {
-                            need_reimport = true;
-                            break;
+                            internal_callers++;
                         }
                     }
                 }
                 cbm_store_free_edges(ce, cn);
             }
         }
-        if (need_reimport) {
+        if (internal_callers > 0 && src_lang == MOVE_LANG_C) {
+            char msg[CBM_SZ_1K];
+            snprintf(msg, sizeof(msg),
+                     "  %s: %d in-file caller(s) still reference %s after the move — keep a "
+                     "declaration visible (e.g. in a shared header included by both files)\n",
+                     node.file_path, internal_callers, name);
+            cbm_sb_append(&review_sb, msg);
+            review_items++;
+        }
+        if (internal_callers > 0 &&
+            (src_lang == MOVE_LANG_PY || src_lang == MOVE_LANG_TS)) {
             const char *eol = move_eol_of(source->new_data, source->new_len);
             char line[CBM_SZ_1K];
-            if (src_py) {
+            if (src_lang == MOVE_LANG_PY) {
                 snprintf(line, sizeof(line), "from %s import %s%s", new_module, name, eol);
             } else {
                 char spec[CBM_SZ_1K];
@@ -12624,11 +12942,13 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                     free(qn);
                     free(project);
                     free(dest_module);
+                    free(cbm_sb_finish(&review_sb));
                     return cbm_mcp_text_result("failed to compute the re-import path", true);
                 }
                 snprintf(line, sizeof(line), "import {%s} from \"%s\";%s", name, spec, eol);
             }
-            size_t off = move_import_insert_offset(source->new_data, source->new_len, src_py);
+            size_t off =
+                move_import_insert_offset(source->new_data, source->new_len, src_lang);
             char *merged = NULL;
             size_t merged_len = 0;
             if (move_splice_at(source->new_data, source->new_len, off, line, strlen(line), &merged,
@@ -12638,6 +12958,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 free(qn);
                 free(project);
                 free(dest_module);
+                free(cbm_sb_finish(&review_sb));
                 return cbm_mcp_text_result("failed to plan the source re-import", true);
             }
             free(source->new_data);
@@ -12652,10 +12973,11 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
      * edges into the source MODULE node (TS/JS named imports and Python plain
      * `import mod` resolve to the module). Files are deduped between the two
      * sweeps — a module-edge importer whose import line doesn't match is
-     * listed as REVIEW (plain import / attribute use), never rewritten. */
-    cbm_sb_t review_sb;
-    cbm_sb_init(&review_sb);
-    int review_items = 0;
+     * listed as REVIEW (plain import / attribute use), never rewritten.
+     * Go moves stay inside the package, so importers need nothing and the
+     * sweep is skipped entirely. C importers reference headers, not the .c
+     * file — a direct edge into the source .c module is suspicious and is
+     * listed as REVIEW without rewriting. */
     {
         int64_t import_targets[2] = {node.id, 0};
         cbm_node_t *snodes = NULL;
@@ -12671,7 +12993,8 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
             cbm_store_free_nodes(snodes, sn_count);
         }
         for (int t = 0; t < 2; t++) {
-            if (import_targets[t] == 0) {
+            if (import_targets[t] == 0 || src_lang == MOVE_LANG_GO) {
+                /* Go moves stay inside one package — no import changes. */
                 continue;
             }
             cbm_edge_t *imp_edges = NULL;
@@ -12712,12 +13035,28 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                     cbm_edit_free_node(&importer);
                     continue;
                 }
+                if (src_lang == MOVE_LANG_C) {
+                    /* C importers reference headers, never the defining .c
+                     * file. A direct IMPORTS edge into the source module is
+                     * suspicious (e.g. #include "a.c") — list it for review,
+                     * rewrite nothing. */
+                    char msg[CBM_SZ_1K];
+                    snprintf(msg, sizeof(msg),
+                             "  %s: imports the source file directly — C moves rewrite no "
+                             "includes; verify this file after the move\n",
+                             irel);
+                    cbm_sb_append(&review_sb, msg);
+                    review_items++;
+                    cbm_edit_free_node(&importer);
+                    continue;
+                }
                 char lname[CBM_SZ_256];
                 bool aliased =
                     move_edge_local_name(imp_edges[i].properties_json, lname, sizeof(lname)) &&
                     strcmp(lname, name) != 0;
                 move_file_ctx_t *rec = &files[file_count];
-                const char *ferr = move_load_file(root_copy, irel, MOVE_ROLE_IMPORTER, src_py, rec);
+                const char *ferr =
+                    move_load_file(root_copy, irel, MOVE_ROLE_IMPORTER, src_lang, rec);
                 if (ferr) {
                     char msg[CBM_SZ_1K];
                     snprintf(msg, sizeof(msg),
@@ -12732,7 +13071,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 cbm_edit_free_node(&importer);
 
                 int rrc;
-                if (src_py) {
+                if (src_lang == MOVE_LANG_PY) {
                     rrc = cbm_edit_move_rewrite_python_imports(rec->data, rec->len, old_module,
                                                                new_module, name, &rec->new_data,
                                                                &rec->new_len, &rec->py);
@@ -12807,7 +13146,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 }
                 /* Untouched-reference tallies → REVIEW lines. */
                 char msg[CBM_SZ_1K];
-                if (src_py) {
+                if (src_lang == MOVE_LANG_PY) {
                     if (rec->py.plain_import_refs > 0) {
                         snprintf(msg, sizeof(msg),
                                  "  %s: %d plain 'import mod' line(s) — attribute uses like "
@@ -12881,8 +13220,9 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
 
     /* Circular check: the destination file must not already import the source
      * module — after the move the source may import the destination (internal
-     * callers), which would close a cycle. */
-    {
+     * callers), which would close a cycle. Only Python/TS change imports at
+     * all; Go stays in-package and C rewrites nothing. */
+    if (src_lang == MOVE_LANG_PY || src_lang == MOVE_LANG_TS) {
         cbm_node_t *dnodes = NULL;
         int dn = 0;
         if (cbm_store_find_nodes_by_file(store, effective_project, dest_rel, &dnodes, &dn) ==
@@ -12977,8 +13317,10 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                          node.start_line, node.end_line,
                          rec->reimport ? " + re-import from destination (internal callers)" : "");
             } else if (rec->changed) {
-                int rw = src_py ? rec->py.import_lines_rewritten : rec->ts.import_lines_rewritten;
-                int sp = src_py ? rec->py.import_lines_split : rec->ts.import_lines_split;
+                int rw = src_lang == MOVE_LANG_PY ? rec->py.import_lines_rewritten
+                                                  : rec->ts.import_lines_rewritten;
+                int sp = src_lang == MOVE_LANG_PY ? rec->py.import_lines_split
+                                                  : rec->ts.import_lines_split;
                 snprintf(num, sizeof(num), "    %s [IMPORTER] rewrite %d import line(s)%s\n",
                          rec->rel_path, rw, sp > 0 ? " (multi-name lines split)" : "");
             } else {
@@ -13126,7 +13468,9 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
     free(reindex_result);
 
     /* Post-reindex verification: the symbol resolves at its destination qn
-     * and its inbound IMPORTS edges are counted on the fresh graph. */
+     * and its inbound IMPORTS edges are counted on the fresh graph. Go keeps
+     * the qn across a same-package move, so verification additionally checks
+     * the symbol now lives in the destination file. */
     bool new_resolves = false;
     int new_import_edges = 0;
     {
@@ -13134,7 +13478,8 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
         if (fresh) {
             cbm_node_t nn = {0};
             if (cbm_store_find_node_by_qn(fresh, effective_project, new_qn, &nn) == CBM_STORE_OK) {
-                new_resolves = true;
+                new_resolves = src_lang != MOVE_LANG_GO ||
+                               (nn.file_path && strcmp(nn.file_path, dest_rel) == 0);
                 cbm_edge_t *ie = NULL;
                 int ic = 0;
                 if (cbm_store_find_edges_by_target_type(fresh, nn.id, "IMPORTS", &ie, &ic) ==

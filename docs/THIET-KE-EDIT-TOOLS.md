@@ -209,7 +209,7 @@ LSP rename "tin mù" rằng language server thấy hết references. memory-for-
 | 5 | `move_symbol` (scope chặt theo §11: cùng ngôn ngữ, Python+TS trước, không re-export/circular) | ~3–4 tuần | Phase 3 + số liệu A/B | 🔜 GO — chưa bắt đầu |
 | — | `inline_symbol` | — | Demand evidence | ⏸️ NO-GO, revisit theo §11 |
 
-Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `docs/llms.txt`, và số "18 tools" → tăng tương ứng ở README (hiện tại: 22 tools). Unit test C cho cả 4 tool nằm trong `tests/test_edit.c` (suite `edit`, 36 test); integration + fault-injection trong `tests/test_edit_integration.c` (suite `edit_integration`, 11 test); logic parity test (không cần compiler) ở `build/edit_surgery_logic_test.py` (27 ca).
+Sau mỗi phase: cập nhật `docs/AGENT_GUIDE.md` (tool catalog + playbook), `docs/llms.txt`, và số "18 tools" → tăng tương ứng ở README (hiện tại: 23 tools). Unit test C cho cả 4 tool nằm trong `tests/test_edit.c` (suite `edit`, 36 test); integration + fault-injection trong `tests/test_edit_integration.c` (suite `edit_integration`, 11 test); logic parity test (không cần compiler) ở `build/edit_surgery_logic_test.py` (27 ca).
 
 ## 10. Rủi ro chính & giảm thiểu
 

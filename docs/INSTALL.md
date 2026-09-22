@@ -177,7 +177,7 @@ If you prefer not to use `install` at all:
 }
 ```
 
-Add to `~/.claude.json` (user scope) or the project `.mcp.json`; for a per-project pinned server, append `"--scope=<repo>"` to `args`. Restart the agent and verify with `/mcp` — you should see `memory-for-ai` with 22 tools. Quick transport check: `echo '{}' | /path/to/binary` must print JSON.
+Add to `~/.claude.json` (user scope) or the project `.mcp.json`; for a per-project pinned server, append `"--scope=<repo>"` to `args`. Restart the agent and verify with `/mcp` — you should see `memory-for-ai` with 23 tools. Quick transport check: `echo '{}' | /path/to/binary` must print JSON.
 
 ## Containers and CI
 
@@ -230,7 +230,7 @@ scripts/build.sh                  # without UI (development)
 # → build/c/memory-for-ai  (.exe on Windows)
 ```
 
-**Windows toolchain notes.** CI pins MSYS2 **CLANG64** (`mingw-w64-clang-x86_64-toolchain`); a standalone MinGW GCC (e.g. WinLibs 16.x) also builds cleanly. Either way you need zlib (`pacman -S mingw-w64-clang-x86_64-zlib`, or build zlib once and point the compiler at it) and `make` (`mingw32-make`). Pass `SANITIZE=` on Windows — GCC/MinGW has no AddressSanitizer, so the test build's default sanitizer flags do not apply there. GCC 14+ turns `-Wincompatible-pointer-types` and friends into hard errors; the tree is clean under GCC 16.2 / clang as shipped.
+**Windows toolchain notes.** CI pins MSYS2 **CLANG64** (`mingw-w64-clang-x86_64-toolchain`); a standalone MinGW GCC (e.g. WinLibs 16.x) also builds cleanly. Either way you need zlib (`pacman -S mingw-w64-clang-x86_64-zlib`, or build zlib once and point the compiler at it) and `make` (`mingw32-make`). Pass `SANITIZE=` on Windows when the compiler's sanitizer runtime archives are absent; the bundled MinGW GCC currently has no usable AddressSanitizer/UBSan runtime. Run the full unsanitized native runner for Windows behavior, and use WSL/Linux/CI for sanitizer coverage. GCC 14+ turns `-Wincompatible-pointer-types` and friends into hard errors; the tree is clean under GCC 16.2 / clang as shipped.
 
 Test suite (the same entry CI gates run):
 

@@ -911,6 +911,10 @@ TEST(mcp_tools_list_latest_metadata) {
     ASSERT_NOT_NULL(strstr(json, "\"title\":\"Search graph\""));
     ASSERT_NOT_NULL(strstr(json, "\"title\":\"Index repository\""));
     ASSERT_NOT_NULL(strstr(json, "\"title\":\"Check index coverage\""));
+    /* move_symbol supports Go package moves through an explicit destination
+     * file because a Go package spans multiple source files. Keep that
+     * capability discoverable in the MCP input schema. */
+    ASSERT_NOT_NULL(strstr(json, "\"destination_file\""));
     /* No tool may declare an outputSchema. The blanket permissive schema
      * ({"type":"object","additionalProperties":true}) carried zero information
      * for clients, but its presence made spec-compliant clients read

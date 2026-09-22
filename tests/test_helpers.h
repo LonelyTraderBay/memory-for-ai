@@ -136,7 +136,10 @@ static inline int th_rmtree(const char *path) {
         if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
             continue;
         }
-        char child[1024];
+        /* A directory entry can be close to CBM_DIRENT_NAME_MAX while the
+         * parent path is also long. Keep enough room for both components and
+         * the separator/NUL instead of relying on truncation. */
+        char child[4096];
         snprintf(child, sizeof(child), "%s/%s", path, entry->name);
         if (entry->is_dir) {
             if (th_rmtree(child) != 0) {

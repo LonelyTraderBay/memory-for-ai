@@ -42,8 +42,10 @@ static int g_full_edges = 0;
 static int g_full_calls = 0;
 static int g_full_imports = 0;
 
-/* Performance: track peak RSS and timing per test phase */
-static size_t g_rss_before_full = 0;
+/* Performance: track peak RSS and timing per test phase. mimalloc exposes a
+ * process-lifetime peak, so keep the peak observed before this test as the
+ * baseline; otherwise an earlier suite can be charged to this index run. */
+static size_t g_peak_before_full = 0;
 static double g_full_index_ms = 0;
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
@@ -284,7 +286,7 @@ static int incremental_setup(void) {
     if (!g_srv)
         return -1;
 
-    g_rss_before_full = cbm_mem_rss();
+    g_peak_before_full = cbm_mem_peak_rss();
 
     return 0;
 }
@@ -349,7 +351,8 @@ TEST(incr_full_index) {
      * this index settled at ~2050-2072MB (measured across CI runs), so the old
      * 2048 limit sat right on the line and flaked; 2304 restores headroom while a
      * genuine leak (GBs over) still trips it. */
-    size_t rss_delta_mb = peak_mb - (g_rss_before_full / (1024 * 1024));
+    size_t peak_before_mb = g_peak_before_full / (1024 * 1024);
+    size_t rss_delta_mb = peak_mb > peak_before_mb ? peak_mb - peak_before_mb : 0;
     int rss_limit_mb = 2304;
 #ifndef _WIN32
     if (sysconf(_SC_PAGESIZE) >= 16384) {

@@ -21,7 +21,8 @@
 
 ## Docs
 
-- [Agent operating guide](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AGENT_GUIDE.md): the complete manual for AI agents — mental model, all 22 tools with exact semantics, task→tool playbooks, correctness protocol (coverage/confidence/staleness), per-project tuning (.cbmignore, extra extensions, index modes), project isolation, CI/containers, failure modes.
+- [Agent operating guide](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/AGENT_GUIDE.md): the complete manual for AI agents — mental model, all 23 tools with exact semantics, task→tool playbooks, correctness protocol (coverage/confidence/staleness), per-project tuning (.cbmignore, extra extensions, index modes), project isolation, CI/containers, failure modes.
+- [Development standard](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/DEVELOPMENT-STANDARD.md): warning-as-error policy, verification matrix, minimal-change rules, and documentation synchronization checklist.
 - [Installation reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/INSTALL.md): every install path — one-liners, per-project mode, package managers, manual MCP config, CI/containers, update/uninstall, build from source, artifact verification.
 - [Configuration reference](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/CONFIGURATION.md): config files, config-set runtime keys, environment variables, scoped sessions, daemon rendezvous.
 - [Measuring real effectiveness](https://github.com/LonelyTraderBay/memory-for-ai/blob/main/docs/MEASURING.md): 15-minute spot check, built-in measurement surfaces, rigorous A/B protocol with formulas and reporting schema.

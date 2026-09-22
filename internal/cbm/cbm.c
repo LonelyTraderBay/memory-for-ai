@@ -1421,7 +1421,16 @@ CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLangua
                     TSInputEncodingUTF8,
                     NULL,
                 };
+                /* The preprocessed parse is part of the same per-file
+                 * operation. Reuse the original deadline instead of giving
+                 * this secondary pass an unbounded budget. If the first pass
+                 * already consumed the budget, tree-sitter will cancel at its
+                 * next progress callback and the file degrades gracefully. */
                 TSParseOptions pp_opts = {0};
+                if (timeout_micros > 0) {
+                    pp_opts.payload = &deadline_ns;
+                    pp_opts.progress_callback = cbm_timeout_cb;
+                }
                 TSTree *pp_tree =
                     ts_parser_parse_with_options(pp_parser, NULL, pp_ts_input, pp_opts);
                 if (pp_tree) {

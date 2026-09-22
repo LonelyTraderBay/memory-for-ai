@@ -2,6 +2,8 @@
 
 Contributions are welcome. This guide covers setup, testing, and PR guidelines.
 
+The normative coding rules are in [AGENTS.md](AGENTS.md). The human-readable checklist is in [docs/DEVELOPMENT-STANDARD.md](docs/DEVELOPMENT-STANDARD.md); read both before making a cross-cutting change.
+
 > **Important**: This project is a **pure C binary** (rewritten from Go in v0.5.0). Please submit C code, not Go. Go PRs may be ported but cannot be merged directly.
 
 ## Build from Source
@@ -39,6 +41,8 @@ scripts/lint.sh
 ```
 
 Runs clang-tidy, cppcheck, and clang-format. All must pass before committing (also enforced by pre-commit hook).
+
+The native build treats warnings as errors. Fix warnings at the source; do not lower `-Werror` or hide new warnings with casts, pragmas, or blanket `-Wno-*` flags. When a public tool, schema, command, or limitation changes, update the README, agent guide, `docs/llms.txt`, and product metadata as applicable.
 
 ## Run Security Audit
 

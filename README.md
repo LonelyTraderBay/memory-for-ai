@@ -96,7 +96,8 @@ Measured on Apple M3 Pro (see [docs/MEASURING.md](docs/MEASURING.md) to reproduc
 
 | Document | What it covers | Primary audience |
 |---|---|---|
-| [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | Operating manual: mental model, all 22 tools, task→tool playbooks, correctness protocol, per-project tuning | AI coding agents (and their humans) |
+| [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | Operating manual: mental model, all 23 tools, task→tool playbooks, correctness protocol, per-project tuning | AI coding agents (and their humans) |
+| [AGENTS.md](AGENTS.md) / [docs/DEVELOPMENT-STANDARD.md](docs/DEVELOPMENT-STANDARD.md) | Normative AI coding rules, warning policy, verification matrix, and documentation-sync checklist | Contributors and AI coding agents |
 | [docs/INSTALL.md](docs/INSTALL.md) | Machine preflight (platform, disk, PowerShell/git on PATH, old-version check), every install path: one-liners, per-project, package managers, containers/CI, update/uninstall, build from source, artifact verification | Whoever installs |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config files, `config set` keys, environment variables, scoped sessions | Operators, CI authors |
 | [docs/MEASURING.md](docs/MEASURING.md) | Measuring answer quality, latency/stability, and token/tool-call savings on your repo | Evaluators |

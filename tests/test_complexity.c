@@ -205,7 +205,7 @@ static int cx_copy_file(const char *src, const char *dst) {
 
 static int cx_build_corpus(const char *root, int k_modules) {
     char dir[1024];
-    char path[1200];
+    char path[4096];
     for (int t = 0; t < CX_TEMPLATE_COUNT; t++) {
         const CxTemplate *tp = &CX_TEMPLATES[t];
         for (int m = 0; m < k_modules; m++) {
@@ -256,7 +256,7 @@ static int cx_build_corpus(const char *root, int k_modules) {
                 if (th_mkdir_p(dir) != 0) {
                     continue;
                 }
-                char src[1024];
+                char src[2048];
                 snprintf(src, sizeof(src), "%s/%s", fixdir, entry->name);
                 snprintf(path, sizeof(path), "%s/%s", dir, entry->name);
                 (void)cx_copy_file(src, path);

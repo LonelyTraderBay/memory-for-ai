@@ -65,7 +65,7 @@ Full transitive inbound trace of `cbm_fopen`: **11 calls / 17,290 bytes ≈ 4.3K
 
 1. **Tokens are estimated** as bytes ÷ 4 of tool output — not the client’s real usage meter. Direction and rough magnitude are trustworthy; the second significant digit is not.
 2. **Not blind:** the same agent ran both conditions and graded them. Ground truth was re-verified against source at the frozen SHA, but grader independence is the strongest reason to distrust the 8/8 vs 6/8 gap.
-3. **Fixed cost not counted:** the 22-tool manifest costs ~9K tokens per session in clients that list all tools. A one-question session can lose to grep on pure tokens; the advantage amortizes over a real working session. (Mitigations: Scout/Verify/Auditor scoped tool profiles, or CLI mode as used here.)
+3. **Fixed cost not counted:** the 23-tool manifest costs ~9K tokens per session in clients that list all tools. A one-question session can lose to grep on pure tokens; the advantage amortizes over a real working session. (Mitigations: Scout/Verify/Auditor scoped tool profiles, or CLI mode as used here.)
 4. **Question mix favors structure by design** — 6 of 8 questions are structural, matching the product’s target workload. Q4/Q6 are the honesty controls.
 5. Published-paper comparison (arXiv:2603.27277, 31 repos, blinded): 10× fewer tokens, 2.1× fewer tool calls, 83% vs 92% answer quality for the file-by-file baseline. The graph **locates**; it does not replace reading code when you need deep understanding.
 

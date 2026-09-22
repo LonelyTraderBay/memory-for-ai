@@ -176,6 +176,19 @@ TEST(ac_null_input) {
     PASS();
 }
 
+TEST(ac_rejects_invalid_alphabet_map) {
+    const char *patterns[] = {"a"};
+    int lengths[] = {1};
+    uint8_t alpha_map[256] = {0};
+    alpha_map[(unsigned char)'a'] = 1;
+    alpha_map[255] = 2; /* outside the declared alphabet [0, 2) */
+
+    CBMAutomaton *ac = cbm_ac_build(patterns, lengths, 1, alpha_map, 2);
+    ASSERT_NULL(ac);
+    ASSERT_NULL(cbm_ac_build(patterns, lengths, 1, NULL, 2));
+    PASS();
+}
+
 /* --- Ported from ac_test.go: TestACScanString --- */
 TEST(ac_scan_string) {
     const char *patterns[] = {"foo", "bar"};
@@ -468,6 +481,43 @@ TEST(ac_batch_scan_detailed) {
     PASS();
 }
 
+TEST(ac_batch_scan_preserves_duplicate_extra_patterns) {
+    /* Patterns above the 64-bit fast path must remain distinct even when they
+     * terminate in the same trie state. The old per-state single-value list
+     * overwrote the first pattern in this case. */
+    const int count = 66;
+    const char *patterns[count];
+    int lengths[count];
+    for (int i = 0; i < 64; i++) {
+        patterns[i] = "unused";
+        lengths[i] = 6;
+    }
+    patterns[64] = "shared";
+    patterns[65] = "shared";
+    lengths[64] = lengths[65] = 6;
+
+    CBMAutomaton *ac = cbm_ac_build(patterns, lengths, count, NULL, 256);
+    ASSERT_NOT_NULL(ac);
+
+    const char names[] = "shared\0shared";
+    int offsets[] = {0, 7};
+    int name_lengths[] = {6, 6};
+    CBMMatchResult matches[8];
+    int n = cbm_ac_scan_batch(ac, names, offsets, name_lengths, 2, matches, 8);
+
+    ASSERT_EQ(n, 4);
+    ASSERT_EQ(matches[0].name_index, 0);
+    ASSERT_EQ(matches[1].name_index, 0);
+    ASSERT_EQ(matches[2].name_index, 1);
+    ASSERT_EQ(matches[3].name_index, 1);
+    for (int i = 0; i < n; i += 2) {
+        ASSERT((matches[i].pattern_id == 64 && matches[i + 1].pattern_id == 65) ||
+               (matches[i].pattern_id == 65 && matches[i + 1].pattern_id == 64));
+    }
+    cbm_ac_free(ac);
+    PASS();
+}
+
 SUITE(ac) {
     RUN_TEST(ac_build_single);
     RUN_TEST(ac_build_multiple);
@@ -480,6 +530,7 @@ SUITE(ac) {
     RUN_TEST(ac_batch_scan);
     RUN_TEST(ac_table_bytes);
     RUN_TEST(ac_null_input);
+    RUN_TEST(ac_rejects_invalid_alphabet_map);
     RUN_TEST(ac_scan_string);
     RUN_TEST(ac_free_double_call);
     RUN_TEST(ac_scan_lz4_bitmask);
@@ -489,4 +540,5 @@ SUITE(ac) {
     RUN_TEST(ac_http_patterns);
     RUN_TEST(ac_compact_alphabet_extended);
     RUN_TEST(ac_batch_scan_detailed);
+    RUN_TEST(ac_batch_scan_preserves_duplicate_extra_patterns);
 }

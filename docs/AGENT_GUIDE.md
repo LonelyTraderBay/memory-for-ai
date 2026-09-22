@@ -1,6 +1,8 @@
 # Agent operating guide — memory-for-ai
 
-**Audience.** You are an AI coding agent (or the person configuring one) and the memory-for-ai MCP server is available in your session. This document is the complete operating manual: what the graph is, what each of the 22 tools does exactly, which tool to pick for which task, how to avoid wrong conclusions, and how to fit the index to your specific project.
+**Audience.** You are an AI coding agent (or the person configuring one) and the memory-for-ai MCP server is available in your session. This document is the complete operating manual: what the graph is, what each of the 23 tools does exactly, which tool to pick for which task, how to avoid wrong conclusions, and how to fit the index to your specific project.
+
+For repository changes, follow the normative [AGENTS.md](../AGENTS.md) and the human-readable [development standard](DEVELOPMENT-STANDARD.md). In particular, keep warning-as-error builds green, verify mutation tools after writes, and synchronize public documentation when schemas or behaviour change.
 
 **How to read.** Sections 1–2 get you productive in five minutes. Section 3 (tool catalog) and Section 4 (task playbook) are the reference you will return to. Section 7 (correctness protocol) is mandatory before you make claims like "X is never called" or "this list is complete".
 
@@ -27,7 +29,7 @@
 
 After indexing, note the response's coverage fields (`skipped`, `parse_partial`, `excluded`) — see Section 7 before trusting completeness.
 
-## 3. Tool catalog (22 tools)
+## 3. Tool catalog (23 tools)
 
 Annotations: 🌱 mutates state · everything else is read-only against the graph.
 
@@ -79,6 +81,8 @@ Annotations: 🌱 mutates state · everything else is read-only against the grap
 | `move_symbol` 🌱 | Move a top-level Function/Class to another module in the same project and language (Python or TS/JS), rewriting every **graph-verified import** (IMPORTS edges = HIGH tier): Python `from old import f` lines and TS named imports are repointed, multi-name lines are split, TS relative specifiers are recomputed per importer. When same-file callers remain, a re-import line is added to the source file automatically. `destination_module` is the target Module's qualified_name (the file must exist and be indexed — the tool never creates files); `position`: `end` (default) / `after_imports`. Dry-run plan: per-file actions + REVIEW items (aliases, plain/star/dynamic imports, re-exports/barrels, unmatched specifiers, circular imports) — applying with any REVIEW item requires `force=true`. Guards: nested-symbol refusal, destination collision (rename it first), same-language check, circular-import detection, drift/mtime re-checks, `expected_files` to pin a plan. Writes go destination → source → importers, each backed up; a failed write stops the sequence (**PARTIAL** — revert per file with `undo_edit`). After re-index the response verifies the symbol resolves at its new qualified_name and counts its new inbound IMPORTS edges. Workflow: `search_graph` → `move_symbol` (review plan) → `move_symbol(dry_run=false, expected_files=<N>)`. |
 | `undo_edit` 🌱 | Restore a file from the most recent backup created by an `edit_symbol` / `delete_symbol` / `rename_symbol` / `move_symbol` write. `path` is project-relative (`..` and absolute paths rejected). **Dry-run by default**: shows which backup would be restored (current vs backup size/lines). The restore is atomic, the **pre-undo content is itself backed up** (undo is undoable), the file is byte-compared against the backup afterwards, and the project is re-indexed. Fails cleanly when no backup exists for the file. |
 
+`move_symbol` also supports same-package Go moves when `destination_file` names an existing non-test `.go` file, and non-static C definition moves between `.c` files. Go keeps the package qualified name and does not rewrite imports; C moves report header and in-file declaration work as REVIEW items.
+
 ## 4. Task → tool playbook
 
 | You need to… | Do this | Notes |
@@ -99,7 +103,7 @@ Annotations: 🌱 mutates state · everything else is read-only against the grap
 | Edit a function's source | `edit_symbol(qualified_name=…, action="replace_body", content=…)` → review plan → re-run with `dry_run=false` | Plan first; the tool refuses stale ranges, nested-symbol destruction (without `force`), and externally modified files. |
 | Delete dead code safely | `delete_symbol(qualified_name=…)` → review plan (callers + orphan candidates) → re-run with `dry_run=false` | Refused while callers exist unless `force=true`; orphan candidates feed the next deletion round. |
 | Rename a function across the repo | `rename_symbol(qualified_name=…, new_name=…)` → review tier plan → re-run with `dry_run=false, expected_counts=<N>` | HIGH tier auto-applies; inspect REVIEW samples before adding `force=true`. Verify the response's post-reindex checks. |
-| Move a function to another module | `move_symbol(qualified_name=…, destination_module="proj.pkg.utils")` → review per-file plan + REVIEW items → re-run with `dry_run=false, expected_files=<N>` | Python + TS/JS only; the destination file must exist and be indexed. Inspect REVIEW items (aliases, dynamic imports, barrels, circular risk) before adding `force=true`. A PARTIAL response lists backups — `undo_edit` per written file to revert. |
+| Move a function to another module | `move_symbol(qualified_name=…, destination_module="proj.pkg.utils")` → review per-file plan + REVIEW items → re-run with `dry_run=false, expected_files=<N>` | Python/TS/JS rewrite verified imports; Go additionally needs `destination_file` in the same package; C moves non-static `.c` definitions and leaves header work for review. Inspect REVIEW items before adding `force=true`. A PARTIAL response lists backups — `undo_edit` per written file to revert. |
 | Revert a mistaken edit | `undo_edit(path="src/foo.c")` → review the restore plan → re-run with `dry_run=false` | Restores the latest backup made by the edit tools; the pre-undo content is backed up too, so the undo itself can be undone. |
 | Recall what the runtime actually did | `get_runtime_traces(project=…)` after your instrumentation `ingest_traces` | Static graph = what code says; sidecar = what ran. |
 | Ship the index with the repo | `index_repository(persistence=true)` → commit `.memory-for-ai/graph.db.zst` | Section 9. |
