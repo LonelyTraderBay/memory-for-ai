@@ -75,7 +75,8 @@ source "$ROOT/scripts/env.sh"
 source "$ROOT/scripts/path-safety.sh"
 
 if [ "$OS" != windows ] || [ "$ARCH" != x86_64 ] || [ "${MSYSTEM:-}" != CLANG64 ]; then
-    echo "Only native Windows x64 with MSYS2 CLANG64 is supported." >&2
+    printf 'Only native Windows x64 with MSYS2 CLANG64 is supported (detected os=%s arch=%s MSYSTEM=%s).\n' \
+        "$OS" "$ARCH" "${MSYSTEM:-<unset>}" >&2
     exit 2
 fi
 
