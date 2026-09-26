@@ -202,6 +202,7 @@ fi
 # exercised by scripts/test-windows.ps1.
 echo "=== Benchmark failure contracts ==="
 python3 "$ROOT/tests/test_benchmark_contract.py"
+python3 "$ROOT/tests/test_incremental_build.py" --cc "${CC:-cc}"
 
 echo "=== Step 0a: build directory safety contract ==="
 bash "$ROOT/tests/test_build_dir_safety.sh"
