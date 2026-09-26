@@ -7647,12 +7647,11 @@ static int where_append(char *where, int where_sz, int wlen, int *nparams, const
 
 /* Bind a text parameter and increment the bind index. */
 static void where_bind_text(search_bind_t *binds, int *bind_idx, const char *val) {
-    /* Overflow guard: binds[] has ST_SEARCH_MAX_BINDS slots on the caller's
-     * stack. search_build_exclude_labels iterates a caller-supplied
-     * NULL-terminated array with no length cap, so past the limit we stop
-     * recording binds instead of overrunning the stack array. Placeholders
-     * already emitted beyond the limit stay unbound (SQLite treats them as
-     * NULL): the query under-matches but memory safety is preserved. */
+    /* Fixed filters stay below this bound; variable-length exclude_labels
+     * checks the
+     * remaining capacity and rejects the query before reaching it.
+     * Keep the local guard as
+     * defense against an out-of-bounds stack write. */
     if (*bind_idx >= ST_SEARCH_MAX_BINDS) {
         return;
     }
@@ -7661,23 +7660,33 @@ static void where_bind_text(search_bind_t *binds, int *bind_idx, const char *val
 }
 
 /* Build exclude-labels NOT IN clause with bind placeholders. */
-static void search_build_exclude_labels(const char **labels, search_bind_t *binds, int *bind_idx,
-                                        char *clause, int clause_sz) {
+static int search_build_exclude_labels(const char **labels, search_bind_t *binds, int *bind_idx,
+                                       char *clause, int clause_sz) {
     int elen = snprintf(clause, clause_sz, "n.label NOT IN (");
+    if (elen < 0 || elen >= clause_sz) {
+        return 0;
+    }
     for (int i = 0; labels[i]; i++) {
+        if (*bind_idx >= ST_SEARCH_MAX_BINDS) {
+            return 0;
+        }
+        int written;
         if (i > 0) {
-            elen += snprintf(clause + elen, clause_sz - elen, ",");
-            if (elen >= clause_sz) {
-                elen = clause_sz - SKIP_ONE;
+            written = snprintf(clause + elen, clause_sz - elen, ",");
+            if (written < 0 || written >= clause_sz - elen) {
+                return 0;
             }
+            elen += written;
         }
-        elen += snprintf(clause + elen, clause_sz - elen, "?%d", *bind_idx + SKIP_ONE);
-        if (elen >= clause_sz) {
-            elen = clause_sz - SKIP_ONE;
+        written = snprintf(clause + elen, clause_sz - elen, "?%d", *bind_idx + SKIP_ONE);
+        if (written < 0 || written >= clause_sz - elen) {
+            return 0;
         }
+        elen += written;
         where_bind_text(binds, bind_idx, labels[i]);
     }
-    snprintf(clause + elen, clause_sz - elen, ")");
+    int written = snprintf(clause + elen, clause_sz - elen, ")");
+    return written >= 0 && written < clause_sz - elen;
 }
 
 /* Append a regex WHERE clause for a column (case-sensitive or insensitive). */
@@ -7782,8 +7791,8 @@ static int search_where_basic(const cbm_search_params_t *params, char *where, in
 }
 
 /* Build advanced WHERE clauses: relationship, entry points, exclude labels. */
-static void search_where_advanced(const cbm_search_params_t *params, char *where, int where_sz,
-                                  int *wlen, int *nparams, search_bind_t *binds, int *bind_idx) {
+static int search_where_advanced(const cbm_search_params_t *params, char *where, int where_sz,
+                                 int *wlen, int *nparams, search_bind_t *binds, int *bind_idx) {
     if (params->relationship) {
         char rel_clause[CBM_SZ_256];
         snprintf(rel_clause, sizeof(rel_clause),
@@ -7804,10 +7813,13 @@ static void search_where_advanced(const cbm_search_params_t *params, char *where
     }
     if (params->exclude_labels) {
         char excl_clause[CBM_SZ_512];
-        search_build_exclude_labels(params->exclude_labels, binds, bind_idx, excl_clause,
-                                    (int)sizeof(excl_clause));
-        (void)where_append(where, where_sz, *wlen, nparams, excl_clause);
+        if (!search_build_exclude_labels(params->exclude_labels, binds, bind_idx, excl_clause,
+                                         (int)sizeof(excl_clause))) {
+            return 0;
+        }
+        *wlen = where_append(where, where_sz, *wlen, nparams, excl_clause);
     }
+    return 1;
 }
 
 static int search_build_where(const cbm_search_params_t *params, char *where, int where_sz,
@@ -7816,7 +7828,9 @@ static int search_build_where(const cbm_search_params_t *params, char *where, in
     int nparams = 0;
 
     search_where_basic(params, where, where_sz, &wlen, &nparams, binds, bind_idx, pool);
-    search_where_advanced(params, where, where_sz, &wlen, &nparams, binds, bind_idx);
+    if (!search_where_advanced(params, where, where_sz, &wlen, &nparams, binds, bind_idx)) {
+        return -1;
+    }
 
     return nparams;
 }
@@ -7846,6 +7860,10 @@ int cbm_store_search(cbm_store_t *s, const cbm_search_params_t *params, cbm_sear
 
     int nparams =
         search_build_where(params, where, (int)sizeof(where), binds, &bind_idx, &like_pool);
+    if (nparams < 0) {
+        like_pool_free(&like_pool);
+        return CBM_STORE_ERR;
+    }
 
     /* Build full SQL */
     if (nparams > 0) {

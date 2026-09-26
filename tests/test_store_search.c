@@ -80,6 +80,29 @@ TEST(store_search_by_label) {
     PASS();
 }
 
+TEST(store_search_rejects_too_many_excluded_labels) {
+    int64_t ids[3];
+    cbm_store_t *s = setup_search_store(ids);
+    char labels[34][16];
+    const char *exclude_labels[34];
+    for (int i = 0; i < 33; i++) {
+        snprintf(labels[i], sizeof(labels[i]), "label-%d", i);
+        exclude_labels[i] = labels[i];
+    }
+    exclude_labels[33] = NULL;
+
+    cbm_search_params_t params = {
+        .project = "test", .min_degree = -1, .max_degree = -1, .exclude_labels = exclude_labels};
+    cbm_search_output_t out = {0};
+    ASSERT_EQ(cbm_store_search(s, &params, &out), CBM_STORE_ERR);
+    ASSERT_EQ(out.count, 0);
+    ASSERT_EQ(out.total, 0);
+
+    cbm_store_search_free(&out);
+    cbm_store_close(s);
+    PASS();
+}
+
 /* ── Search by name pattern ─────────────────────────────────────── */
 
 TEST(store_search_by_name_pattern) {
@@ -1851,6 +1874,7 @@ TEST(store_fts_rebuild_incremental_adds_only_nodes_above_watermark) {
 
 SUITE(store_search) {
     RUN_TEST(store_search_by_label);
+    RUN_TEST(store_search_rejects_too_many_excluded_labels);
     RUN_TEST(store_search_by_name_pattern);
     RUN_TEST(store_search_empty_label_ignored);
     RUN_TEST(store_search_by_file_pattern);

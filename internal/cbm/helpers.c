@@ -54,6 +54,9 @@ void *cbm_memmem(const void *haystack, size_t haystack_len, const void *needle, 
 // --- Node text extraction ---
 
 char *cbm_node_text(CBMArena *a, TSNode node, const char *source) {
+    if (!a || !source) {
+        return NULL;
+    }
     uint32_t start = ts_node_start_byte(node);
     uint32_t end = ts_node_end_byte(node);
     if (end <= start) {

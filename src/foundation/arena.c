@@ -17,6 +17,7 @@ enum { ARENA_ALIGN = 7, ARENA_GROW_OK = 1 };
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 
 void cbm_arena_init(CBMArena *a) {
     cbm_arena_init_sized(a, CBM_ARENA_DEFAULT_BLOCK_SIZE);
@@ -37,6 +38,9 @@ void cbm_arena_init_sized(CBMArena *a, size_t block_size) {
 
 static int arena_grow(CBMArena *a, size_t min_size) {
     if (a->nblocks >= CBM_ARENA_MAX_BLOCKS) {
+        return 0;
+    }
+    if (a->block_size > SIZE_MAX / PAIR_LEN) {
         return 0;
     }
     size_t new_size = a->block_size * PAIR_LEN;
@@ -60,11 +64,14 @@ void *cbm_arena_alloc(CBMArena *a, size_t n) {
         return NULL;
     }
     /* 8-byte alignment */
+    if (n > SIZE_MAX - ARENA_ALIGN) {
+        return NULL;
+    }
     n = (n + ARENA_ALIGN) & ~(size_t)ARENA_ALIGN;
     if (a->nblocks == 0) {
         return NULL;
     }
-    if (a->used + n > a->block_size) {
+    if (a->used > a->block_size || n > a->block_size - a->used) {
         if (!arena_grow(a, n)) {
             return NULL;
         }
