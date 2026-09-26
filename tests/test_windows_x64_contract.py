@@ -50,8 +50,10 @@ class WindowsX64Contract(unittest.TestCase):
                  "--selected-binary", "missing-fixture", "--expected-sha256", "0" * 64,
                  "--third-party-notices", "missing-notices", "--out-dir", "build/must-not-publish-x64-test"],
                 cwd=ROOT, capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("unsupported release target", result.stderr)
+            details = (f"target={target}, exit={result.returncode}, "
+                       f"stdout={result.stdout!r}, stderr={result.stderr!r}")
+            self.assertNotEqual(result.returncode, 0, details)
+            self.assertIn("unsupported release target", result.stderr, details)
         self.assertFalse((ROOT / "build/must-not-publish-x64-test").exists())
 
     def test_pypi_rejects_other_platforms_and_architectures(self):
