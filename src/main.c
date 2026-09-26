@@ -1521,9 +1521,9 @@ static cbm_daemon_runtime_application_status_t main_set_client_context_status(
     } else if (!main_session_context(preferred_root, root, allowed, &allowed_ptr)) {
         return CBM_DAEMON_RUNTIME_APPLICATION_REJECTED;
     }
-    return cbm_daemon_application_client_set_context(
-        client, root, allowed_ptr, tool_profile, hook_event, hook_dialect, scope_path != NULL,
-        timeout_ms);
+    return cbm_daemon_application_client_set_context(client, root, allowed_ptr, tool_profile,
+                                                     hook_event, hook_dialect, scope_path != NULL,
+                                                     timeout_ms);
 }
 
 static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const char *preferred_root,
@@ -1531,8 +1531,8 @@ static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const c
                                     const char *hook_dialect, const char *scope_path,
                                     uint32_t timeout_ms) {
     return main_set_client_context_status(client, preferred_root, tool_profile, hook_event,
-                                          hook_dialect, scope_path, timeout_ms) ==
-           CBM_DAEMON_RUNTIME_APPLICATION_OK;
+                                          hook_dialect, scope_path,
+                                          timeout_ms) == CBM_DAEMON_RUNTIME_APPLICATION_OK;
 }
 
 /* Parse a strict MAJOR.MINOR.PATCH triple; false for anything else (dev
@@ -2474,9 +2474,8 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
             ui_port = requested_port > 0 ? requested_port : ui_config.ui_port;
             uint8_t update_mask = 0x03U; /* enabled + port */
             cbm_daemon_runtime_application_status_t ui_status =
-                main_set_client_context_status(start_result.client, ".",
-                                                CBM_MCP_TOOL_PROFILE_ALL, NULL, NULL, NULL,
-                                                MAIN_CONNECT_TIMEOUT_MS);
+                main_set_client_context_status(start_result.client, ".", CBM_MCP_TOOL_PROFILE_ALL,
+                                               NULL, NULL, NULL, MAIN_CONNECT_TIMEOUT_MS);
             if (ui_status == CBM_DAEMON_RUNTIME_APPLICATION_OK) {
                 ui_status = cbm_daemon_application_client_set_ui_config(
                     start_result.client, update_mask, true, ui_port, MAIN_CONNECT_TIMEOUT_MS);
@@ -2492,8 +2491,7 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
                     /* The connected generation may have crossed into shutdown
                      * after bootstrap's probe. Drop it and allow one bounded
                      * bootstrap to wait for teardown and claim the next generation. */
-                    start_config.startup_timeout_ms =
-                        MAIN_DAEMON_CTL_START_RECOVERY_TIMEOUT_MS;
+                    start_config.startup_timeout_ms = MAIN_DAEMON_CTL_START_RECOVERY_TIMEOUT_MS;
                     continue;
                 }
                 (void)fprintf(stderr,
