@@ -258,7 +258,9 @@ def verify_relocated_runtime(binary, work):
             break
         time.sleep(0.1)
     if leftovers:
-        return fail("post-exit cleanup retained long-path executable backup(s): %r" % leftovers)
+        return fail(
+            "post-exit cleanup retained long-path executable backup(s): %r; "
+            "uninstall output: %r" % (leftovers, uninstall.stdout[-1600:]))
     stop_runtime_daemon()
     return None
 
