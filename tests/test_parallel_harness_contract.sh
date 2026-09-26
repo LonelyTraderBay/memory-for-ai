@@ -59,7 +59,9 @@ elif suite in ("stubborn_tree", "timeout_exit_race"):
             ),
         ]
     )
-    pid_path.write_text(str(child.pid), encoding="utf-8")
+    pid_tmp = pid_path.with_name(pid_path.name + ".tmp")
+    pid_tmp.write_text(str(child.pid), encoding="utf-8")
+    os.replace(pid_tmp, pid_path)
     print("  1 passed", flush=True)
     time.sleep(30)
 elif suite == "no_summary":
