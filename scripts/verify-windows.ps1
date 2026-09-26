@@ -43,7 +43,7 @@ $measurements = @()
 function Invoke-Check([string]$Name, [string]$Command) {
     Write-Host "=== $Name ===" -ForegroundColor Cyan
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    & $bash -c $Command
+    & $bash -c "export MSYSTEM=CLANG64; $Command"
     $result = $LASTEXITCODE
     $timer.Stop()
     $script:measurements += [pscustomobject]@{ phase=$Name; seconds=$timer.Elapsed.TotalSeconds; exit=$result; sanitizer=$(if ($Name -eq 'Native') { -not $NoSanitizer } else { $null }) }
