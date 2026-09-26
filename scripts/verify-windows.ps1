@@ -78,7 +78,7 @@ try {
     Invoke-Check 'Metadata' 'python3 scripts/check-product-metadata.py'
     if ($Suites) { $Phase = 'Native' }
     if ($Phase -in @('All','Native')) {
-        Invoke-Check 'Native' 'args=(CC=clang CXX=clang++ "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"); if [ "$CBM_VERIFY_NO_SANITIZER" = 1 ]; then args+=(SANITIZE=); fi; if [ -n "$CBM_VERIFY_SUITES" ]; then args+=(--suites "$CBM_VERIFY_SUITES"); fi; scripts/test.sh "${args[@]}"'
+        Invoke-Check 'Native' 'if [ "$CBM_VERIFY_NO_SANITIZER" = 1 ]; then if [ -n "$CBM_VERIFY_SUITES" ]; then scripts/test.sh --suites "$CBM_VERIFY_SUITES" CC=clang CXX=clang++ SANITIZE= "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; else scripts/test.sh CC=clang CXX=clang++ SANITIZE= "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; fi; else if [ -n "$CBM_VERIFY_SUITES" ]; then scripts/test.sh --suites "$CBM_VERIFY_SUITES" CC=clang CXX=clang++ "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; else scripts/test.sh CC=clang CXX=clang++ "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; fi; fi'
     }
     if ($Phase -in @('All','Frontend')) {
         Invoke-Check 'Frontend' 'cd graph-ui && npm ci && npm run test:coverage && npm run build && npm run test:browser:install && npm run test:browser'
