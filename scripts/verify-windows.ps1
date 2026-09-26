@@ -26,6 +26,7 @@ if ($Suites -and $Phase -notin @('All', 'Native')) { throw '-Suites requires the
 if ($Suites -and $Suites -notmatch '^[a-zA-Z0-9_, ]+$') { throw 'Invalid suite list.' }
 $bash = Join-Path $MsysRoot 'usr\bin\bash.exe'
 $clang = Join-Path $MsysRoot 'clang64\bin\clang.exe'
+$msys2Command = (Get-Command msys2 -ErrorAction SilentlyContinue).Source
 if (-not (Test-Path -LiteralPath $bash) -or -not (Test-Path -LiteralPath $clang)) {
     throw 'MSYS2 CLANG64 is required. Run scripts/setup-windows-toolchain.ps1 first.'
 }
@@ -43,7 +44,11 @@ $measurements = @()
 function Invoke-Check([string]$Name, [string]$Command) {
     Write-Host "=== $Name ===" -ForegroundColor Cyan
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    & $bash -c "export MSYSTEM=CLANG64; $Command"
+    if ($script:msys2Command) {
+        & $script:msys2Command -c $Command
+    } else {
+        & $bash -c "export MSYSTEM=CLANG64; $Command"
+    }
     $result = $LASTEXITCODE
     $timer.Stop()
     $script:measurements += [pscustomobject]@{ phase=$Name; seconds=$timer.Elapsed.TotalSeconds; exit=$result; sanitizer=$(if ($Name -eq 'Native') { -not $NoSanitizer } else { $null }) }
