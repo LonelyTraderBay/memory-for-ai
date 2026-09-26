@@ -1443,6 +1443,9 @@ static int mkdirp(const char *path, int mode) {
  * directory symlink; on Windows cbm_rmdir removes only an empty directory or
  * the directory link itself and never traverses its target. */
 static bool cbm_remove_empty_directory(const char *path, bool dry_run) {
+    if (!path) {
+        return false;
+    }
     struct stat state;
 #ifndef _WIN32
     if (lstat(path, &state) != 0 || !S_ISDIR(state.st_mode)) {
@@ -1993,7 +1996,7 @@ static cbm_json_mcp_command_availability_t cbm_json_mcp_probe_command_path(const
  * result. Bare/relative/templated commands and filesystem errors remain
  * fail-closed. POSIX never enters this classifier. */
 static cbm_json_mcp_command_availability_t cbm_json_mcp_command_availability(const char *command) {
-    if (!cbm_json_mcp_command_path_probe_safe(command) || strchr(command, '$') ||
+    if (!command || !cbm_json_mcp_command_path_probe_safe(command) || strchr(command, '$') ||
         strchr(command, '%')) {
         return CBM_JSON_MCP_COMMAND_UNKNOWN;
     }
@@ -12005,19 +12008,14 @@ static int cli_uninstall_activate(void *opaque) {
     return CLI_OK;
 }
 
-int cbm_cmd_uninstall(int argc, char **argv) {
-    /* `uninstall --help` used to UNINSTALL.
-     *
-     * The top-level dispatcher matches the subcommand at argv[1] and hands the
-     * rest here, so its own --help check never sees argv[2]. Nothing downstream
-     * looked either, and --help is the one flag a person types precisely
-     * BECAUSE they are not sure what a command does. It removed the binary and
-     * every agent configuration (#1038).
-     *
-     * Checked before parse_auto_answer so a `-y` sitting elsewhere on the line
-     * cannot auto-confirm the destruction we are trying to prevent. */
+typedef struct {
+    bool dry_run;
+    const char *requested_bin_dir;
+} cli_uninstall_options_t;
+
+static bool cli_uninstall_print_help_if_requested(int argc, char **argv) {
     for (int i = 0; i < argc; i++) {
-        if (argv && argv[i] && (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
+        if (argv[i] && (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
             printf("Usage: memory-for-ai uninstall [options]\n\n"
                    "Removes the memory-for-ai binary, its agent configurations and,\n"
                    "with confirmation, its indexes. THIS IS DESTRUCTIVE.\n\n"
@@ -12027,55 +12025,44 @@ int cbm_cmd_uninstall(int argc, char **argv) {
                    "  -y, --yes        Do not prompt for confirmation\n"
                    "  -h, --help       Show this help and exit\n\n"
                    "Run with --dry-run first if you are unsure.\n");
-            return CLI_OK;
+            return true;
         }
     }
-    parse_auto_answer(argc, argv);
-    bool dry_run = false;
-    /* An install into a custom --dir must be removable from that same dir:
-     * without this, anyone who installed outside ~/.local/bin has no supported
-     * uninstall path at all. Mirrors cbm_cmd_install's parsing. */
-    const char *requested_bin_dir = NULL;
+    return false;
+}
+
+static bool cli_uninstall_parse_options(int argc, char **argv, cli_uninstall_options_t *options) {
     for (int i = 0; i < argc; i++) {
         /* The public command dispatcher passes option-only argv, while the
-         * long-standing direct API/tests include the subcommand at argv[0]. */
+         * long-standing
+         * direct API/tests include the subcommand at argv[0]. */
         if (i == 0 && strcmp(argv[i], "uninstall") == 0) {
             continue;
         }
         if (strcmp(argv[i], "--dry-run") == 0) {
-            dry_run = true;
+            options->dry_run = true;
         } else if (strncmp(argv[i], "--dir=", SLEN("--dir=")) == 0) {
-            requested_bin_dir = argv[i] + SLEN("--dir=");
-            if (!requested_bin_dir[0]) {
+            options->requested_bin_dir = argv[i] + SLEN("--dir=");
+            if (!options->requested_bin_dir[0]) {
                 (void)fprintf(stderr, "error: --dir requires a non-empty path\n");
-                return CLI_TRUE;
+                return false;
             }
         } else if (strcmp(argv[i], "--dir") == 0) {
             if (i + 1 >= argc || !argv[i + 1] || !argv[i + 1][0] || argv[i + 1][0] == '-') {
                 (void)fprintf(stderr, "error: --dir requires a non-empty path\n");
-                return CLI_TRUE;
+                return false;
             }
-            requested_bin_dir = argv[++i];
+            options->requested_bin_dir = argv[++i];
         } else if (strcmp(argv[i], "-y") != 0 && strcmp(argv[i], "--yes") != 0 &&
                    strcmp(argv[i], "-n") != 0 && strcmp(argv[i], "--no") != 0) {
             (void)fprintf(stderr, "error: unknown uninstall option: %s\n", argv[i]);
-            return CLI_TRUE;
+            return false;
         }
     }
+    return true;
+}
 
-    const char *home = cbm_get_home_dir();
-    if (!home) {
-        (void)fprintf(stderr, "error: HOME not set (use USERPROFILE on Windows)\n");
-        return CLI_TRUE;
-    }
-
-    printf("memory-for-ai uninstall\n\n");
-
-    g_agent_uninstall_errors = 0;
-    cbm_detected_agents_t agents = cbm_detect_agents(home);
-
-    /* Confirm index removal outside the startup lock, but defer the mutation
-     * until the final guarded activation. Dry-run never removes indexes. */
+static bool cli_uninstall_choose_index_removal(const char *home, bool dry_run) {
     bool delete_indexes = false;
     int index_count = count_db_indexes(home);
     if (index_count > 0) {
@@ -12091,6 +12078,47 @@ int cbm_cmd_uninstall(int argc, char **argv) {
             printf("Indexes kept.\n");
         }
     }
+    return delete_indexes;
+}
+
+int cbm_cmd_uninstall(int argc, char **argv) {
+    /* `uninstall --help` used to UNINSTALL.
+     *
+     * The top-level dispatcher matches the subcommand at argv[1] and hands the
+     * rest here, so its own --help check never sees argv[2]. Nothing downstream
+     * looked either, and --help is the one flag a person types precisely
+     * BECAUSE they are not sure what a command does. It removed the binary and
+     * every agent configuration (#1038).
+     *
+     * Checked before parse_auto_answer so a `-y` sitting elsewhere on the line
+     * cannot auto-confirm the destruction we are trying to prevent. */
+    if (argc < 0 || (argc > 0 && !argv)) {
+        return CLI_TRUE;
+    }
+    if (cli_uninstall_print_help_if_requested(argc, argv)) {
+        return CLI_OK;
+    }
+    parse_auto_answer(argc, argv);
+    cli_uninstall_options_t options = {0};
+    if (!cli_uninstall_parse_options(argc, argv, &options)) {
+        return CLI_TRUE;
+    }
+
+    const char *home = cbm_get_home_dir();
+    if (!home) {
+        (void)fprintf(stderr, "error: HOME not set (use USERPROFILE on Windows)\n");
+        return CLI_TRUE;
+    }
+
+    printf("memory-for-ai uninstall\n\n");
+
+    g_agent_uninstall_errors = 0;
+    cbm_detected_agents_t agents = cbm_detect_agents(home);
+
+    /* Confirm index removal outside the startup lock, but defer the mutation
+     * until the final guarded activation. Dry-run never removes indexes. */
+    bool dry_run = options.dry_run;
+    bool delete_indexes = cli_uninstall_choose_index_removal(home, dry_run);
 
     char bin_path_storage[CLI_BUF_1K];
     const char *bin_path = bin_path_storage;
@@ -12099,10 +12127,11 @@ int cbm_cmd_uninstall(int argc, char **argv) {
 #else
     static const char kBinaryLeaf[] = "memory-for-ai";
 #endif
-    int bin_path_length = requested_bin_dir ? snprintf(bin_path_storage, sizeof(bin_path_storage),
-                                                       "%s/%s", requested_bin_dir, kBinaryLeaf)
-                                            : snprintf(bin_path_storage, sizeof(bin_path_storage),
-                                                       "%s/.local/bin/%s", home, kBinaryLeaf);
+    int bin_path_length = options.requested_bin_dir
+                              ? snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/%s",
+                                         options.requested_bin_dir, kBinaryLeaf)
+                              : snprintf(bin_path_storage, sizeof(bin_path_storage),
+                                         "%s/.local/bin/%s", home, kBinaryLeaf);
     if (bin_path_length <= 0 || (size_t)bin_path_length >= sizeof(bin_path_storage)) {
         (void)fprintf(stderr, "error: uninstall target path is too long\n");
         return CLI_TRUE;

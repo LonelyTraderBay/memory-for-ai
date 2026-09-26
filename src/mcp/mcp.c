@@ -2189,16 +2189,22 @@ void cbm_mcp_server_set_project_mutation_try_guard(
 }
 
 static bool mcp_project_mutation_begin(cbm_mcp_server_t *srv, const char *project) {
+    if (!srv) {
+        return false;
+    }
     return !srv->mutation_begin || srv->mutation_begin(srv->mutation_context, project);
 }
 
 static bool mcp_project_mutation_try_begin(cbm_mcp_server_t *srv, const char *project) {
+    if (!srv) {
+        return false;
+    }
     return !srv->mutation_begin ||
            (srv->mutation_try_begin && srv->mutation_try_begin(srv->mutation_context, project));
 }
 
 static void mcp_project_mutation_end(cbm_mcp_server_t *srv, const char *project) {
-    if (srv->mutation_end) {
+    if (srv && srv->mutation_end) {
         srv->mutation_end(srv->mutation_context, project);
     }
 }
@@ -2596,13 +2602,69 @@ typedef enum {
     STORE_RECOVERY_TRY_GUARD_UNAVAILABLE,
 } store_recovery_status_t;
 
+static bool resolve_store_validate_open_store(cbm_mcp_server_t *srv, const char *project,
+                                              const char *path, bool mutation_already_held,
+                                              bool nonblocking_recovery,
+                                              store_recovery_status_t *recovery_status) {
+    if (!srv || !srv->store || !project || !path) {
+        return false;
+    }
+    if (cbm_store_check_integrity(srv->store)) {
+        return true;
+    }
+
+    cbm_store_close(srv->store);
+    srv->store = NULL;
+    bool mutation_acquired = mutation_already_held;
+    if (!mutation_acquired) {
+        mutation_acquired = nonblocking_recovery ? mcp_project_mutation_try_begin(srv, project)
+                                                 : mcp_project_mutation_begin(srv, project);
+    }
+    if (!mutation_acquired) {
+        if (nonblocking_recovery && recovery_status) {
+            *recovery_status = srv->mutation_try_begin ? STORE_RECOVERY_BUSY
+                                                       : STORE_RECOVERY_TRY_GUARD_UNAVAILABLE;
+        }
+        return false;
+    }
+
+    srv->store = cbm_store_open_path_query(path);
+    cbm_integrity_verdict_t verdict =
+        srv->store ? cbm_store_check_integrity_verdict(srv->store) : CBM_INTEGRITY_TRANSIENT;
+    if (verdict == CBM_INTEGRITY_TRANSIENT) {
+        cbm_store_close(srv->store);
+        srv->store = NULL;
+        if (recovery_status) {
+            *recovery_status = STORE_RECOVERY_BUSY;
+        }
+        if (!mutation_already_held) {
+            mcp_project_mutation_end(srv, project);
+        }
+        return false;
+    }
+    if (verdict != CBM_INTEGRITY_OK) {
+        cbm_store_close(srv->store);
+        srv->store = NULL;
+        char backup[CBM_SZ_2K] = {0};
+        bool quarantined = quarantine_corrupt_store(srv, project, path, backup, sizeof(backup));
+        cbm_log_error("store.auto_clean", "project", project, "path", path, "action",
+                      quarantined ? "corrupt generation quarantined"
+                                  : "corrupt generation preserved",
+                      "backup", quarantined ? backup : "none");
+    }
+    if (!mutation_already_held) {
+        mcp_project_mutation_end(srv, project);
+    }
+    return srv->store != NULL;
+}
+
 static cbm_store_t *resolve_store_internal(cbm_mcp_server_t *srv, const char *project,
                                            bool mutation_already_held, bool nonblocking_recovery,
                                            store_recovery_status_t *recovery_status) {
     if (recovery_status) {
         *recovery_status = STORE_RECOVERY_NONE;
     }
-    if (!project) {
+    if (!srv || !project) {
         return NULL; /* project is required — no implicit fallback */
     }
 
@@ -2631,71 +2693,9 @@ static cbm_store_t *resolve_store_internal(cbm_mcp_server_t *srv, const char *pr
     project_db_path(project, path, sizeof(path));
     srv->store = path[0] ? cbm_store_open_path_query(path) : NULL;
     if (srv->store) {
-        /* Check DB integrity — back up (never silently delete) a corrupt DB */
-        if (!cbm_store_check_integrity(srv->store)) {
-            cbm_store_close(srv->store);
-            srv->store = NULL;
-            bool mutation_acquired = mutation_already_held;
-            if (!mutation_acquired) {
-                mutation_acquired = nonblocking_recovery
-                                        ? mcp_project_mutation_try_begin(srv, project)
-                                        : mcp_project_mutation_begin(srv, project);
-            }
-            if (!mutation_acquired) {
-                if (nonblocking_recovery && recovery_status) {
-                    *recovery_status = srv->mutation_try_begin
-                                           ? STORE_RECOVERY_BUSY
-                                           : STORE_RECOVERY_TRY_GUARD_UNAVAILABLE;
-                }
-                return NULL;
-            }
-
-            /* The lease may have waited behind a publisher. Re-open and trust
-             * only the current generation, never the stale pre-wait verdict.
-             * Use the verdict API here — this is the point that decides whether
-             * a healthy DB gets quarantined. The plain bool check cannot tell
-             * corruption from a transient SQLITE_BUSY race (#1206: concurrent
-             * instances quarantining each other's DBs) and does not run
-             * quick_check, so page-torn DBs with an intact projects table sail
-             * through (#1037). Only a confirmed CORRUPT verdict is quarantined;
-             * TRANSIENT (lock/IO) falls through and retries on next access. */
-            srv->store = cbm_store_open_path_query(path);
-            cbm_integrity_verdict_t verdict = srv->store
-                                                  ? cbm_store_check_integrity_verdict(srv->store)
-                                                  : CBM_INTEGRITY_TRANSIENT;
-            bool current_valid = (verdict == CBM_INTEGRITY_OK);
-            if (verdict == CBM_INTEGRITY_TRANSIENT) {
-                /* The DB could not be conclusively evaluated (lock contention,
-                 * busy writer, IO hiccup). Do NOT quarantine — close and let
-                 * the next resolve retry. A spurious quarantine here is exactly
-                 * what destroys healthy DBs under concurrent access. */
-                cbm_store_close(srv->store);
-                srv->store = NULL;
-                if (recovery_status) {
-                    *recovery_status = STORE_RECOVERY_BUSY;
-                }
-                if (!mutation_already_held) {
-                    mcp_project_mutation_end(srv, project);
-                }
-                return NULL;
-            }
-            if (!current_valid) {
-                cbm_store_close(srv->store);
-                srv->store = NULL;
-                char backup[CBM_SZ_2K] = {0};
-                bool quarantined =
-                    quarantine_corrupt_store(srv, project, path, backup, sizeof(backup));
-                cbm_log_error("store.auto_clean", "project", project, "path", path, "action",
-                              quarantined ? "corrupt generation quarantined"
-                                          : "corrupt generation preserved",
-                              "backup", quarantined ? backup : "none");
-            }
-            if (!mutation_already_held) {
-                mcp_project_mutation_end(srv, project);
-            }
-            if (!srv->store) {
-                return NULL;
-            }
+        if (!resolve_store_validate_open_store(srv, project, path, mutation_already_held,
+                                               nonblocking_recovery, recovery_status)) {
+            return NULL;
         }
 
         /* Verify the project actually exists in this database.
@@ -8507,6 +8507,9 @@ static void add_parse_partial_summary(yyjson_mut_doc *doc, yyjson_mut_val *root,
 static bool add_persisted_failure_summaries(yyjson_mut_doc *doc, yyjson_mut_val *root,
                                             cbm_store_t *store, const char *project,
                                             const char *logfile) {
+    if (!doc || !root || !store || !project) {
+        return false;
+    }
     cbm_coverage_row_t *rows = NULL;
     int row_count = 0;
     if (cbm_store_coverage_get(store, project, &rows, &row_count) != CBM_STORE_OK) {
@@ -8521,9 +8524,13 @@ static bool add_persisted_failure_summaries(yyjson_mut_doc *doc, yyjson_mut_val 
         }
     }
 
-    cbm_file_error_t *failures =
-        failure_count > 0 ? calloc((size_t)failure_count, sizeof(*failures)) : NULL;
-    if (failure_count > 0 && !failures) {
+    if (failure_count == 0) {
+        cbm_store_free_coverage(rows, row_count);
+        return true;
+    }
+
+    cbm_file_error_t *failures = calloc((size_t)failure_count, sizeof(*failures));
+    if (!failures) {
         cbm_store_free_coverage(rows, row_count);
         return false;
     }
@@ -9264,122 +9271,111 @@ static char *resolved_repo_path_from_project_arg(const char *args) {
     return root_path;
 }
 
-static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
-    char *repo_path = cbm_mcp_get_string_arg(args, "repo_path");
-    char *mode_str = cbm_mcp_get_string_arg(args, "mode");
-    char *name_override = cbm_mcp_get_string_arg(args, "name");
-    cbm_normalize_path_sep(repo_path);
+typedef struct {
+    char *repo_path;
+    char *mode_str;
+    char *name_override;
+} index_repository_request_t;
 
-    if (!repo_path) {
-        repo_path = resolved_repo_path_from_project_arg(args);
-        cbm_normalize_path_sep(repo_path);
+static void free_index_repository_request(index_repository_request_t *request) {
+    if (!request) {
+        return;
     }
+    free(request->repo_path);
+    free(request->mode_str);
+    free(request->name_override);
+    request->repo_path = NULL;
+    request->mode_str = NULL;
+    request->name_override = NULL;
+}
 
-    if (!repo_path) {
-        free(mode_str);
-        free(name_override);
+static char *prepare_index_repository_request(cbm_mcp_server_t *srv, const char *args,
+                                              index_repository_request_t *request) {
+    if (!srv || !request) {
+        return cbm_mcp_text_result("server is required", true);
+    }
+    request->repo_path = cbm_mcp_get_string_arg(args, "repo_path");
+    request->mode_str = cbm_mcp_get_string_arg(args, "mode");
+    request->name_override = cbm_mcp_get_string_arg(args, "name");
+    if (request->repo_path) {
+        cbm_normalize_path_sep(request->repo_path);
+    }
+    if (!request->repo_path) {
+        request->repo_path = resolved_repo_path_from_project_arg(args);
+        if (request->repo_path) {
+            cbm_normalize_path_sep(request->repo_path);
+        }
+    }
+    if (!request->repo_path) {
+        free_index_repository_request(request);
         return cbm_mcp_text_result("repo_path is required", true);
     }
-
-    if (!resolve_session_repo_path(srv, &repo_path)) {
-        free(mode_str);
-        free(name_override);
-        free(repo_path);
+    if (!resolve_session_repo_path(srv, &request->repo_path)) {
+        free_index_repository_request(request);
         return cbm_mcp_text_result("failed to resolve repo_path", true);
     }
 
-    repo_path = canonicalize_repo_path_if_exists(repo_path);
-
-    /* Workspace boundary. Embedded/daemon sessions supply their explicit policy,
-     * including an explicit NULL meaning unrestricted; a standalone server falls
-     * back to the process-wide CBM_ALLOWED_ROOT. The decision itself lives in one
-     * shared function so this handler and the HTTP UI indexing route cannot drift
-     * apart — they had, and the divergence was the defect. */
+    request->repo_path = canonicalize_repo_path_if_exists(request->repo_path);
     const char *allowed_root =
         srv->allowed_root_policy_set ? srv->allowed_root : getenv("CBM_ALLOWED_ROOT");
-    /* repo_path is legitimately absent when the caller names an already-known
-     * project instead; the root is resolved downstream. Only a path supplied here
-     * is classified here — the previous check had the same tolerance. */
     char boundary_err[CBM_SZ_1K];
-    if (repo_path && repo_path[0] &&
-        !cbm_workspace_root_allowed(repo_path, cbm_workspace_home_dir(), cbm_workspace_cache_dir(),
-                                    allowed_root, boundary_err, sizeof(boundary_err))) {
-        free(mode_str);
-        free(name_override);
-        free(repo_path);
+    if (request->repo_path && request->repo_path[0] &&
+        !cbm_workspace_root_allowed(request->repo_path, cbm_workspace_home_dir(),
+                                    cbm_workspace_cache_dir(), allowed_root, boundary_err,
+                                    sizeof(boundary_err))) {
+        free_index_repository_request(request);
         return cbm_mcp_text_result(boundary_err, true);
     }
+    return NULL;
+}
 
-    if (mode_str && strcmp(mode_str, "cross-repo-intelligence") == 0) {
-        free(mode_str);
-        char *result = handle_cross_repo_mode(srv, repo_path, name_override, args);
-        free(name_override);
-        free(repo_path);
-        return result;
-    }
+static char *build_index_repository_response(cbm_mcp_server_t *srv, const char *project_name,
+                                             const char *repo_path, bool persistence,
+                                             cbm_pipeline_t *pipeline, char **excluded_dirs,
+                                             int excluded_count, cbm_file_error_t *file_errors,
+                                             int file_error_count, int pipeline_status) {
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "project", project_name);
 
-    /* A daemon session delegates the one physical write to its shared job
-     * registry only after path canonicalization and workspace authorization. */
-    if (srv->index_executor) {
-        char *worker_args = index_args_with_repo_path(args, repo_path);
-        char *coordinated =
-            worker_args ? srv->index_executor(srv->index_executor_context, repo_path, worker_args)
-                        : NULL;
-        free(worker_args);
-        free(repo_path);
-        free(mode_str);
-        free(name_override);
-        return coordinated ? coordinated
-                           : cbm_mcp_text_result(
-                                 "daemon index coordinator could not start the operation", true);
-    }
-
-    /* Resolve the exact project key before choosing supervised or in-process
-     * execution. A supervised worker owns the OS mutation lease itself: if the
-     * CLI parent is killed, the worker must keep project exclusion until its
-     * parent-death watchdog reaps the complete worker tree. */
-    char *mutation_project =
-        cbm_project_name_from_path(name_override && name_override[0] ? name_override : repo_path);
-    if (!mutation_project) {
-        free(repo_path);
-        free(mode_str);
-        free(name_override);
-        return cbm_mcp_text_result("could not resolve index project name", true);
-    }
-
-    /* Supervisor gate: validate the canonical path and the host session's
-     * workspace policy before handing work to a crash/hang-isolating worker.
-     * The parent deliberately owns no project lease on this path; the worker
-     * installs the same guard before running the in-process pipeline. A marked
-     * host fails closed if preparation or worker startup cannot complete. */
-    if (cbm_index_supervisor_should_wrap()) {
-        char *worker_args = index_args_with_repo_path(args, repo_path);
-        if (!worker_args) {
-            free(mutation_project);
-            free(repo_path);
-            free(mode_str);
-            free(name_override);
-            return cbm_mcp_text_result("failed to prepare supervised index request", true);
+    if (pipeline_status == 0) {
+        char logfile_path[CBM_SZ_1K];
+        logfile_path[0] = '\0';
+        bool has_logfile = write_skip_logfile(project_name, file_errors, file_error_count,
+                                              logfile_path, sizeof(logfile_path));
+        bool degraded = build_index_success_response(
+            srv, doc, root, project_name, repo_path, persistence, pipeline, excluded_dirs,
+            excluded_count, file_errors, file_error_count, has_logfile ? logfile_path : NULL);
+        yyjson_mut_obj_add_str(doc, root, "status", degraded ? "degraded" : "indexed");
+        if (cbm_pipeline_had_format_migration(pipeline)) {
+            yyjson_mut_obj_add_bool(doc, root, "format_migration", true);
         }
-        char *supervised = index_run_supervised(srv, worker_args);
-        free(worker_args);
-        if (supervised) {
-            free(mutation_project);
-            free(repo_path);
-            free(mode_str);
-            free(name_override);
-            return supervised;
+    } else {
+        yyjson_mut_obj_add_str(doc, root, "status", "error");
+        if (pipeline_status == CBM_PIPELINE_ERROR_PATH_TOO_LONG) {
+            yyjson_mut_obj_add_str(doc, root, "error_code", "path_too_long");
+            yyjson_mut_obj_add_str(
+                doc, root, "hint",
+                "A repository path exceeds the discovery limit (at most 4095 UTF-8 bytes; the "
+                "filesystem may impose a lower limit). No partial index was published; the "
+                "existing index generation is unchanged. Shorten the path or move the repository "
+                "closer to the filesystem root, then retry.");
+        } else {
+            yyjson_mut_obj_add_str(doc, root, "hint",
+                                   "Pipeline failed. Check repo_path exists and contains source "
+                                   "files. Try mode='fast' for a quicker diagnostic run.");
         }
-        free(mutation_project);
-        free(repo_path);
-        free(mode_str);
-        free(name_override);
-        return cbm_mcp_text_result(
-            "index supervision failed before a contained worker could start; no "
-            "in-process fallback was attempted",
-            true);
     }
 
+    char *json = yy_doc_to_str(doc);
+    yyjson_mut_doc_free(doc);
+    return json;
+}
+
+static char *run_index_repository_pipeline(cbm_mcp_server_t *srv, const char *args, char *repo_path,
+                                           char *mode_str, char *name_override,
+                                           char *mutation_project) {
     if (!mcp_project_mutation_begin(srv, mutation_project)) {
         free(mutation_project);
         free(repo_path);
@@ -9406,7 +9402,6 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     free(mode_str);
 
     bool persistence = cbm_mcp_get_bool_arg(args, "persistence");
-
     cbm_pipeline_t *p = cbm_pipeline_new(repo_path, NULL, mode);
     if (!p) {
         mcp_project_mutation_end(srv, mutation_project);
@@ -9427,11 +9422,8 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     cbm_pipeline_set_persistence(p, persistence);
 
     char *project_name = heap_strdup(cbm_pipeline_project_name(p));
-
-    /* Bootstrap from artifact if no local DB exists */
     try_artifact_bootstrap(project_name, repo_path);
 
-    /* Close cached store — pipeline will delete + recreate the .db file */
     if (srv->owns_store && srv->store) {
         cbm_store_close(srv->store);
         srv->store = NULL;
@@ -9439,9 +9431,6 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     free(srv->current_project);
     srv->current_project = NULL;
 
-    /* Serialize pipeline runs to prevent concurrent writes.
-     * Track active pipeline so signal handler and notifications/cancelled
-     * can cancel it mid-run. */
     cbm_pipeline_lock();
     cbm_pipeline_bind_cancel_flag(p, &srv->pipeline_cancel_requested);
     srv->active_pipeline = p;
@@ -9449,22 +9438,14 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     srv->active_pipeline = NULL;
     cbm_pipeline_unlock();
 
-    /* Capture the excluded-subtree list (#411) while the pipeline (which owns
-     * the strings) is still alive — the response builder copies them into the
-     * JSON doc, so they need only outlive that call, not cbm_pipeline_free. */
     char **excluded_dirs = NULL;
     int excluded_count = 0;
     cbm_pipeline_get_excluded(p, &excluded_dirs, &excluded_count);
-
-    /* Capture the per-file skip list (Stage 2 / Track B) while the pipeline
-     * still owns the strings; the response builder copies them into the doc. */
     cbm_file_error_t *file_errors = NULL;
     int file_error_count = 0;
     cbm_pipeline_get_file_errors(p, &file_errors, &file_error_count);
+    cbm_mem_collect();
 
-    cbm_mem_collect(); /* return mimalloc pages to OS after large indexing */
-
-    /* Invalidate cached store so next query reopens the fresh database */
     if (srv->owns_store && srv->store) {
         cbm_store_close(srv->store);
         srv->store = NULL;
@@ -9472,51 +9453,9 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     free(srv->current_project);
     srv->current_project = NULL;
 
-    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
-    yyjson_mut_val *root = yyjson_mut_obj(doc);
-    yyjson_mut_doc_set_root(doc, root);
-
-    yyjson_mut_obj_add_str(doc, root, "project", project_name);
-
-    if (rc == 0) {
-        /* Write the per-run logfile ONLY when there were skips (no logfile on a
-         * clean run). The FULL list goes to the file; the JSON caps at 50. */
-        char logfile_path[CBM_SZ_1K];
-        logfile_path[0] = '\0';
-        bool has_logfile = write_skip_logfile(project_name, file_errors, file_error_count,
-                                              logfile_path, sizeof(logfile_path));
-        bool degraded = build_index_success_response(
-            srv, doc, root, project_name, repo_path, persistence, p, excluded_dirs, excluded_count,
-            file_errors, file_error_count, has_logfile ? logfile_path : NULL);
-        yyjson_mut_obj_add_str(doc, root, "status", degraded ? "degraded" : "indexed");
-        if (cbm_pipeline_had_format_migration(p)) {
-            yyjson_mut_obj_add_bool(doc, root, "format_migration", true);
-        }
-    } else {
-        yyjson_mut_obj_add_str(doc, root, "status", "error");
-        if (rc == CBM_PIPELINE_ERROR_PATH_TOO_LONG) {
-            yyjson_mut_obj_add_str(doc, root, "error_code", "path_too_long");
-            yyjson_mut_obj_add_str(
-                doc, root, "hint",
-                "A repository path exceeds the discovery limit (at most 4095 UTF-8 bytes; the "
-                "filesystem may impose a lower limit). No partial index "
-                "was published; the existing index generation is unchanged. Shorten the path or "
-                "move the repository closer to the filesystem root, then retry.");
-        } else {
-            yyjson_mut_obj_add_str(doc, root, "hint",
-                                   "Pipeline failed. Check repo_path exists and contains source "
-                                   "files. Try mode='fast' for a quicker diagnostic run.");
-        }
-    }
-
-    char *json = yy_doc_to_str(doc);
-    yyjson_mut_doc_free(doc);
-    /* Free the pipeline only after the response doc copied the excluded list.
-     * Supervised worker: skip the deep free — the process exits right after
-     * handing over the response (main.c fast-exits), and piecemeal-freeing a
-     * multi-GB graph before process death costs minutes on kernel-scale repos;
-     * the OS reclaims it wholesale at exit. In-process paths (tests, kill
-     * switch, degrade) still free normally. */
+    char *json =
+        build_index_repository_response(srv, project_name, repo_path, persistence, p, excluded_dirs,
+                                        excluded_count, file_errors, file_error_count, rc);
     if (cbm_index_worker_active()) {
         cbm_log_info("index.worker.fast_exit", "skip", "pipeline_free");
     } else {
@@ -9524,13 +9463,88 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     }
     free(project_name);
     free(repo_path);
-
     mcp_project_mutation_end(srv, mutation_project);
     free(mutation_project);
 
     char *result = cbm_mcp_text_result(json, rc != 0);
     free(json);
     return result;
+}
+
+static char *run_index_repository(cbm_mcp_server_t *srv, const char *args, char *repo_path,
+                                  char *mode_str, char *name_override) {
+    char *mutation_project =
+        cbm_project_name_from_path(name_override && name_override[0] ? name_override : repo_path);
+    if (!mutation_project) {
+        free(repo_path);
+        free(mode_str);
+        free(name_override);
+        return cbm_mcp_text_result("could not resolve index project name", true);
+    }
+
+    if (cbm_index_supervisor_should_wrap()) {
+        char *worker_args = index_args_with_repo_path(args, repo_path);
+        if (!worker_args) {
+            free(mutation_project);
+            free(repo_path);
+            free(mode_str);
+            free(name_override);
+            return cbm_mcp_text_result("failed to prepare supervised index request", true);
+        }
+        char *supervised = index_run_supervised(srv, worker_args);
+        free(worker_args);
+        free(mutation_project);
+        free(repo_path);
+        free(mode_str);
+        free(name_override);
+        return supervised ? supervised
+                          : cbm_mcp_text_result(
+                                "index supervision failed before a contained worker could start; "
+                                "no in-process fallback was attempted",
+                                true);
+    }
+    return run_index_repository_pipeline(srv, args, repo_path, mode_str, name_override,
+                                         mutation_project);
+}
+
+static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
+    if (!srv) {
+        return cbm_mcp_text_result("server is required", true);
+    }
+    index_repository_request_t request = {0};
+    char *error = prepare_index_repository_request(srv, args, &request);
+    if (error) {
+        return error;
+    }
+    char *repo_path = request.repo_path;
+    char *mode_str = request.mode_str;
+    char *name_override = request.name_override;
+
+    if (mode_str && strcmp(mode_str, "cross-repo-intelligence") == 0) {
+        free(mode_str);
+        char *result = handle_cross_repo_mode(srv, repo_path, name_override, args);
+        free(name_override);
+        free(repo_path);
+        return result;
+    }
+
+    /* A daemon session delegates the one physical write to its shared job
+     * registry only after path canonicalization and workspace authorization. */
+    if (srv->index_executor) {
+        char *worker_args = index_args_with_repo_path(args, repo_path);
+        char *coordinated =
+            worker_args ? srv->index_executor(srv->index_executor_context, repo_path, worker_args)
+                        : NULL;
+        free(worker_args);
+        free(repo_path);
+        free(mode_str);
+        free(name_override);
+        return coordinated ? coordinated
+                           : cbm_mcp_text_result(
+                                 "daemon index coordinator could not start the operation", true);
+    }
+
+    return run_index_repository(srv, args, repo_path, mode_str, name_override);
 }
 
 /* ── get_code_snippet ─────────────────────────────────────────── */
@@ -14484,6 +14498,9 @@ static int find_tightest_node(cbm_node_t *nodes, int count, int line) {
 /* Add a grep hit to the search result set (merge into existing or create new). */
 static void add_to_search_results(search_result_t **sr, int *sr_count, int *sr_cap, cbm_node_t *n,
                                   int line) {
+    if (!sr || !sr_count || !sr_cap || !n) {
+        return;
+    }
     for (int j = 0; j < *sr_count; j++) {
         if ((*sr)[j].node_id == n->id) {
             if ((*sr)[j].match_count < CBM_SZ_64) {
@@ -14494,8 +14511,19 @@ static void add_to_search_results(search_result_t **sr, int *sr_count, int *sr_c
     }
     if (*sr_count >= *sr_cap) {
         *sr_cap *= PAIR_LEN;
-        *sr = safe_realloc(*sr, *sr_cap * sizeof(search_result_t));
+        search_result_t *grown = safe_realloc(*sr, *sr_cap * sizeof(search_result_t));
+        if (!grown) {
+            *sr = NULL;
+            /* safe_realloc frees the old buffer on failure. Its entries are
+             * gone too, so prevent later hits from indexing through NULL. */
+            *sr_count = 0;
+            return;
+        }
+        *sr = grown;
         memset(&(*sr)[*sr_count], 0, (*sr_cap - *sr_count) * sizeof(search_result_t));
+    }
+    if (!*sr) {
+        return;
     }
     search_result_t *r = &(*sr)[*sr_count];
     r->node_id = n->id;

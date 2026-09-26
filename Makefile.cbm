@@ -1420,11 +1420,12 @@ lint-mem:
 # NOLINT is never honoured here.
 # Analyzer findings are judged by the gate (including its argued whitelist),
 # not clang-tidy's repository-wide WarningsAsErrors. Compiler -Werror stays on;
-# pipefail also rejects analyzer/compiler execution failures.
+# keep analyzer diagnostics as warnings so vendored findings excluded by the
+# gate do not make xargs fail; all other clang-tidy warnings remain errors.
 lint-mem-ci:
 	@echo "=== clang-analyzer memory gate ==="
 	@set -o pipefail; printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
-		--checks='$(LINT_MEM_CHECKS)' --warnings-as-errors='' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) \
+		--checks='$(LINT_MEM_CHECKS)' --warnings-as-errors='-clang-analyzer-*' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) \
 		| python3 scripts/lint-mem-gate.py
 
 # ── Security audit (6 layers) ────────────────────────────────────

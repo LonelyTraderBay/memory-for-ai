@@ -426,6 +426,42 @@ int cbm_ac_scan_lz4_batch(const CBMAutomaton *ac, const CBMLz4Entry *entries, in
 //   num_names    — number of names
 //   out_matches  — output buffer for (name_index, pattern_id) pairs
 //   max_matches  — capacity of out_matches
+static void ac_append_batch_matches(const CBMAutomaton *ac, int state, int name_index,
+                                    CBMMatchResult *out_matches, int max_matches, int *total,
+                                    unsigned char *seen_extra, uint64_t *seen) {
+    int s = state;
+    while (s > 0 && *total < max_matches) {
+        uint64_t bits = ac->output[s] & ~*seen;
+        while (bits && *total < max_matches) {
+            int pid = __builtin_ctzll(bits);
+            out_matches[*total].name_index = name_index;
+            out_matches[*total].pattern_id = pid;
+            (*total)++;
+            *seen |= CBM_AC_PATTERN_BIT(pid);
+            bits = CBM_AC_CLEAR_LOW_BIT(bits);
+        }
+
+        for (int pid = ac->output_list[s]; pid != CBM_AC_NO_STATE && *total < max_matches;
+             pid = ac->pattern_next[pid]) {
+            if (seen_extra && seen_extra[pid]) {
+                continue;
+            }
+            out_matches[*total].name_index = name_index;
+            out_matches[*total].pattern_id = pid;
+            (*total)++;
+            if (seen_extra) {
+                seen_extra[pid] = true;
+            }
+        }
+
+        int next_state = ac->output_next[s];
+        if (next_state == CBM_AC_NO_STATE || next_state == s) {
+            break;
+        }
+        s = next_state;
+    }
+}
+
 int cbm_ac_scan_batch(const CBMAutomaton *ac, const char *names_buf, const int *name_offsets,
                       const int *name_lengths, int num_names, CBMMatchResult *out_matches,
                       int max_matches) {
@@ -444,8 +480,9 @@ int cbm_ac_scan_batch(const CBMAutomaton *ac, const char *names_buf, const int *
     }
 
     for (int n = 0; n < num_names && total < max_matches; n++) {
-        if (name_offsets[n] < 0 || name_lengths[n] < 0)
+        if (name_offsets[n] < 0 || name_lengths[n] < 0) {
             continue;
+        }
         if (seen_extra)
             memset(seen_extra, 0, (size_t)ac->num_patterns);
         const char *text = names_buf + name_offsets[n];
@@ -458,38 +495,8 @@ int cbm_ac_scan_batch(const CBMAutomaton *ac, const char *names_buf, const int *
         for (int i = 0; i < text_len; i++) {
             int c = ac->alpha_map[(unsigned char)text[i]];
             state = go_table[(state * alpha_size) + c];
-
-            // Walk output chain for >64 patterns.
-            int s = state;
-            while (s > 0 && total < max_matches) {
-                // Bitmask fast path for first 64 patterns.
-                uint64_t bits = ac->output[s] & ~seen;
-                while (bits && total < max_matches) {
-                    int pid = __builtin_ctzll(bits);
-                    out_matches[total].name_index = n;
-                    out_matches[total].pattern_id = pid;
-                    total++;
-                    seen |= CBM_AC_PATTERN_BIT(pid);
-                    bits = CBM_AC_CLEAR_LOW_BIT(bits);
-                }
-
-                for (int pid = ac->output_list[s]; pid != CBM_AC_NO_STATE && total < max_matches;
-                     pid = ac->pattern_next[pid]) {
-                    if (seen_extra[pid])
-                        continue;
-                    out_matches[total].name_index = n;
-                    out_matches[total].pattern_id = pid;
-                    total++;
-                    seen_extra[pid] = 1;
-                }
-
-                // Follow output_next for patterns beyond bitmask range.
-                int next_state = ac->output_next[s];
-                if (next_state == CBM_AC_NO_STATE || next_state == s) {
-                    break;
-                }
-                s = next_state;
-            }
+            ac_append_batch_matches(ac, state, n, out_matches, max_matches, &total, seen_extra,
+                                    &seen);
         }
     }
     free(seen_extra);

@@ -1082,14 +1082,16 @@ static int ha_tokenize(const char *cmd, char toks[][HA_BASH_TOK_SZ], int max) {
 }
 
 static bool ha_is_env_assign(const char *t) {
+    enum { HA_ENV_NAME_START = 1 };
     if (!t || !t[0])
         return false;
     if (!isalpha((unsigned char)t[0]) && t[0] != '_')
         return false;
-    const char *p = t + 1;
-    while (isalnum((unsigned char)*p) || *p == '_')
-        p++;
-    return *p == '=';
+    size_t i = HA_ENV_NAME_START;
+    while (t[i] != '\0' && (isalnum((unsigned char)t[i]) || t[i] == '_')) {
+        i++;
+    }
+    return t[i] == '=';
 }
 
 typedef enum { HA_BIN_GREP, HA_BIN_RG, HA_BIN_AG, HA_BIN_ACK, HA_BIN_UGREP } ha_bin_t;

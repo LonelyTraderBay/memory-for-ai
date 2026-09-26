@@ -36,6 +36,13 @@ class WindowsX64Contract(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("fixture.c", result.stdout + result.stderr)
 
+    def test_memory_gate_excludes_vendored_analyzer_diagnostics(self):
+        vendored = (ROOT / "internal/cbm/vendored/verstable/verstable.h").as_posix()
+        diagnostic = f"{vendored}:1191:24: warning: uninitialized key [clang-analyzer-core.CallAndMessage]\n"
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/lint-mem-gate.py")],
+                                input=diagnostic, text=True, capture_output=True, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_packaging_refuses_unsupported_target_before_output(self):
         for target in (("windows", "arm64"), ("linux", "amd64"), ("darwin", "arm64")):
             result = subprocess.run(
