@@ -220,3 +220,29 @@ Forgot to sign? `git commit --amend -s` fixes the last commit;
 >
 > The pre-push DCO gate (`scripts/hooks/pre-push`) will otherwise block the
 > push — it catches exactly this case.
+
+### Targeted hardening checks
+
+```sh
+python3 tests/test_benchmark_contract.py
+python3 tests/test_incremental_build.py --cc clang
+scripts/test.sh --suites edit,mcp,edit_integration,store_edges,ui
+cd graph-ui
+npm ci
+npm run test:coverage
+npm run build
+npx playwright install chromium
+npm run test:browser
+```
+
+The native test runner now compiles first-party translation units separately.
+Generated `.d` dependencies track headers; a configuration stamp invalidates test
+objects when compiler/flags change. Production and TSan targets retain their
+existing build paths. On Windows use `npm.cmd` and `SANITIZE=` when the runtime
+is unavailable; this is a native lane, not ASan/UBSan/TSan evidence.
+`scripts/test-windows.ps1` always invokes the selected Make target unless an
+explicit `-Binary` chooses an existing artifact.
+
+Coverage includes unimported source files. The browser smoke uses Chromium with
+software WebGL and fixture API responses: it checks canvas lifecycle, refresh,
+reload and project switching, not hardware-GPU performance or a live backend.
