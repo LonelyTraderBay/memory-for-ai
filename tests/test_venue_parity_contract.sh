@@ -389,6 +389,7 @@ scripts/ci/preflight-docker.sh
 scripts/ci/require-all-green.sh
 scripts/ci/verify-shard-union.sh
 scripts/ci/generate-sbom.py
+scripts/ci/test-release-artifact-contracts.sh
 scripts/package-release.sh
 scripts/ci/smoke-artifact.sh
 test-infrastructure/run.sh
@@ -426,6 +427,7 @@ scripts/lint.sh
 scripts/smoke-local.sh
 scripts/soak-legs.sh
 scripts/ci/preflight-docker.sh
+scripts/ci/test-release-artifact-contracts.sh
 test-infrastructure/vm/vm-smoke.sh
 scripts/smoke-invariants.sh
 "

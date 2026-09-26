@@ -115,7 +115,4 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Release selection adversarial fixtures (no product build)
-        run: |
-          bash tests/test_vt_candidate_selection_contract.sh
-          bash tests/test_release_archive_extractor_contract.sh
-          bash tests/test_release_gate_chain_contract.sh
+        run: bash scripts/ci/test-release-artifact-contracts.sh
