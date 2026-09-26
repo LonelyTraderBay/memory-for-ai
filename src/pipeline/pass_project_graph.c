@@ -132,22 +132,33 @@ static char *pg_read_file(const char *path, int *out_len) {
         return NULL;
     }
     if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
+        (void)fclose(f); /* Preserve the failed read while releasing the handle. */
         return NULL;
     }
     long size = ftell(f);
-    if (size <= 0 || size > PG_MAX_SOURCE || size > cbm_max_file_bytes() || size > (long)INT_MAX) {
-        fclose(f);
+    if (size <= 0 || size > PG_MAX_SOURCE || size > cbm_max_file_bytes()) {
+        (void)fclose(f); /* Preserve the failed read while releasing the handle. */
         return NULL;
     }
-    rewind(f);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        /* The read already failed; a cleanup error cannot turn it into success. */
+        (void)fclose(f);
+        return NULL;
+    }
     char *source = malloc((size_t)size + SKIP_ONE);
     if (!source) {
-        fclose(f);
+        (void)fclose(f); /* Preserve the failed read while releasing the handle. */
         return NULL;
     }
     size_t got = fread(source, SKIP_ONE, (size_t)size, f);
-    fclose(f);
+    bool ok = !ferror(f);
+    if (fclose(f) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        free(source);
+        return NULL;
+    }
     source[got] = '\0';
     *out_len = (int)got;
     return source;

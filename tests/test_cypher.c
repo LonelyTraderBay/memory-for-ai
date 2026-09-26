@@ -7,6 +7,8 @@
 #include "test_framework.h"
 #include "../src/foundation/compat.h"
 #include "../src/foundation/compat_thread.h"
+#include "../src/foundation/limits.h"
+#include <limits.h>
 #include <cypher/cypher.h>
 #include <store/store.h>
 #include <stdatomic.h>
@@ -1702,6 +1704,40 @@ TEST(cypher_exec_order_by) {
 
     cbm_cypher_result_free(&r);
     cbm_store_close(s);
+    PASS();
+}
+
+TEST(graph_depth_env_limits) {
+    char maximum[32], overflow[32];
+    snprintf(maximum, sizeof(maximum), "%d", INT_MAX);
+    snprintf(overflow, sizeof(overflow), "%lld", (long long)INT_MAX + 1);
+    const char *values[] = {"", "0", "-1", "1", "37", maximum, overflow,
+                            "9999999999999999999999999", "12x", "12 "};
+    const int expected[] = {0, 0, 0, 1, 37, INT_MAX, 0, 0, 0, 0};
+    const char *names[] = {"CBM_CYPHER_MAX_DEPTH", "CBM_MCP_MAX_DEPTH"};
+    const int defaults[] = {10, 15};
+    for (size_t setting = 0; setting < 2; setting++) {
+        const char *previous = getenv(names[setting]);
+        char *saved = previous ? strdup(previous) : NULL;
+        if (previous) {
+            ASSERT_NOT_NULL(saved);
+        }
+        int results[sizeof(values) / sizeof(values[0])];
+        for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+            cbm_setenv(names[setting], values[i], 1);
+            results[i] = setting == 0 ? cbm_cypher_max_depth() : cbm_mcp_max_depth();
+        }
+        /* Restore the caller's environment even if an assertion below fails. */
+        if (saved) {
+            cbm_setenv(names[setting], saved, 1);
+            free(saved);
+        } else {
+            cbm_unsetenv(names[setting]);
+        }
+        for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+            ASSERT_EQ(results[i], expected[i] ? expected[i] : defaults[setting]);
+        }
+    }
     PASS();
 }
 
@@ -4205,6 +4241,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_exec_count);
     RUN_TEST(cypher_exec_limit);
     RUN_TEST(cypher_exec_order_by);
+    RUN_TEST(graph_depth_env_limits);
     RUN_TEST(cypher_exec_variable_length);
     RUN_TEST(cypher_exec_variable_length_repeated_node_var_unifies);
     RUN_TEST(cypher_exec_var_length_explicit_bound_capped);

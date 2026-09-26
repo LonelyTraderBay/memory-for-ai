@@ -33,7 +33,7 @@ trace_path(function_name="cbm_fopen", direction="inbound", depth=3)
 
 Record from your client's usage report (Claude Code: `/cost` and the tool-call log; other clients: their usage panels; API users: the `usage` field of the response): **input tokens, output tokens, number of tool calls** for the question-answering window, and whether the answer was correct (check a few callers in source).
 
-Reference point from the maintainer's own dogfood run (this exact question class, 2026-09): one `trace_path` call returned all 66 callers complete in ~250 tokens; the grep equivalent was 75 matches across 38 files, ~33,000 tokens to read, and still missed indirect callers.
+Reference point from the maintainer's dogfood run (one C-function question, 2026-09): one `trace_path` call returned 66 graph-recorded inbound callers in ~250 tokens; 4/4 sampled callers were checked against source. The grep equivalent was 75 matches across 38 files, ~33,000 tokens to read, and missed indirect callers in that exercise. This is a task-specific result, not a guarantee that every repository relationship is represented.
 
 ### Condition B — file-by-file
 
@@ -53,7 +53,7 @@ If either count is zero, report "N/A" for that line — do not add pseudocounts.
 
 - One question is a **smoke signal, not a benchmark**. Repeat with 5–10 questions of different shapes (discovery, callers, impact, architecture, cross-service) before making any claim about "your repo".
 - Structural questions are where the graph wins by an order of magnitude. Pure text-lookup questions ("where is this error string printed?") may show little or no advantage — that's expected, and `search_code` exists for that class.
-- **Count the fixed cost**: the tool manifest (`tools/list`, 23 tools) is roughly 9K tokens of per-session overhead in a client that lists all tools. A one-question session can lose to grep on pure tokens; the win amortizes over a real working session. For short sessions, scoped tool profiles (Scout/Verify/Auditor) or CLI mode shrink this cost.
+- **Count the fixed cost**: the 2026-09-24 source-matched Windows `v0.12.0-rc.2` release build measured 8,347 `o200k_base` tokens (38,128 wire bytes) for the raw stdio `tools/list` response with all 23 tools; `analysis` measured 5,156 tokens/23,331 bytes with 14 tools, and `scout` 3,254 tokens/14,855 bytes with 8 tools. These use `tiktoken` 0.14.0 on the exact JSON-RPC response, not a model/client usage meter; client caching/accounting may differ. `analysis` retains `search_code` for literal/callback fallback; `scout` does not, so use external text search or escalate when the graph cannot answer. A one-question session can still lose to grep on total cost; CLI mode avoids MCP manifest cost. The same-SHA VitTrade run and source-matched release-build replay are recorded in [AB-RESULTS.md](AB-RESULTS.md#source-matched-0120-rc2-release-build-recheck-2026-09-24).
 
 ## 2. Built-in measurement surfaces
 
@@ -129,10 +129,31 @@ Publish: raw paired counts, per-pair quality scores, run count, aggregation meth
 |---|---|---|
 | [arXiv:2603.27277](https://arxiv.org/abs/2603.27277) | 10× fewer tokens, 2.1× fewer tool calls vs. file-by-file exploration, at 83% answer quality (92% for the file-by-file baseline) | 31 real repositories, blinded grading |
 | README performance table | Linux kernel full index 3 min; Cypher <1 ms; five structural queries ~3,400 vs ~412,000 tokens | Single machine (Apple M3 Pro); exact reproduction needs the original inputs |
-| Maintainer dogfood (2026-09) | Callers query: ~250 tokens / 1 call vs ~33,000 tokens of reading, 66 callers complete vs grep's incomplete picture | One repository, one question class |
+| Maintainer dogfood (2026-09) | Callers query: ~250 tokens / 1 call vs ~33,000 tokens of reading; 66 graph-recorded callers, 4/4 sampled callers verified in source; grep missed indirect callers in that example | One repository, one question class; not a graph-completeness guarantee |
 | [Self-measured A/B on this repo](AB-RESULTS.md) (2026-09) | 8 questions: graph 8/8 PASS at ~3.4K est. tokens vs file-by-file 6 PASS + 2 PARTIAL at ~765K est. tokens (~99.6% reduction; ~4–5× under a charity bound); graph lost on text-lookup and directory-listing controls | One repository, one machine, non-blind grading, bytes-based token estimate — see the report's limitations |
 | [Self-measured edit-path A/B](AB-RESULTS.md) (2026-09-19) | 5 rename tasks × 2 file-size scenarios, mechanical execution: `rename_symbol` 3 calls / ~1.1K est. tokens flat vs grep + full-file rewrite — **90.5% token reduction** at ~300-line files, but **loses ~3× on ~10-line files** (break-even is file size, not fan-out); 10/10 byte-identical tree diffs | Synthetic fixture, no model session, bytes-based token estimate — see the report's edit-path limitations |
 
 A full worked example of this protocol — frozen setup, freshness incident, per-question table, limitations — lives in [AB-RESULTS.md](AB-RESULTS.md).
 
 Treat these as calibration points for your own measurement, not as expectations: your repo, language mix, question mix, and session shape move the numbers in both directions.
+
+## Repeatable retrieval smoke and benchmark failure handling
+
+```sh
+python3 scripts/evaluate-retrieval.py build/c/memory-for-ai --output build/retrieval-evaluation.json
+```
+
+The evaluation creates an isolated Python fixture/cache and grades three fixed
+definition queries against the source AST, including a negative query. It saves
+source/hash, expected and actual names, raw responses, index status and the real
+`tools/list` manifest. It reports UTF-8 bytes/4 estimates with the manifest counted
+once per session, separately from indexing/setup. These are retrieval smoke
+results, not model token usage, answer-quality certification, or a broad-language
+benchmark. Use the paired-session protocol above for adoption claims.
+
+Index/search benchmark scripts reject nonzero exits, JSON-RPC errors, MCP
+`isError`, malformed JSON and missing/invalid counts. Successful empty results
+remain valid. Index reruns invalidate previous success metrics before starting,
+so a failed run cannot inherit an earlier timing. Search requests use the CLI
+tool entrypoint; latency includes process/daemon admission and is not a pure
+query-engine microbenchmark.

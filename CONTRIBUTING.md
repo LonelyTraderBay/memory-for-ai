@@ -8,24 +8,23 @@ The normative coding rules are in [AGENTS.md](AGENTS.md). The human-readable che
 
 ## Build from Source
 
-**Prerequisites**: C compiler (gcc or clang), make, zlib, Git. Optional: Node.js 22+ (for graph UI).
+**Supported product:** Windows native x64 only. Use MSYS2 CLANG64; install
+Node.js for graph UI and the Go version declared in `pkg/go/go.mod` for wrappers.
 
-```bash
+```powershell
 git clone https://github.com/LonelyTraderBay/memory-for-ai.git
 cd memory-for-ai
-git config core.hooksPath scripts/hooks  # activates pre-commit checks + pre-push DCO gate
-scripts/build.sh
+git config core.hooksPath scripts/hooks
+./scripts/setup-windows-toolchain.ps1
+./scripts/verify-windows.ps1
 ```
 
-macOS: `xcode-select --install` provides clang.
-Linux: `sudo apt install build-essential zlib1g-dev` (Debian/Ubuntu) or `sudo dnf install gcc zlib-devel` (Fedora).
-
-The binary is output to `build/c/memory-for-ai`.
+The product is `build/c/memory-for-ai.exe`. See [Windows x64 scope](docs/WINDOWS-X64.md).
 
 ## Run Tests
 
-```bash
-scripts/test.sh
+```powershell
+./scripts/verify-windows.ps1
 ```
 
 This builds with ASan + UBSan and runs the full C test suite. Key test files:
@@ -36,8 +35,8 @@ This builds with ASan + UBSan and runs the full C test suite. Key test files:
 
 ## Run Linter
 
-```bash
-scripts/lint.sh
+```powershell
+./scripts/verify-windows.ps1 -Phase Lint
 ```
 
 Runs clang-tidy, cppcheck, and clang-format. All must pass before committing (also enforced by pre-commit hook).
@@ -90,7 +89,7 @@ Language support is split between two layers:
 
 1. Check the language spec in `internal/cbm/lang_specs.c`
 2. Use regression tests to verify extraction: `tests/test_extraction.c`
-3. Check parity tests: `internal/cbm/regression_test.go` (legacy, being migrated)
+3. Add/extend the C regression case in `tests/test_extraction.c`; the former Go parity test file is not present in this C repository, so do not rely on it as a validation step.
 4. Add a test case in `tests/test_pipeline.c` for integration-level fixes
 5. Verify with a real open-source repo
 
@@ -155,7 +154,7 @@ If in doubt, open an issue and ask.
 
 - **C code only** — this project was rewritten from Go to pure C in v0.5.0. Go PRs will be acknowledged and potentially ported, but cannot be merged directly.
 - Include tests for new functionality
-- Run `scripts/test.sh` and `scripts/lint.sh` before submitting
+- Run `scripts/verify-windows.ps1` before submitting
 - Keep PRs focused — avoid unrelated reformatting or refactoring
 
 ## Security
@@ -220,3 +219,33 @@ Forgot to sign? `git commit --amend -s` fixes the last commit;
 >
 > The pre-push DCO gate (`scripts/hooks/pre-push`) will otherwise block the
 > push — it catches exactly this case.
+
+### Targeted hardening checks
+
+```sh
+python3 tests/test_benchmark_contract.py
+python3 tests/test_incremental_build.py --cc clang
+./scripts/verify-windows.ps1 -Suites "edit,mcp,edit_integration,store_edges,ui"
+cd graph-ui
+npm ci
+npm run test:coverage
+npm run build
+npm run test:browser:install
+npm run test:browser
+```
+
+The pre-commit hook uses `test-par`: the harness verifies that every registered
+suite runs exactly once and prepares the Windows build-directory permissions.
+Set `CBM_TEST_PAR_JOBS` to limit concurrency on smaller machines.
+
+The native test runner now compiles first-party translation units separately.
+Generated `.d` dependencies track headers; a configuration stamp invalidates test
+objects when compiler/flags change. Production retains its existing build path. Windows CLANG64 is the supported toolchain;
+response files avoid the native Windows command-length limit. On Windows use `npm.cmd` and `SANITIZE=` when the runtime
+is unavailable; this is a native lane, not ASan/UBSan/TSan evidence.
+`scripts/test-windows.ps1` always invokes the selected Make target unless an
+explicit `-Binary` chooses an existing artifact.
+
+Coverage includes unimported source files. The browser smoke uses Chromium with
+software WebGL and fixture API responses: it checks canvas lifecycle, refresh,
+reload and project switching, not hardware-GPU performance or a live backend.

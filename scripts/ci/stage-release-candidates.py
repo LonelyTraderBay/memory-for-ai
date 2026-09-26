@@ -20,16 +20,7 @@ class ContractError(Exception):
     """The candidate boundary is incomplete, unsafe, or incoherent."""
 
 
-TARGETS = (
-    "linux-amd64",
-    "linux-arm64",
-    "linux-amd64-portable",
-    "linux-arm64-portable",
-    "darwin-amd64",
-    "darwin-arm64",
-    "windows-amd64",
-    "windows-arm64",
-)
+TARGETS = ("windows-amd64",)
 VARIANTS = ("unstripped", "debug-stripped", "stripped")
 PROVENANCE_FIELDS = (
     "target",
@@ -77,7 +68,7 @@ MAX_NOTICE_BYTES = 16 * 1024 * 1024
 
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stage the exact eight-target, sixteen-candidate VT scan set."
+        description="Stage the exact Windows x64, three-candidate VT scan set."
     )
     parser.add_argument("source_dir", type=pathlib.Path)
     parser.add_argument("output_dir", type=pathlib.Path)

@@ -62,6 +62,7 @@ export const messages = {
     },
     control: {
       panel: "Control Panel",
+      refreshFailed: "Refresh failed. Displayed data may be out of date.",
       totalCpu: "Total CPU",
       totalRam: "Total RAM",
       processes: "Processes",
@@ -133,6 +134,7 @@ export const messages = {
     },
     control: {
       panel: "控制面板",
+      refreshFailed: "刷新失败，显示的数据可能已过期。",
       totalCpu: "总 CPU",
       totalRam: "总内存",
       processes: "进程",

@@ -88,6 +88,7 @@ enum {
 #include <yyjson/yyjson.h>
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2276,7 +2277,8 @@ static int main_daemon_ctl_finish_ui_open(cbm_daemon_runtime_client_t **client_i
     cbm_secure_zero(&readiness, sizeof(readiness));
     if (!ready) {
         (void)fprintf(stderr,
-                      "error: UI endpoint did not become ready within %u ms; browser was not "
+                      "error: UI endpoint did not become ready within %" PRIu32
+                      " ms; browser was not "
                       "opened\n",
                       timeout_ms);
         (void)fprintf(stderr,

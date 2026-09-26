@@ -1778,6 +1778,7 @@ static int parse_order_by_clause(parser_t *p, cbm_return_clause_t *r) {
     return 0;
 }
 
+static void free_return_item(cbm_return_item_t *item);
 static void free_return_clause(cbm_return_clause_t *r);
 
 /* Parse RETURN/WITH clause (shared logic) */
@@ -1813,6 +1814,7 @@ static int parse_return_or_with(parser_t *p, cbm_return_clause_t **out, bool is_
 
         cbm_return_item_t item = {0};
         if (parse_return_item(p, &item) < 0) {
+            free_return_item(&item);
             free_return_clause(r);
             return CBM_NOT_FOUND;
         }
@@ -2195,22 +2197,29 @@ static void free_case_expr(cbm_case_expr_t *k) {
     free(k);
 }
 
+static void free_return_item(cbm_return_item_t *item) {
+    if (!item) {
+        return;
+    }
+    safe_str_free(&item->variable);
+    safe_str_free(&item->property);
+    safe_str_free(&item->alias);
+    safe_str_free(&item->func);
+    free_case_expr(item->kase);
+    for (int j = 0; j < item->arg_count; j++) {
+        safe_str_free(&item->args[j].variable);
+        safe_str_free(&item->args[j].property);
+        safe_str_free(&item->args[j].literal);
+    }
+    free(item->args);
+}
+
 static void free_return_clause(cbm_return_clause_t *r) {
     if (!r) {
         return;
     }
     for (int i = 0; i < r->count; i++) {
-        safe_str_free(&r->items[i].variable);
-        safe_str_free(&r->items[i].property);
-        safe_str_free(&r->items[i].alias);
-        safe_str_free(&r->items[i].func);
-        free_case_expr(r->items[i].kase);
-        for (int j = 0; j < r->items[i].arg_count; j++) {
-            safe_str_free(&r->items[i].args[j].variable);
-            safe_str_free(&r->items[i].args[j].property);
-            safe_str_free(&r->items[i].args[j].literal);
-        }
-        free(r->items[i].args);
+        free_return_item(&r->items[i]);
     }
     free(r->items);
     for (int k = 0; k < r->order_key_count; k++) {
@@ -4263,11 +4272,13 @@ static void with_agg_format(const char *func, with_agg_t *agg, int ci, char *buf
 /* Add a virtual variable binding for one WITH item */
 static void with_add_vbinding_var(binding_t *vb, const char *alias, const char *val) {
     cbm_node_t vn = {.name = heap_strdup(val), .qualified_name = heap_strdup(alias)};
-    if (vb->var_count < CYP_BUF_16) {
-        vb->var_names[vb->var_count] = vn.qualified_name;
-        vb->var_nodes[vb->var_count] = vn;
-        vb->var_count++;
+    if (vb->var_count >= CYP_BUF_16) {
+        node_fields_free(&vn);
+        return;
     }
+    vb->var_names[vb->var_count] = vn.qualified_name;
+    vb->var_nodes[vb->var_count] = vn;
+    vb->var_count++;
 }
 
 /* Free with_agg_t array */
@@ -4569,7 +4580,7 @@ static void execute_return_star(cbm_query_t *q, binding_t *bindings, int bind_co
     int vc = collect_pattern_vars(q, vars, CBM_SZ_32);
     build_star_columns(rb, vars, vc);
     for (int bi = 0; bi < bind_count && rb->row_count < max_rows; bi++) {
-        const char *vals[CBM_SZ_128];
+        const char *vals[CBM_SZ_128] = {0};
         project_star_row(&bindings[bi], vars, vc, vals);
         rb_add_row(rb, vals);
     }
@@ -4722,7 +4733,7 @@ static void ret_agg_build_key(cbm_return_clause_t *ret, binding_t *b, char *key,
 
 /* Emit one aggregated row into the result builder */
 static void ret_agg_emit_row(cbm_return_clause_t *ret, ret_agg_entry_t *agg, result_builder_t *rb) {
-    const char *row[CBM_SZ_32];
+    const char *row[CBM_SZ_32] = {0};
     char bufs[CBM_SZ_32][CBM_SZ_64];
     for (int ci = 0; ci < ret->count; ci++) {
         if (!is_aggregate_func(ret->items[ci].func)) {
@@ -4756,7 +4767,7 @@ static void execute_return_agg(cbm_return_clause_t *ret, binding_t *bindings, in
             break;
         }
         char key[CBM_SZ_1K] = "";
-        const char *vals[CBM_SZ_32];
+        const char *vals[CBM_SZ_32] = {0};
         char valbufs[CBM_SZ_32][CBM_SZ_512];
         ret_agg_build_key(ret, &bindings[bi], key, sizeof(key), vals, valbufs);
 
@@ -4875,7 +4886,7 @@ static void execute_default_projection(cbm_pattern_t *pat0, binding_t *bindings,
     }
     build_default_columns(rb, vars, vc);
     for (int bi = 0; bi < bind_count && rb->row_count < max_rows; bi++) {
-        const char *vals[CYP_COL_BUF];
+        const char *vals[CYP_COL_BUF] = {0};
         for (int v = 0; v < vc; v++) {
             cbm_node_t *n = binding_get(&bindings[bi], vars[v]);
             vals[(size_t)v * CYP_EDGE_COLS] = n && n->name ? n->name : "";

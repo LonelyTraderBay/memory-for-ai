@@ -26,6 +26,7 @@
  */
 
 #include "edit/edit.h"
+#include "foundation/constants.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -83,7 +84,7 @@ static bool mv_ends_with_blank_line(const char *data, size_t len) {
         return false;
     }
     size_t p = len - 1; /* on the final '\n' */
-    if (p > 0 && data[p - 1] == '\r') {
+    if (data[p - SKIP_ONE] == '\r') {
         p--;
     }
     return p > 0 && data[p - 1] == '\n';
@@ -419,8 +420,6 @@ int cbm_edit_move_rewrite_python_imports(const char *data, size_t len, const cha
         if (ce > ls && data[ce - 1] == '\r') {
             ce--;
         }
-        const char *eol = data + ce; /* [ce, next): "\r\n" | "\n" | "" */
-        size_t eol_len = next - ce;
 
         /* parse: indent + "from" + module + "import" + names [+ comment] */
         size_t p = ls;
@@ -441,7 +440,6 @@ int cbm_edit_move_rewrite_python_imports(const char *data, size_t len, const cha
                 p++;
             }
             size_t mod_len = p - mod_off;
-            size_t save = p;
             while (p < ce && (data[p] == ' ' || data[p] == '\t')) {
                 p++;
             }
@@ -505,6 +503,8 @@ int cbm_edit_move_rewrite_python_imports(const char *data, size_t len, const cha
                         free(entries);
                         entries = NULL;
                     } else {
+                        const char *eol = data + ce; /* Preserve the original line ending. */
+                        size_t eol_len = next - ce;
                         if (entries[hit].has_alias && stats) {
                             stats->aliases_kept++;
                         }
@@ -559,8 +559,6 @@ int cbm_edit_move_rewrite_python_imports(const char *data, size_t len, const cha
                         copied_plain = true;
                     }
                 }
-            } else {
-                p = save; /* not our module / not a from-import: fall through */
             }
         }
 
@@ -786,8 +784,6 @@ int cbm_edit_move_rewrite_ts_imports(const char *data, size_t len, const char *o
         if (ce > ls && data[ce - 1] == '\r') {
             ce--;
         }
-        const char *eol = data + ce;
-        size_t eol_len = next - ce;
 
         size_t p = ls;
         while (p < ce && (data[p] == ' ' || data[p] == '\t')) {
@@ -896,7 +892,6 @@ int cbm_edit_move_rewrite_ts_imports(const char *data, size_t len, const char *o
                                 }
                             }
                             if (nent > 0 && hit >= 0) {
-                                const char *brace_base = data + p + 1;
                                 bool pad = p + 1 < rb && data[p + 1] == ' ';
                                 if (entries[hit].has_alias && stats) {
                                     stats->aliases_kept++;
@@ -910,6 +905,9 @@ int cbm_edit_move_rewrite_ts_imports(const char *data, size_t len, const char *o
                                         stats->import_lines_rewritten++;
                                     }
                                 } else {
+                                    const char *brace_base = data + p + SKIP_ONE;
+                                    const char *eol = data + ce;
+                                    size_t eol_len = next - ce;
                                     /* split: others stay on the old spec */
                                     bool has_semi = false;
                                     for (size_t k = so + sl + 1; k < ce; k++) {
@@ -1088,8 +1086,11 @@ int cbm_edit_move_ts_relative_spec(const char *importer_rel, const char *module_
     int dir_count = n_imp - 1; /* importer's directory components */
 
     int common = 0;
-    while (common < dir_count && common < n_mod && imp_lens[common] == mod_lens[common] &&
-           memcmp(imp_comps[common], mod_comps[common], imp_lens[common]) == 0) {
+    while (common < dir_count && common < n_mod) {
+        if (imp_lens[common] != mod_lens[common] ||
+            memcmp(imp_comps[common], mod_comps[common], imp_lens[common]) != 0) {
+            break;
+        }
         common++;
     }
     int ups = dir_count - common;

@@ -4,7 +4,7 @@
  * The write path mirrors the codebase's existing artifact publish pattern
  * (temp file in the same directory + rename-replace, see
  * src/pipeline/artifact.c) and adds the two guarantees edits need on top:
- * an mtime/size compare before anything is touched, and a backup copy of the
+ * a content/mtime/size compare before anything is touched, and a backup copy of the
  * original for undo.
  */
 
@@ -13,19 +13,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <time.h>
-
-#include "foundation/compat_fs.h"
-#include "foundation/constants.h"
-
+#include <errno.h>
+#include <inttypes.h>
+#include <stdint.h>
 #ifdef _WIN32
-#include <process.h>
-#define EDIT_PID() _getpid()
+#include <io.h>
 #else
 #include <unistd.h>
-#define EDIT_PID() getpid()
 #endif
+
+#include "foundation/compat_fs.h"
+#include "foundation/compat.h"
+#include "foundation/sha256.h"
+#include "foundation/constants.h"
+
+enum { EDIT_BACKUP_PREFIX_LEN = 3, EDIT_BACKUP_NAME_LEN = 23, EDIT_BACKUP_DIR_MODE = 0700 };
 
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
 /* One-shot fault injection for the write path (test builds only; the
@@ -46,28 +48,57 @@ static bool edit_test_take_write_failure(void) {
 }
 #endif
 
-/* Platform-portable mtime in nanoseconds (mirrors watcher.c/artifact.c). */
-static int64_t edit_stat_mtime_ns(const struct stat *st) {
-#if defined(_WIN32)
-    return (int64_t)st->st_mtime * 1000000000LL;
-#elif defined(__APPLE__)
-    return (int64_t)st->st_mtimespec.tv_sec * 1000000000LL + (int64_t)st->st_mtimespec.tv_nsec;
-#else
-    return (int64_t)st->st_mtim.tv_sec * 1000000000LL + (int64_t)st->st_mtim.tv_nsec;
-#endif
-}
-
+/* Use the UTF-8/high-resolution filesystem API and hash bytes as well as
+ * metadata: same-size edits and restored mtimes must not bypass the guard. */
 int cbm_edit_file_stat(const char *abs_path, cbm_edit_file_state_t *out) {
     if (!abs_path || !out) {
         return CBM_EDIT_ERR_ARGS;
     }
-    struct stat st;
-    if (stat(abs_path, &st) != 0) {
+    cbm_path_info_t before;
+    cbm_path_info_t after;
+    if (cbm_path_info_utf8(abs_path, &before) != 0 || !before.is_regular) {
         return CBM_EDIT_ERR_IO;
     }
-    out->mtime_ns = edit_stat_mtime_ns(&st);
-    out->size = (int64_t)st.st_size;
+    FILE *fp = cbm_fopen(abs_path, "rb");
+    if (!fp) {
+        return CBM_EDIT_ERR_IO;
+    }
+    cbm_sha256_ctx hash;
+    cbm_sha256_init(&hash);
+    unsigned char buf[CBM_SZ_64K];
+    size_t n;
+    while ((n = fread(buf, SKIP_ONE, sizeof(buf), fp)) > 0) {
+        cbm_sha256_update(&hash, buf, n);
+    }
+    bool ok = !ferror(fp);
+    if (fclose(fp) != 0) {
+        ok = false;
+    }
+    if (!ok || cbm_path_info_utf8(abs_path, &after) != 0 || !after.is_regular) {
+        return CBM_EDIT_ERR_IO;
+    }
+    if (before.mtime_ns != after.mtime_ns || before.size != after.size) {
+        return CBM_EDIT_ERR_MTIME;
+    }
+    out->mtime_ns = after.mtime_ns;
+    out->size = after.size;
+    cbm_sha256_final(&hash, out->content_hash);
     return CBM_EDIT_OK;
+}
+
+static int edit_check_state(const char *path, const cbm_edit_file_state_t *expected) {
+    if (!expected) {
+        return CBM_EDIT_OK;
+    }
+    cbm_edit_file_state_t now;
+    int rc = cbm_edit_file_stat(path, &now);
+    if (rc != CBM_EDIT_OK) {
+        return rc;
+    }
+    return now.mtime_ns == expected->mtime_ns && now.size == expected->size &&
+                   memcmp(now.content_hash, expected->content_hash, sizeof(now.content_hash)) == 0
+               ? CBM_EDIT_OK
+               : CBM_EDIT_ERR_MTIME;
 }
 
 int cbm_edit_read_file(const char *abs_path, char **out_data, size_t *out_len) {
@@ -87,12 +118,12 @@ int cbm_edit_read_file(const char *abs_path, char **out_data, size_t *out_len) {
         (void)fclose(fp);
         return CBM_EDIT_ERR_IO;
     }
-    char *buf = malloc((size_t)sz + 1);
+    char *buf = malloc((size_t)sz + SKIP_ONE);
     if (!buf) {
         (void)fclose(fp);
         return CBM_EDIT_ERR_OOM;
     }
-    size_t got = fread(buf, 1, (size_t)sz, fp);
+    size_t got = fread(buf, SKIP_ONE, (size_t)sz, fp);
     if (got != (size_t)sz) {
         free(buf);
         (void)fclose(fp);
@@ -110,155 +141,224 @@ static const char *edit_basename(const char *path) {
     const char *base = path;
     for (const char *p = path; *p; p++) {
         if (*p == '/' || *p == '\\') {
-            base = p + 1;
+            base = p + SKIP_ONE;
         }
     }
     return base;
 }
 
+/* Hash the canonical parent plus filename, so lookup still works after the
+ * source file is deleted. Different projects/directories never share history.
+ * Legacy flat backups intentionally have no automatic lookup path. */
+static int edit_backup_directory(const char *root, const char *path, char *out, size_t cap) {
+    const char *base = edit_basename(path);
+    if (base == path || !*base || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) {
+        return CBM_EDIT_ERR_ARGS;
+    }
+    char parent[CBM_SZ_4K];
+    char canonical[CBM_SZ_4K];
+    char identity[CBM_SZ_4K];
+    size_t len = (size_t)(base - path);
+    if (len >= sizeof(parent)) {
+        return CBM_EDIT_ERR_ARGS;
+    }
+    memcpy(parent, path, len);
+    parent[len] = '\0';
+    if (!cbm_canonical_path(parent, canonical, sizeof(canonical))) {
+        return CBM_EDIT_ERR_IO;
+    }
+    int n = snprintf(identity, sizeof(identity), "%s/%s", canonical, base);
+    if (n < 0 || (size_t)n >= sizeof(identity)) {
+        return CBM_EDIT_ERR_ARGS;
+    }
+#ifdef _WIN32
+    /* The same DOS path may be passed with either slash. Preserve case-sensitive directory
+     * identities. */
+    for (char *p = identity; *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+#endif
+    char key[CBM_SHA256_HEX_LEN + SKIP_ONE];
+    cbm_sha256_hex(identity, strlen(identity), key);
+    n = snprintf(out, cap, "%s/%s", root, key);
+    return n >= 0 && (size_t)n < cap ? CBM_EDIT_OK : CBM_EDIT_ERR_ARGS;
+}
+
+/* Only complete published records count. A staged or malformed file cannot
+ * become an undo candidate after interruption. */
+static uint64_t edit_backup_sequence(const char *name) {
+    if (strlen(name) != EDIT_BACKUP_NAME_LEN || strncmp(name, "bk_", EDIT_BACKUP_PREFIX_LEN) != 0) {
+        return 0;
+    }
+    for (int i = EDIT_BACKUP_PREFIX_LEN; i < EDIT_BACKUP_NAME_LEN; i++) {
+        if (name[i] < '0' || name[i] > '9') {
+            return 0;
+        }
+    }
+    errno = 0;
+    unsigned long long value = strtoull(name + EDIT_BACKUP_PREFIX_LEN, NULL, CBM_DECIMAL_BASE);
+    return errno == ERANGE ? 0 : (uint64_t)value;
+}
+
+static int edit_backup_last_sequence(const char *dir, uint64_t *last) {
+    *last = 0;
+    cbm_dir_t *d = cbm_opendir(dir);
+    if (!d) {
+        return CBM_EDIT_ERR_IO;
+    }
+    cbm_dirent_t *entry;
+    while ((entry = cbm_readdir(d)) != NULL) {
+        uint64_t seq = entry->is_dir ? 0 : edit_backup_sequence(entry->name);
+        if (seq > *last) {
+            *last = seq;
+        }
+    }
+    cbm_closedir(d);
+    return CBM_EDIT_OK;
+}
+
+/* Creates a unique, complete temporary file; removes it on every failure. */
+static int edit_stage_bytes(char *tmp, const char *data, size_t len) {
+    int fd = cbm_mkstemp(tmp);
+    if (fd < 0) {
+        return CBM_EDIT_ERR_IO;
+    }
+    FILE *fp = fdopen(fd, "wb");
+    if (!fp) {
+        close(fd);
+        cbm_unlink(tmp);
+        return CBM_EDIT_ERR_IO;
+    }
+    bool ok = fwrite(data, SKIP_ONE, len, fp) == len;
+    if (fclose(fp) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        cbm_unlink(tmp);
+    }
+    return ok ? CBM_EDIT_OK : CBM_EDIT_ERR_IO;
+}
+
+static int edit_publish_backup(const char *backup_dir, const char *abs_path, char *backup_path_out,
+                               size_t backup_path_sz) {
+    int rc;
+    char dir[CBM_SZ_4K];
+    char backup[CBM_SZ_4K];
+    char tmp[CBM_SZ_4K];
+    rc = edit_backup_directory(backup_dir, abs_path, dir, sizeof(dir));
+    if (rc != CBM_EDIT_OK) {
+        return rc;
+    }
+    if (!cbm_mkdir_p(dir, EDIT_BACKUP_DIR_MODE)) {
+        return CBM_EDIT_ERR_IO;
+    }
+    uint64_t last;
+    rc = edit_backup_last_sequence(dir, &last);
+    if (rc != CBM_EDIT_OK || last == UINT64_MAX) {
+        return CBM_EDIT_ERR_IO;
+    }
+    int n = snprintf(backup, sizeof(backup), "%s/bk_%020" PRIu64, dir, last + SKIP_ONE);
+    if (n < 0 || (size_t)n >= sizeof(backup) || (backup_path_out && (size_t)n >= backup_path_sz)) {
+        return CBM_EDIT_ERR_ARGS;
+    }
+    n = snprintf(tmp, sizeof(tmp), "%s/pending-XXXXXX", dir);
+    if (n < 0 || (size_t)n >= sizeof(tmp)) {
+        return CBM_EDIT_ERR_ARGS;
+    }
+    char *original = NULL;
+    size_t original_len = 0;
+    rc = cbm_edit_read_file(abs_path, &original, &original_len);
+    if (rc != CBM_EDIT_OK) {
+        return rc;
+    }
+    rc = edit_stage_bytes(tmp, original, original_len);
+    free(original);
+    if (rc != CBM_EDIT_OK) {
+        return rc;
+    }
+    /* No overwrite and no retry: a competing publication fails safely. */
+    if (cbm_rename_noreplace(tmp, backup) != 0) {
+        cbm_unlink(tmp);
+        return CBM_EDIT_ERR_IO;
+    }
+    if (backup_path_out) {
+        /* The complete name was checked against backup_path_sz before publication. */
+        size_t backup_len = strlen(backup);
+        memcpy(backup_path_out, backup, backup_len);
+        backup_path_out[backup_len] = '\0';
+    }
+
+    return CBM_EDIT_OK;
+}
+
 int cbm_edit_write_atomic(const char *abs_path, const char *data, size_t len,
                           const cbm_edit_file_state_t *expected, const char *backup_dir,
                           char *backup_path_out, size_t backup_path_sz) {
-    if (!abs_path || !data) {
+    if (!abs_path || !data || (backup_path_out && backup_path_sz == 0)) {
         return CBM_EDIT_ERR_ARGS;
     }
-
+    if (backup_path_out) {
+        backup_path_out[0] = '\0';
+    }
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
-    /* Simulated write-path failure: nothing is written, no backup is made —
-     * callers cannot distinguish this from a real IO error, which is the
-     * point of the exercise. */
     if (edit_test_take_write_failure()) {
         return CBM_EDIT_ERR_IO;
     }
 #endif
-
-    /* 1. Optimistic concurrency: refuse to write over a file that changed
-     *    since the caller read it. */
-    if (expected) {
-        cbm_edit_file_state_t now = {0};
-        if (cbm_edit_file_stat(abs_path, &now) != CBM_EDIT_OK) {
-            return CBM_EDIT_ERR_IO;
-        }
-        if (now.mtime_ns != expected->mtime_ns || now.size != expected->size) {
-            return CBM_EDIT_ERR_MTIME;
-        }
+    int rc = edit_check_state(abs_path, expected);
+    if (rc != CBM_EDIT_OK) {
+        return rc;
     }
 
-    /* 2. Backup the original before anything is replaced. */
     if (backup_dir) {
-        if (!cbm_mkdir_p(backup_dir, 0755)) {
-            return CBM_EDIT_ERR_IO;
-        }
-        char backup[CBM_SZ_4K];
-        int n = snprintf(backup, sizeof(backup), "%s/bk_%lld_%d_%s", backup_dir,
-                         (long long)time(NULL), EDIT_PID(), edit_basename(abs_path));
-        if (n < 0 || (size_t)n >= sizeof(backup)) {
-            return CBM_EDIT_ERR_IO;
-        }
-        if (cbm_clone_or_copy_file(abs_path, backup) != 0) {
-            return CBM_EDIT_ERR_IO;
-        }
-        if (backup_path_out && backup_path_sz > 0) {
-            snprintf(backup_path_out, backup_path_sz, "%s", backup);
+        rc = edit_publish_backup(backup_dir, abs_path, backup_path_out, backup_path_sz);
+        if (rc != CBM_EDIT_OK) {
+            return rc;
         }
     }
 
-    /* 3. Temp file in the same directory + rename-replace (atomic on both
-     *    POSIX and Windows via cbm_rename_replace). */
     char tmp[CBM_SZ_4K];
-    int n = snprintf(tmp, sizeof(tmp), "%s.cbm-edit-%d.tmp", abs_path, EDIT_PID());
+    int n = snprintf(tmp, sizeof(tmp), "%s.cbm-edit-XXXXXX", abs_path);
     if (n < 0 || (size_t)n >= sizeof(tmp)) {
-        return CBM_EDIT_ERR_IO;
-    }
-    FILE *fp = cbm_fopen(tmp, "wb");
-    if (!fp) {
-        return CBM_EDIT_ERR_IO;
-    }
-    size_t written = fwrite(data, 1, len, fp);
-    if (written != len) {
-        (void)fclose(fp);
-        (void)cbm_unlink(tmp);
-        return CBM_EDIT_ERR_IO;
-    }
-    if (fclose(fp) != 0) {
-        (void)cbm_unlink(tmp);
-        return CBM_EDIT_ERR_IO;
-    }
-    if (cbm_rename_replace(tmp, abs_path) != 0) {
-        (void)cbm_unlink(tmp);
-        return CBM_EDIT_ERR_IO;
-    }
-    return CBM_EDIT_OK;
-}
-
-/* Parse a backup name of the form bk_<epoch>_<pid>_<basename>. Returns true
- * and fills epoch/pid/bn when the shape matches. */
-static bool edit_backup_name_parse(const char *name, long long *epoch_out, long *pid_out,
-                                   const char **bn_out) {
-    if (strncmp(name, "bk_", 3) != 0) {
-        return false;
-    }
-    const char *p = name + 3;
-    if (*p < '0' || *p > '9') {
-        return false;
-    }
-    char *end1 = NULL;
-    long long epoch = strtoll(p, &end1, 10);
-    if (end1 == p || *end1 != '_') {
-        return false;
-    }
-    const char *q = end1 + 1;
-    if (*q < '0' || *q > '9') {
-        return false;
-    }
-    char *end2 = NULL;
-    long pid = strtol(q, &end2, 10);
-    if (end2 == q || *end2 != '_') {
-        return false;
-    }
-    *epoch_out = epoch;
-    *pid_out = pid;
-    *bn_out = end2 + 1;
-    return true;
-}
-
-int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out, size_t out_sz) {
-    if (!backup_dir || !basename || !out || out_sz == 0 || basename[0] == '\0') {
         return CBM_EDIT_ERR_ARGS;
     }
-    cbm_dir_t *d = cbm_opendir(backup_dir);
-    if (!d) {
-        return CBM_EDIT_ERR_IO;
+    rc = edit_stage_bytes(tmp, data, len);
+    if (rc != CBM_EDIT_OK) {
+        return rc;
     }
-    bool found = false;
-    long long best_epoch = -1;
-    long best_pid = -1;
-    cbm_dirent_t *entry;
-    while ((entry = cbm_readdir(d)) != NULL) {
-        if (entry->is_dir) {
-            continue;
-        }
-        long long epoch = 0;
-        long pid = 0;
-        const char *bn = NULL;
-        if (!edit_backup_name_parse(entry->name, &epoch, &pid, &bn)) {
-            continue;
-        }
-        if (strcmp(bn, basename) != 0) {
-            continue;
-        }
-        if (!found || epoch > best_epoch || (epoch == best_epoch && pid > best_pid)) {
-            /* entry->name is only valid until the next cbm_readdir — copy the
-             * full path out now. */
-            int n = snprintf(out, out_sz, "%s/%s", backup_dir, entry->name);
-            if (n < 0 || (size_t)n >= out_sz) {
-                continue; /* path would be truncated — not a usable candidate */
-            }
-            best_epoch = epoch;
-            best_pid = pid;
-            found = true;
-        }
+    rc = edit_check_state(abs_path, expected);
+    if (rc == CBM_EDIT_OK && cbm_rename_replace(tmp, abs_path) != 0) {
+        rc = CBM_EDIT_ERR_IO;
     }
-    cbm_closedir(d);
-    return found ? CBM_EDIT_OK : CBM_EDIT_ERR_RANGE;
+    if (rc != CBM_EDIT_OK) {
+        cbm_unlink(tmp);
+    }
+    return rc;
+}
+
+int cbm_edit_latest_backup(const char *backup_dir, const char *abs_path, char *out, size_t out_sz) {
+    if (!backup_dir || !abs_path || !out || out_sz == 0) {
+        return CBM_EDIT_ERR_ARGS;
+    }
+    char dir[CBM_SZ_4K];
+    int rc = edit_backup_directory(backup_dir, abs_path, dir, sizeof(dir));
+    if (rc != CBM_EDIT_OK) {
+        return rc;
+    }
+    cbm_path_info_t info;
+    if (cbm_path_info_utf8(dir, &info) != 0) {
+        return CBM_EDIT_ERR_RANGE;
+    }
+    uint64_t last;
+    rc = edit_backup_last_sequence(dir, &last);
+    if (rc != CBM_EDIT_OK) {
+        return rc;
+    }
+    if (last == 0) {
+        return CBM_EDIT_ERR_RANGE;
+    }
+    int n = snprintf(out, out_sz, "%s/bk_%020" PRIu64, dir, last);
+    return n >= 0 && (size_t)n < out_sz ? CBM_EDIT_OK : CBM_EDIT_ERR_ARGS;
 }

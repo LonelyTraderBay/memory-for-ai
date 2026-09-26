@@ -65,22 +65,102 @@ Full transitive inbound trace of `cbm_fopen`: **11 calls / 17,290 bytes ≈ 4.3K
 
 1. **Tokens are estimated** as bytes ÷ 4 of tool output — not the client’s real usage meter. Direction and rough magnitude are trustworthy; the second significant digit is not.
 2. **Not blind:** the same agent ran both conditions and graded them. Ground truth was re-verified against source at the frozen SHA, but grader independence is the strongest reason to distrust the 8/8 vs 6/8 gap.
-3. **Fixed cost not counted:** the 23-tool manifest costs ~9K tokens per session in clients that list all tools. A one-question session can lose to grep on pure tokens; the advantage amortizes over a real working session. (Mitigations: Scout/Verify/Auditor scoped tool profiles, or CLI mode as used here.)
+3. **Fixed cost not counted in this 2026-09-14 case study:** the latest 2026-09-24 Windows `v0.12.0-rc.2` candidate measured 8,347 `o200k_base` tokens (38,128 wire bytes) with all 23 tools; `analysis` measured 5,156 tokens/23,331 bytes with 14 tools, and `scout` 3,254 tokens/14,855 bytes with 8 tools. The earlier 2026-09-23 spot check measured 8,404 tokens. A one-question session can lose to grep on pure tokens; client caching/accounting changes the actual session cost. These are payload measurements, not model usage-meter totals.
 4. **Question mix favors structure by design** — 6 of 8 questions are structural, matching the product’s target workload. Q4/Q6 are the honesty controls.
 5. Published-paper comparison (arXiv:2603.27277, 31 repos, blinded): 10× fewer tokens, 2.1× fewer tool calls, 83% vs 92% answer quality for the file-by-file baseline. The graph **locates**; it does not replace reading code when you need deep understanding.
 
 ## The workflow this evidence supports
 
-1. **Locate with the graph** — `trace_path` / `search_graph` for who-calls-whom and blast radius (cheap, exact, transitive).
+1. **Locate with the graph** — `trace_path` / `search_graph` for relationships represented in the indexed graph. Coverage depends on language constructs; verify empty/exhaustive caller claims against coverage and source.
 2. **Read the right slice** — `get_code_snippet` for just the function you will touch, not the whole file.
 3. **Edit** as usual.
 4. **Verify with `detect_changes`** — confirm the diff’s blast radius matches what you intended to affect.
 5. **Drop to text tools deliberately** — `search_code` / grep for string literals, comments, and error messages; `ls` for directory shape.
-6. **Guard freshness** — `index_status` before trusting line numbers; re-index is seconds and incremental.
+6. **Guard freshness and coverage** — check `index_status` before trusting line numbers and `check_index_coverage` before negative/exhaustive claims; re-index when stale.
 
 ## Reproduce
 
 Follow [MEASURING.md](MEASURING.md) §3 (rigorous A/B protocol) with your own repository, question set, and model. Keep artifacts outside the worktrees, record raw paired counts beside every ratio, and publish your caveats with your numbers — as above.
+
+## External-adopter spot check: VitTrade React (2026-09-23)
+
+This is a **single retrieval smoke check**, not a rigorous A/B benchmark and not evidence of repo-wide token savings. It records a useful negative result before adoption: a React callback is present in source but absent from the current `CALLS` trace.
+
+| Control | Value |
+|---|---|
+| Repository | `LonelyTraderBay/vittrade-react` @ `1eab2d7a25a270f965c03bc0adeadcbdd2abc548` (detached clean temporary checkout; the user's working copy was not changed) |
+| Tool build | Windows native working-tree build based on `memory-for-ai` HEAD `284d48a1`; reports `dev`, not a release artifact |
+| Index | Full mode · 9,400 nodes · 41,892 edges · 853 indexed file hashes · 0 skipped · 69 parse-partial files/ranges · medium confidence (0.85) · coverage ratio unavailable |
+| Question | What does `TradePage.handleConfirmOrder` do, and what invokes it? |
+| Tokenizer | `o200k_base` via `tiktoken` 0.14.0; counts below are tool-response/output proxies, not client usage-meter totals |
+
+| Condition | Calls | Output-token proxy | Result |
+|---|---:|---:|---|
+| memory-for-ai: `search_graph` + `get_code_snippet` + `trace_path` + `search_code` fallback | 4 | 1,410 | Correct after the text-search fallback; `trace_path` alone returned `callers_total: 0` |
+| Baseline: `rg -n -C 2` + read the handler and JSX binding slice | 2 | 936 | Correct; source shows `onClick={handleConfirmOrder}` at `TradePage.tsx:411` |
+
+For this narrow question, the graph workflow used **50.6% more measured output tokens and twice as many calls** than the targeted baseline, before any fixed manifest cost. The current MCP `tools/list` raw stdio response contains 23 tools and measures **8,404 `o200k_base` tokens** (38,362 UTF-8 bytes; `tiktoken` 0.14.0); the scoped `analysis` and `scout` responses measure 5,190 and 3,275 tokens respectively. A client that sends the whole manifest would add that full-profile session overhead, though client caching/accounting can differ. These counts tokenize the exact JSON-RPC response plus its line ending, not a client usage meter. The handler snippet itself matched source, but the graph does not currently model this JSX callback as an inbound `CALLS` edge. Do not interpret zero callers as proof that a React handler is unused; verify callback bindings in source.
+
+### Supplementary fixed-query probes (same VitTrade snapshot)
+
+These four additional spot checks use the same tokenizer and clean checkout, but were not run as isolated, blinded model sessions. “memory-for-ai” is the actual shortest tool path tried for each question; where the graph could not answer the relation, the path uses `search_code` as an explicit fallback. Baseline is targeted `rg -n -C 2`. Counts are tool-response output only; they exclude prompts, reasoning, generated answers, and any cached/client-specific accounting.
+
+| Question | memory-for-ai path | Calls A/B | Output-token proxy A/B | Observed result |
+|---|---|---:|---:|---|
+| Which file calls `createProtectedRoutes`? | inbound `trace_path` / targeted `rg` | 1/1 | 90/475 | Graph finds the caller file, but folds four concrete call sites into one file node; partial if call-site count matters. |
+| Where is route literal `/trade/:pairId`? | `search_code` / targeted `rg` | 1/1 | 116/91 | Both locate the source line; grep is cheaper. |
+| What binds `handleConfirmOrder` in JSX? | `search_code` fallback / targeted `rg` | 1/1 | 121/55 | Text fallback finds `onClick={handleConfirmOrder}`; graph `CALLS` trace does not represent this callback edge. |
+| Where does `ORDER_PLACED` occur? | `search_code` / targeted `rg` | 1/1 | 158/137 | Both locate the two occurrences; grep is cheaper. |
+
+Across the original handler question and these four probes, the observed paths total **8 calls / 1,895 output-token proxy** for memory-for-ai versus **6 calls / 1,694 tokens** for targeted `rg` (**11.9% more output tokens and 33.3% more calls** for memory-for-ai, before the manifest). This is only a descriptive sum across five hand-picked questions—not a benchmark estimate or a general savings claim. The 8,404-token full manifest alone is larger than either side's measured query output if a client sends it for this session; scoped profiles lower that fixed cost but expose fewer tools. The useful positive signal is the caller-file lookup; narrow literal and callback-binding questions favor grep, and callback completeness needs source verification.
+
+**Decision:** the 2026-09-23 spot checks do not establish savings for VitTrade. The follow-up below adds an exact-tokenizer retrieval measurement, but still is not a blinded model-session benchmark or an actual client usage-meter reading. Use memory-for-ai as a locator, then verify JSX callbacks and any code you plan to change with source search/snippets. The 69 partial parses and unavailable coverage ratio also mean the index is not proven complete for this snapshot.
+
+### RC2 same-SHA retrieval run (2026-09-24)
+
+This is a deterministic, scripted retrieval comparison for eight fixed question shapes—not an isolated same-model A/B session. It improves on the earlier bytes÷4 proxy by tokenizing the exact MCP JSON-RPC responses and baseline text outputs with `tiktoken`, while still excluding prompts, reasoning, generated answers, client caching and the model's actual usage-meter accounting. The same agent selected and graded both conditions; the source was then checked directly, so grading was not blind.
+
+| Control | Value |
+|---|---|
+| Target | `LonelyTraderBay/vittrade-react` @ `1eab2d7a25a270f965c03bc0adeadcbdd2abc548`; two clean detached clones, original working copy untouched |
+| Tool | `memory-for-ai v0.12.0-rc.2`, local candidate SHA-256 `6366400071b5d0412403fd40e84c2656edd5f24fff06542fbb640dede9e54e30`; not a published release |
+| Index | Full · 9,400 nodes · 41,892 edges · 853 indexed-file hashes · 69 parse-partial files · 0 skipped · medium confidence; coverage-ratio denominator unavailable |
+| Freshness | All nine queried source paths reported `metadata_match`; `RiskManagementDemoPage.tsx` has an unrelated partial-parse range at line 213, while the measured `ORDER_PLACED` use is at line 99 |
+| Tokenizer / capture | `tiktoken` 0.14.0 / `o200k_base`; graph counts include each complete JSON-RPC tool response plus its line ending; baseline counts include only the corresponding `rg`/source-read outputs |
+
+| # | Question | Graph calls / tokens | Targeted `rg`/read calls / tokens | Source-checked result |
+|---|---|---:|---:|---|
+| Q1 | What does `TradePage.handleConfirmOrder` do, and what invokes it? | 4 / 1,448 | 2 / 473 | PASS only with fallback: `trace_path` says 0 callers; `search_code` finds the JSX binding at line 411. Graph-only caller answer is incomplete. |
+| Q2 | Which file calls `createProtectedRoutes`? | 1 / 90 | 1 / 475 | PASS at file level: graph identifies `routes.ts`, but collapses three call expressions (and an import) into one file node. |
+| Q3 | Where is `/trade/:pairId` referenced? | 1 / 198 | 1 / 371 | PARTIAL: both locate references, but hits include comments; actual web handling uses `/w/trade/` prefix logic rather than this exact route literal. |
+| Q4 | What binds `handleConfirmOrder` in JSX? | 1 / 172 | 1 / 112 | PASS; targeted grep is cheaper for this narrow text question. |
+| Q5 | Find `ORDER_PLACED` declarations and uses. | 1 / 306 | 1 / 372 | PASS for locating; graph also returns enclosing symbols beyond the literal occurrences. |
+| Q6 | Which components call `useActionToast`? | 1 / 1,432 | 1 / 5,604 | PASS on count/scope: 68 graph caller rows match 68 direct source call expressions after excluding the hook's documentation/declaration and test files. |
+| Q7 | What outgoing function relationship does `useRefresh` expose? | 1 / 98 | 2 / 810 | PARTIAL: graph exposes the local `update` callback but omits React hooks/state setters and other behavior visible in source. |
+| Q8 | How does `fmtFee` select precision and which formatter does it call? | 1 / 380 | 1 / 123 | PASS; the tiny function is cheaper to inspect with targeted grep. |
+| **Total** | **8 fixed questions** | **11 / 4,124** | **10 / 8,340** | Query-output-only graph payload is **50.6% lower**; graph needed one more tool call. |
+
+The fixed MCP manifest changes the session-level conclusion. Exact `tools/list` measurements were:
+
+| Profile | Tools | Manifest bytes / tokens | Initialize tokens |
+|---|---:|---:|---:|
+| Full (default) | 23 | 38,128 / 8,347 | 272 |
+| `analysis` | 14 | 23,331 / 5,156 | 232 |
+| `scout` | 8 | 14,855 / 3,254 | 189 |
+
+Adding just the manifest and initialize response gives **12,743 tokens** for the eight-question full-profile graph session (**52.8% more** than the 8,340 baseline-output tokens). The `analysis` profile gives **9,512 tokens** (**14.1% more**); it includes `search_code`, which is needed for the JSX callback fallback. `scout` omits `search_code`, so it cannot run this full workflow. These comparisons do not include the agent's separate shell-tool schema or usage accounting, and should not be treated as a client-meter result.
+
+**Practical reading:** structural fan-out lookup (`useActionToast`) is a clear per-query win; literal search and tiny snippets often favor grep. The callback question demonstrates why zero graph callers must not be treated as proof of no use. For this eight-question mix, however, neither full MCP nor `analysis` beats the targeted baseline after schema startup cost. Prefer CLI mode for isolated lookups, keep `search_code`/source inspection as a required fallback, and measure a real agent session before claiming token savings. The coverage ratio remains unknown, so do not make repo-wide completeness claims.
+
+The local raw paired payloads are retained outside the worktrees at `build/vittrade-benchmark-20260924-v2/artifacts/vittrade-benchmark-20260924-final.json`; the artifact is ignored build output, not part of a published release.
+
+### Source-matched `0.12.0-rc.2` release-build recheck (2026-09-24)
+
+The Windows release-profile binary was rebuilt from the same source diff used by the regression suite (`scripts/build.sh --with-ui --version 0.12.0-rc.2 CC=clang CXX=clang++`), then passed through `prepare-release-candidates.sh` and `package-release.sh`. Linker-output SHA-256: `3506ec17c58277a3ccda514e1c5f3456dcffbcb4264da9a9673ae2bd8fa70693`; selected stripped payload SHA-256: `4f411231844ba51feb43239705b255708879624bfc57c7dab2576858c55ee7ea`. The ZIP and MCPB contain that selected payload. This is a local Windows/amd64 candidate, not a published release.
+
+The same 11 MCP requests were replayed with that exact extracted candidate against a fresh full index of the unchanged VitTrade commit above: 9,400 nodes, 41,892 edges, 853 indexed-file hashes, 69 parse-partial files, 0 skipped; the coverage denominator remains unknown. All calls returned `isError=false`; their result text matched the earlier capture after removing only the nondeterministic `elapsed_ms` field. The replay therefore reproduces the earlier query-only result: **4,124 `o200k_base` tokens / 11 graph calls** versus the unchanged targeted baseline **8,340 tokens / 10 calls** (50.6% lower query output, before manifest cost). The source-matched binary's manifests also remained **8,347 / 5,156 / 3,254 tokens** for full / `analysis` / `scout`, so manifest-inclusive totals remain **12,743** (52.8% more than baseline) and **9,512** (14.1% more) for full and `analysis`. These are still response-token proxies, not a client usage-meter measurement.
+
+The extracted ZIP artifact passed the native Windows amd64 artifact smoke, including installer checksum/extraction, MCP stdio and Content-Length framing, install/uninstall, UI HTTP, shutdown, and daemon retirement. This verifies the local candidate path only; other OS/architecture release lanes, release attestations, and public publication are not covered by this run.
 
 ## A/B — edit tools: `rename_symbol` / `move_symbol` vs grep + full-file rewrite (2026-09-19/20)
 

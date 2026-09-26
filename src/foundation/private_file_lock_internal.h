@@ -24,7 +24,6 @@ void cbm_private_fork_condition_broadcast_while_guarded(cbm_private_fork_conditi
 cbm_private_fork_wait_status_t cbm_private_fork_condition_wait_until_while_guarded(
     cbm_private_fork_condition_t *condition, uint64_t deadline_ms);
 
-#ifdef _WIN32
 /* On success ownership of directory_handle transfers to the returned object.
  * On failure the caller still owns it. The handle must allow attribute and
  * security queries; stable_path must be a local drive path naming that exact
@@ -35,13 +34,6 @@ cbm_private_file_lock_status_t cbm_private_lock_directory_adopt_windows(
  * CloseHandle cleanup attempt fail before invocation. */
 bool cbm_private_lock_directory_fail_lock_attempt_cleanup_for_test(
     cbm_private_lock_directory_t *directory);
-
-#else
-/* On success ownership of directory_fd transfers to the returned object. On
- * failure the caller still owns it. stable_path must name that exact handle. */
-cbm_private_file_lock_status_t cbm_private_lock_directory_adopt_posix(
-    int directory_fd, const char *stable_path, cbm_private_lock_directory_t **directory_out);
-#endif
 
 /* Focused invariant seam: production callers never receive a native handle. */
 bool cbm_private_file_lock_is_cloexec_for_test(const cbm_private_file_lock_t *lock);
@@ -78,12 +70,6 @@ bool cbm_private_file_lock_fail_next_release_step_for_test(
     cbm_private_file_lock_t *lock, cbm_private_file_lock_release_step_t step);
 unsigned int cbm_private_file_lock_release_step_attempts_for_test(
     const cbm_private_file_lock_t *lock, cbm_private_file_lock_release_step_t step);
-
-#ifndef _WIN32
-/* Models close(2) consuming fd ownership while reporting an error. */
-bool cbm_private_file_lock_fail_close_after_consuming_for_test(cbm_private_file_lock_t *lock);
-int cbm_private_file_lock_native_fd_for_test(const cbm_private_file_lock_t *lock);
-#endif
 
 /* Global process-lifetime gate for registry live-set mutation and teardown.
  * POSIX atfork prepare takes this same gate before closing child-side lock

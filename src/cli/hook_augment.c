@@ -1082,14 +1082,16 @@ static int ha_tokenize(const char *cmd, char toks[][HA_BASH_TOK_SZ], int max) {
 }
 
 static bool ha_is_env_assign(const char *t) {
+    enum { HA_ENV_NAME_START = 1 };
     if (!t || !t[0])
         return false;
     if (!isalpha((unsigned char)t[0]) && t[0] != '_')
         return false;
-    const char *p = t + 1;
-    while (isalnum((unsigned char)*p) || *p == '_')
-        p++;
-    return *p == '=';
+    size_t i = HA_ENV_NAME_START;
+    while (t[i] != '\0' && (isalnum((unsigned char)t[i]) || t[i] == '_')) {
+        i++;
+    }
+    return t[i] == '=';
 }
 
 typedef enum { HA_BIN_GREP, HA_BIN_RG, HA_BIN_AG, HA_BIN_ACK, HA_BIN_UGREP } ha_bin_t;
@@ -1397,8 +1399,10 @@ static char *ha_lifecycle_json_from_root(cbm_mcp_server_t *srv, yyjson_val *root
                  "%s. Router: scout=Tier 1 quick, verify=Tier 2 verification, auditor=Tier 3 "
                  "full graph verification. Coverage invariant for every tier: call "
                  "check_index_coverage for every file relied on; if incomplete, read the "
-                 "reported missed lines directly and qualify conclusions. For structural "
-                 "code discovery use search_graph, then trace_path, then get_code_snippet; "
+                 "reported missed lines directly and qualify conclusions. Graphs cover recorded "
+                 "relationships; inspect source for callbacks or dynamic references that may not "
+                 "create edges. For structural discovery use search_graph, trace_path, then "
+                 "get_code_snippet; "
                  "use query_graph or get_architecture for broader structure. Use grep, glob, "
                  "and file reads for literals, configs, non-code files, and verification.",
                  scope, safe_project, tier);
@@ -1411,7 +1415,8 @@ static char *ha_lifecycle_json_from_root(cbm_mcp_server_t *srv, yyjson_val *root
                  "auditor=Tier 3 full graph verification. Coverage invariant for every tier: "
                  "call check_index_coverage for every file relied on; if incomplete, read the "
                  "reported missed lines directly and qualify conclusions. Use search_graph, "
-                 "trace_path, and get_code_snippet first; use grep for "
+                 "trace_path, and get_code_snippet for recorded relationships; inspect source for "
+                 "callbacks or dynamic references that may not create edges. Use grep for "
                  "literals, configs, non-code files, and verification.",
                  scope, index_guidance, tier);
     }

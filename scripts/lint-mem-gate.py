@@ -47,7 +47,7 @@ WHITELIST = Path(os.environ.get(
 MIN_WHY = 120
 MIN_TRIED = 40
 
-FINDING_RE = re.compile(r"^(?P<file>[^:]+):(?P<line>\d+):\d+:\s+(?:error|warning):\s+(?P<msg>.*?)\s*\[(?P<check>[\w.-]+)\]\s*$")
+FINDING_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+):\d+:\s+(?:error|warning):\s+(?P<msg>.*?)\s*\[(?P<check>[\w.-]+)(?:,-warnings-as-errors)?\]\s*$")
 
 
 def strip_noise(text):
@@ -200,13 +200,24 @@ def main():
     for raw in sys.stdin:
         m = FINDING_RE.match(raw.rstrip("\n"))
         if not m:
+            if ": error:" in raw or "Error while processing" in raw:
+                sys.stderr.write(raw)
             continue
         f = m.groupdict()
         # Only the analyzer checks this gate is about. clang-tidy also emits
         # clang-diagnostic-* for ordinary compiler warnings; those belong to
         # the build's own -Werror, not here.
         if not f["check"].startswith("clang-analyzer-"):
+            if ": error:" in raw:
+                sys.stderr.write(raw)
             continue
+        # clang-tidy emits absolute native paths on Windows; whitelist keys
+        # are repository-relative POSIX paths on every host.
+        source = Path(f["file"])
+        try:
+            f["file"] = source.resolve().relative_to(Path(__file__).resolve().parents[1]).as_posix()
+        except ValueError:
+            f["file"] = source.as_posix()
         if "/vendored/" in f["file"]:
             continue
         findings.append(f)

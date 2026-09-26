@@ -683,8 +683,8 @@ static void handle_processes(cbm_http_conn_t *c) {
     FILE *fp = popen("LC_ALL=C ps -eo pid,pcpu,rss,etime,comm 2>/dev/null"
                      " | grep '[m]emory-for-ai'",
                      "r");
-    int proc_count = 0;
     if (fp) {
+        int proc_count = 0;
         char line[1024];
         while (fgets(line, sizeof(line), fp)) {
             int pid = 0;
@@ -696,10 +696,12 @@ static void handle_processes(cbm_http_conn_t *c) {
             if (sscanf(line, "%d %f %ld %63s %255s", &pid, &cpu, &rss, elapsed, comm) >= 4) {
                 if (proc_count > 0)
                     buf[pos++] = ',';
+                char escaped_comm[CBM_SZ_2K];
+                cbm_json_escape(escaped_comm, (int)sizeof(escaped_comm), comm);
                 http_appendf(buf, sizeof(buf), &pos,
                              "{\"pid\":%d,\"cpu\":%.1f,\"rss_mb\":%.1f,"
                              "\"elapsed\":\"%s\",\"command\":\"%s\",\"is_self\":%s}",
-                             pid, (double)cpu, (double)rss / 1024.0, elapsed, comm,
+                             pid, (double)cpu, (double)rss / 1024.0, elapsed, escaped_comm,
                              pid == (int)getpid() ? "true" : "false");
                 if (pos >= (int)sizeof(buf)) {
                     pos = (int)sizeof(buf) - 1;
@@ -1511,7 +1513,6 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char graph_str[32] = {0};
     char level_str[32] = {0};
     char center_node[CBM_SZ_1K] = {0};
-    char radius_str[32] = {0};
 
     if (!cbm_http_query_param(req->query, "project", project, (int)sizeof(project)) ||
         project[0] == '\0') {
@@ -1532,6 +1533,7 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
         detail_graph = strcmp(level_str, "detail") == 0;
     }
     if (detail_graph) {
+        char radius_str[32] = {0};
         if (!cbm_http_query_param(req->query, "center_node", center_node,
                                   (int)sizeof(center_node)) ||
             center_node[0] == '\0') {

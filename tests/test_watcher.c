@@ -2166,16 +2166,18 @@ TEST(watcher_baseline_dirty_repo) {
 
     /* Baseline — captures HEAD but doesn't check for dirty */
     cbm_watcher_poll_once(w);
-    ASSERT_EQ(index_call_count, 0); /* baseline never triggers */
+    int baseline_count = index_call_count;
 
-    /* First real poll — should detect the pre-existing dirty state */
-    cbm_watcher_touch(w, "bld-repo");
-    cbm_watcher_poll_once(w);
-    ASSERT_EQ(index_call_count, 1);
+    /* Git probes may fail transiently on loaded sanitizer runners. The
+     * contract is eventual detection without duplicate callbacks (#937). */
+    wait_index_count(w, "bld-repo", 1);
+    int detected_count = index_call_count;
 
     cbm_watcher_free(w);
     cbm_store_close(store);
     th_rmtree(tmpdir);
+    ASSERT_EQ(baseline_count, 0); /* baseline never triggers */
+    ASSERT_EQ(detected_count, 1);
     PASS();
 }
 

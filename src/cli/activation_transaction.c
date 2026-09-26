@@ -1,7 +1,6 @@
 /* Transactional binary activation. See activation_transaction.h. */
 #include "cli/activation_transaction.h"
 #include "foundation/log.h"
-#include "foundation/macos_acl.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -13,23 +12,12 @@
 #include <wchar.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <aclapi.h>
 #include <sddl.h>
 #include <windows.h>
-#else
-#include <fcntl.h>
-#ifdef __APPLE__
-#include <sys/acl.h>
-#include <sys/stdio.h>
-#elif defined(__linux__)
-#include <sys/syscall.h>
-#endif
-#include <unistd.h>
-#endif
 
 typedef enum {
     ACTIVATION_REPLACE = 0,
@@ -46,14 +34,9 @@ typedef enum {
 } activation_state_t;
 
 typedef struct {
-#ifdef _WIN32
     DWORD volume_serial;
     DWORD index_high;
     DWORD index_low;
-#else
-    dev_t device;
-    ino_t inode;
-#endif
 } activation_file_identity_t;
 
 struct cbm_activation_transaction {
@@ -75,9 +58,6 @@ struct cbm_activation_transaction {
     activation_file_identity_t directory_identity;
     activation_file_identity_t staged_identity;
     activation_file_identity_t backup_identity;
-#ifndef _WIN32
-    int directory_fd;
-#endif
 };
 
 /* The transaction's security predicates refuse by returning false without a
@@ -107,22 +87,6 @@ static void activation_note_refusal(const char *predicate, unsigned long os_erro
                    g_activation_refusal_object ? g_activation_refusal_object : "");
 }
 
-#ifndef _WIN32
-/* A permission refusal has no errno to report — the syscall succeeded and the
- * POLICY said no. Reporters spent hours chasing "I/O failed" for what was a
- * mode bit (#1535), so these refusals carry the mode and the path instead of a
- * fabricated OS error code. POSIX-only: the Windows validators refuse on ACL
- * predicates and report through activation_note_refusal with a real OS error. */
-static void activation_note_refusal_detail(const char *predicate, const char *detail) {
-    if (g_activation_refusal_note[0] != '\0') {
-        return;
-    }
-    (void)snprintf(g_activation_refusal_note, sizeof(g_activation_refusal_note), "%s (%s)%s%s",
-                   predicate, detail, g_activation_refusal_object ? " at " : "",
-                   g_activation_refusal_object ? g_activation_refusal_object : "");
-}
-#endif
-
 const char *cbm_activation_transaction_refusal_note(void) {
     return g_activation_refusal_note;
 }
@@ -139,13 +103,8 @@ void cbm_activation_transaction_note_refusal_for_testing(const char *predicate,
 }
 #endif
 
-#ifdef _WIN32
 typedef HANDLE activation_native_file_t;
 #define ACTIVATION_INVALID_FILE INVALID_HANDLE_VALUE
-#else
-typedef int activation_native_file_t;
-#define ACTIVATION_INVALID_FILE (-1)
-#endif
 
 static atomic_uint_fast64_t activation_unique_sequence = ATOMIC_VAR_INIT(0);
 static cbm_activation_transaction_before_absent_publish_for_test_fn
@@ -191,12 +150,10 @@ static bool activation_target_parts(const char *target_path, char **directory_ou
         return false;
     }
     const char *separator = strrchr(target_path, '/');
-#ifdef _WIN32
     const char *backslash = strrchr(target_path, '\\');
     if (backslash && (!separator || backslash > separator)) {
         separator = backslash;
     }
-#endif
     const char *base = separator ? separator + 1 : target_path;
     if (!base[0] || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) {
         return false;
@@ -205,10 +162,8 @@ static bool activation_target_parts(const char *target_path, char **directory_ou
         *directory_out = activation_string_copy(".");
     } else if (separator == target_path) {
         *directory_out = activation_string_span(target_path, 1U);
-#ifdef _WIN32
     } else if (separator == target_path + 2 && target_path[1] == ':') {
         *directory_out = activation_string_span(target_path, 3U);
-#endif
     } else {
         *directory_out = activation_string_span(target_path, (size_t)(separator - target_path));
     }
@@ -227,23 +182,17 @@ static bool activation_target_parts(const char *target_path, char **directory_ou
 
 static char *activation_path_name_copy(const char *path) {
     const char *slash = strrchr(path, '/');
-#ifdef _WIN32
     const char *backslash = strrchr(path, '\\');
     if (backslash && (!slash || backslash > slash)) {
         slash = backslash;
     }
-#endif
     return activation_string_copy(slash ? slash + 1 : path);
 }
 
 static char *activation_unique_path(const char *directory, const char *tag) {
     uint64_t sequence =
         atomic_fetch_add_explicit(&activation_unique_sequence, 1U, memory_order_relaxed) + 1U;
-#ifdef _WIN32
     unsigned long process_id = (unsigned long)GetCurrentProcessId();
-#else
-    unsigned long process_id = (unsigned long)getpid();
-#endif
     size_t directory_length = strlen(directory);
     size_t needed = directory_length + strlen(tag) + 80U;
     char *path = malloc(needed);
@@ -253,11 +202,7 @@ static char *activation_unique_path(const char *directory, const char *tag) {
     /* Windows joins use the backslash: extended-length (\\\\?\\) directories
      * reach this composer and that namespace performs no forward-slash
      * translation. POSIX keeps the slash. */
-#ifdef _WIN32
     const char *separator = "\\";
-#else
-    const char *separator = "/";
-#endif
     int written =
         snprintf(path, needed, "%s%s.cbm-%s-%lu-%" PRIu64, directory,
                  directory[directory_length - 1U] == '/' || directory[directory_length - 1U] == '\\'
@@ -273,15 +218,9 @@ static char *activation_unique_path(const char *directory, const char *tag) {
 
 static bool activation_identity_equal(const activation_file_identity_t *left,
                                       const activation_file_identity_t *right) {
-#ifdef _WIN32
     return left->volume_serial == right->volume_serial && left->index_high == right->index_high &&
            left->index_low == right->index_low;
-#else
-    return left->device == right->device && left->inode == right->inode;
-#endif
 }
-
-#ifdef _WIN32
 
 typedef struct {
     void *token_information;
@@ -771,263 +710,31 @@ static bool activation_directory_secure(const char *directory, int *unused,
     return acl_ok;
 }
 
-#else
-
-static bool activation_posix_acl_empty(int descriptor) {
-    return cbm_macos_extended_acl_fd_is_empty(descriptor);
-}
-
-static char *activation_posix_walk_path(const char *directory) {
-#ifdef __APPLE__
-    static const char *const aliases[] = {"/tmp", "/var"};
-    for (size_t index = 0; index < sizeof(aliases) / sizeof(aliases[0]); index++) {
-        const char *alias = aliases[index];
-        size_t alias_length = strlen(alias);
-        if (strncmp(directory, alias, alias_length) != 0 ||
-            (directory[alias_length] != '\0' && directory[alias_length] != '/')) {
-            continue;
-        }
-        struct stat alias_status;
-        char resolved[4096];
-        if (lstat(alias, &alias_status) != 0 || !S_ISLNK(alias_status.st_mode) ||
-            alias_status.st_uid != 0 || !realpath(alias, resolved)) {
-            return NULL;
-        }
-        struct stat resolved_status;
-        if (lstat(resolved, &resolved_status) != 0 || !S_ISDIR(resolved_status.st_mode) ||
-            resolved_status.st_uid != 0) {
-            return NULL;
-        }
-        size_t needed = strlen(resolved) + strlen(directory + alias_length) + 1U;
-        char *mapped = malloc(needed);
-        if (!mapped) {
-            return NULL;
-        }
-        int written = snprintf(mapped, needed, "%s%s", resolved, directory + alias_length);
-        if (written <= 0 || (size_t)written >= needed) {
-            free(mapped);
-            return NULL;
-        }
-        return mapped;
-    }
-#endif
-    return activation_string_copy(directory);
-}
-
-/* ANCESTOR policy (#1535). World-writable is still fatal: any local user could
- * swap a path component mid-transaction. GROUP-writable is not — it is the
- * default shape of ordinary home trees (WSL2 ships ~ and ~/.local at 0775, as
- * do several distro skeletons and any site using a shared primary group), and
- * refusing it made `install.sh` fail for a large fraction of Linux users with
- * no actionable message. The group is a bounded, administratively-chosen set;
- * the LEAF directory (below) stays strictly owner-private either way, so the
- * binary itself is never left in a group-writable directory. Group-writable
- * ancestors are warned about, out loud, rather than silently accepted. */
-static bool activation_posix_intermediate_secure(const struct stat *status) {
-    bool trusted_owner = status->st_uid == 0 || status->st_uid == geteuid();
-    bool world_writable = (status->st_mode & 0002) != 0;
-    bool root_sticky = status->st_uid == 0 && (status->st_mode & S_ISVTX) != 0;
-    return S_ISDIR(status->st_mode) && trusted_owner && (!world_writable || root_sticky);
-}
-
-static bool activation_posix_intermediate_group_writable(const struct stat *status) {
-    bool root_sticky = status->st_uid == 0 && (status->st_mode & S_ISVTX) != 0;
-    return (status->st_mode & 0020) != 0 && !root_sticky;
-}
-
-static bool activation_directory_secure(const char *directory, int *directory_fd_out,
-                                        activation_file_identity_t *identity_out) {
-    int flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    char *walk_path = activation_posix_walk_path(directory);
-    if (!walk_path) {
-        return false;
-    }
-    bool absolute = walk_path[0] == '/';
-    int descriptor = open(absolute ? "/" : ".", flags);
-    bool ok = descriptor >= 0;
-    char *cursor = walk_path;
-    while (*cursor == '/') {
-        cursor++;
-    }
-    if (ok && *cursor) {
-        struct stat initial_status;
-        ok = fstat(descriptor, &initial_status) == 0 &&
-             activation_posix_intermediate_secure(&initial_status);
-    }
-    while (ok && *cursor) {
-        char *component = cursor;
-        while (*cursor && *cursor != '/') {
-            cursor++;
-        }
-        char saved = *cursor;
-        *cursor = '\0';
-        if (strcmp(component, ".") == 0) {
-            /* Harmless explicit current-directory component. */
-        } else if (strcmp(component, "..") == 0 || !component[0]) {
-            ok = false;
-        } else {
-            int next = openat(descriptor, component, flags);
-            struct stat next_status;
-            bool next_ok = next >= 0 && fstat(next, &next_status) == 0;
-            char *remaining = cursor + (saved ? 1 : 0);
-            while (*remaining == '/') {
-                remaining++;
-            }
-            if (next_ok && *remaining) {
-                if (!activation_posix_intermediate_secure(&next_status)) {
-                    char detail[64];
-                    (void)snprintf(detail, sizeof(detail), "mode %04o, uid %lu",
-                                   (unsigned)(next_status.st_mode & 07777),
-                                   (unsigned long)next_status.st_uid);
-                    g_activation_refusal_object = walk_path;
-                    activation_note_refusal_detail("ancestor_directory_world_writable", detail);
-                    g_activation_refusal_object = NULL;
-                    next_ok = false;
-                } else if (activation_posix_intermediate_group_writable(&next_status)) {
-                    char mode_text[16];
-                    (void)snprintf(mode_text, sizeof(mode_text), "%04o",
-                                   (unsigned)(next_status.st_mode & 07777));
-                    cbm_log_warn("activation.ancestor_group_writable", "path", walk_path, "mode",
-                                 mode_text);
-                }
-            }
-            if (next_ok) {
-                (void)close(descriptor);
-                descriptor = next;
-            } else {
-                if (next >= 0) {
-                    (void)close(next);
-                }
-                ok = false;
-            }
-        }
-        *cursor = saved;
-        while (*cursor == '/') {
-            cursor++;
-        }
-    }
-    struct stat status;
-    if (ok && fstat(descriptor, &status) == 0) {
-        /* LEAF policy: strictly owner-private. This is the directory the binary
-         * is published into, so group/other write here would let another
-         * account replace the executable between validation and exec. Unlike
-         * the ancestors above, this one is refused — but it now says exactly
-         * which directory and which mode (#1535), instead of surfacing as a
-         * generic I/O failure that sent reporters hunting phantom disk errors. */
-        bool is_dir = S_ISDIR(status.st_mode);
-        bool owned = status.st_uid == geteuid();
-        bool private_permissions = (status.st_mode & 0022) == 0;
-        if (!is_dir || !owned || !private_permissions) {
-            char detail[64];
-            (void)snprintf(detail, sizeof(detail), "mode %04o, uid %lu",
-                           (unsigned)(status.st_mode & 07777), (unsigned long)status.st_uid);
-            g_activation_refusal_object = directory;
-            activation_note_refusal_detail(!is_dir  ? "install_dir_not_a_directory"
-                                           : !owned ? "install_dir_not_owned_by_you"
-                                                    : "install_dir_group_or_world_writable",
-                                           detail);
-            g_activation_refusal_object = NULL;
-            ok = false;
-        } else if (!activation_posix_acl_empty(descriptor)) {
-            g_activation_refusal_object = directory;
-            activation_note_refusal_detail("install_dir_carries_extra_acl_entries", "posix acl");
-            g_activation_refusal_object = NULL;
-            ok = false;
-        }
-    } else {
-        ok = false;
-    }
-    free(walk_path);
-    if (!ok) {
-        if (descriptor >= 0) {
-            (void)close(descriptor);
-        }
-        return false;
-    }
-    identity_out->device = status.st_dev;
-    identity_out->inode = status.st_ino;
-    *directory_fd_out = descriptor;
-    return true;
-}
-
-#endif
-
 static bool activation_directory_still_valid(const cbm_activation_transaction_t *transaction) {
-#ifdef _WIN32
     int ignored = 0;
     activation_file_identity_t current;
     return activation_directory_secure(transaction->directory_path, &ignored, &current) &&
            activation_identity_equal(&current, &transaction->directory_identity);
-#else
-    struct stat status;
-    if (transaction->directory_fd < 0 || fstat(transaction->directory_fd, &status) != 0 ||
-        !S_ISDIR(status.st_mode) || status.st_uid != geteuid() || (status.st_mode & 0022) != 0 ||
-        !activation_posix_acl_empty(transaction->directory_fd)) {
-        return false;
-    }
-    activation_file_identity_t current = {
-        .device = status.st_dev,
-        .inode = status.st_ino,
-    };
-    if (!activation_identity_equal(&current, &transaction->directory_identity)) {
-        return false;
-    }
-    int path_fd = -1;
-    activation_file_identity_t path_identity;
-    bool path_same =
-        activation_directory_secure(transaction->directory_path, &path_fd, &path_identity) &&
-        activation_identity_equal(&path_identity, &current);
-    if (path_fd >= 0) {
-        (void)close(path_fd);
-    }
-    return path_same;
-#endif
 }
 
 static bool activation_native_close(activation_native_file_t file) {
-#ifdef _WIN32
     return file != INVALID_HANDLE_VALUE && CloseHandle(file) != 0;
-#else
-    return file >= 0 && close(file) == 0;
-#endif
 }
 
 static bool activation_native_sync(activation_native_file_t file) {
-#ifdef _WIN32
     return FlushFileBuffers(file) != 0;
-#else
-    int result;
-    do {
-        result = fsync(file);
-    } while (result != 0 && errno == EINTR);
-    return result == 0 || errno == EINVAL || errno == ENOTSUP || errno == EROFS;
-#endif
 }
 
 static bool activation_native_write_all(activation_native_file_t file, const void *data,
                                         size_t length) {
     const unsigned char *cursor = data;
     while (length > 0) {
-#ifdef _WIN32
         DWORD chunk = length > (size_t)UINT32_MAX ? UINT32_MAX : (DWORD)length;
         DWORD written = 0;
         if (!WriteFile(file, cursor, chunk, &written, NULL) || written == 0) {
             return false;
         }
         size_t count = (size_t)written;
-#else
-        ssize_t result;
-        do {
-            result = write(file, cursor, length);
-        } while (result < 0 && errno == EINTR);
-        if (result <= 0) {
-            return false;
-        }
-        size_t count = (size_t)result;
-#endif
         cursor += count;
         length -= count;
     }
@@ -1047,7 +754,6 @@ static activation_create_status_t activation_private_file_create(
     if (!activation_directory_still_valid(transaction)) {
         return ACTIVATION_CREATE_ERROR;
     }
-#ifdef _WIN32
     wchar_t *wide = activation_utf8_to_wide(path);
     activation_windows_security_t security;
     if (!wide || !activation_windows_security_init(&security)) {
@@ -1082,29 +788,6 @@ static activation_create_status_t activation_private_file_create(
     g_activation_refusal_object = NULL;
     *file_out = file;
     return ACTIVATION_CREATE_OK;
-#else
-    int flags = O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC;
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    int file = openat(transaction->directory_fd, name, flags, 0700);
-    int open_error = errno;
-    struct stat status;
-    bool valid = file >= 0 && fchmod(file, 0700) == 0 && fstat(file, &status) == 0 &&
-                 S_ISREG(status.st_mode) && status.st_uid == geteuid() && status.st_nlink == 1 &&
-                 (status.st_mode & 0777) == 0700 && activation_posix_acl_empty(file);
-    if (!valid) {
-        if (file >= 0) {
-            (void)close(file);
-        }
-        return file < 0 && open_error == EEXIST ? ACTIVATION_CREATE_EXISTS
-                                                : ACTIVATION_CREATE_ERROR;
-    }
-    identity_out->device = status.st_dev;
-    identity_out->inode = status.st_ino;
-    *file_out = file;
-    return ACTIVATION_CREATE_OK;
-#endif
 }
 
 static cbm_activation_transaction_status_t activation_create_unique(
@@ -1139,7 +822,6 @@ static cbm_activation_transaction_status_t activation_create_unique(
     return CBM_ACTIVATION_TRANSACTION_IO;
 }
 
-#ifdef _WIN32
 static bool activation_external_snapshot_with_owner(const char *path, bool require_current_owner,
                                                     bool *exists_out,
                                                     activation_file_identity_t *identity_out) {
@@ -1176,61 +858,12 @@ static bool activation_external_snapshot_with_owner(const char *path, bool requi
     *exists_out = true;
     return true;
 }
-#endif
-
-#ifndef _WIN32
-static bool activation_posix_entry_snapshot_with_links(
-    const cbm_activation_transaction_t *transaction, const char *name, nlink_t required_links,
-    bool *exists_out, activation_file_identity_t *identity_out) {
-    *exists_out = false;
-    if (!activation_directory_still_valid(transaction)) {
-        return false;
-    }
-    struct stat before;
-    if (fstatat(transaction->directory_fd, name, &before, AT_SYMLINK_NOFOLLOW) != 0) {
-        return errno == ENOENT;
-    }
-    if (!S_ISREG(before.st_mode) || before.st_uid != geteuid() ||
-        before.st_nlink != required_links || (before.st_mode & 0022) != 0) {
-        return false;
-    }
-    int flags = O_RDONLY | O_CLOEXEC;
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    int file = openat(transaction->directory_fd, name, flags);
-    struct stat opened;
-    struct stat after;
-    bool valid = file >= 0 && fstat(file, &opened) == 0 && S_ISREG(opened.st_mode) &&
-                 opened.st_uid == geteuid() && opened.st_nlink == required_links &&
-                 (opened.st_mode & 0022) == 0 && opened.st_dev == before.st_dev &&
-                 opened.st_ino == before.st_ino && activation_posix_acl_empty(file) &&
-                 fstatat(transaction->directory_fd, name, &after, AT_SYMLINK_NOFOLLOW) == 0 &&
-                 S_ISREG(after.st_mode) && after.st_uid == geteuid() &&
-                 after.st_nlink == required_links && (after.st_mode & 0022) == 0 &&
-                 after.st_dev == opened.st_dev && after.st_ino == opened.st_ino;
-    bool closed = file >= 0 && close(file) == 0;
-    if (!valid || !closed) {
-        return false;
-    }
-    identity_out->device = opened.st_dev;
-    identity_out->inode = opened.st_ino;
-    *exists_out = true;
-    return true;
-}
-#endif
 
 static bool activation_entry_snapshot(const cbm_activation_transaction_t *transaction,
                                       const char *path, const char *name, bool *exists_out,
                                       activation_file_identity_t *identity_out) {
-#ifdef _WIN32
     return activation_directory_still_valid(transaction) &&
            activation_external_snapshot_with_owner(path, true, exists_out, identity_out);
-#else
-    (void)path;
-    return activation_posix_entry_snapshot_with_links(transaction, name, (nlink_t)1, exists_out,
-                                                      identity_out);
-#endif
 }
 
 static bool activation_path_matches(const cbm_activation_transaction_t *transaction,
@@ -1246,21 +879,12 @@ static bool activation_path_matches(const cbm_activation_transaction_t *transact
 }
 
 static bool activation_sync_directory(const cbm_activation_transaction_t *transaction) {
-#ifdef _WIN32
     /* MoveFileExW(MOVEFILE_WRITE_THROUGH) is the strongest portable
      * directory-entry durability primitive available here. */
     (void)transaction;
     return true;
-#else
-    int result;
-    do {
-        result = fsync(transaction->directory_fd);
-    } while (result != 0 && errno == EINTR);
-    return result == 0 || errno == EINVAL || errno == ENOTSUP || errno == EROFS;
-#endif
 }
 
-#ifdef _WIN32
 /* Renaming is how this transaction both publishes and retires -- and on Windows
  * it is the ONLY mutation permitted on a running image, which is what lets a
  * single binary replace or remove itself at all. It can still lose to a handle
@@ -1284,14 +908,9 @@ static bool activation_rename_error_is_transient(DWORD error) {
     return error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED ||
            error == ERROR_LOCK_VIOLATION;
 }
-#endif
 
 void cbm_activation_transaction_rename_failures_set_for_test(unsigned int count) {
-#ifdef _WIN32
     activation_rename_failures_for_test = count;
-#else
-    (void)count;
-#endif
 }
 
 static bool activation_rename(const cbm_activation_transaction_t *transaction, const char *source,
@@ -1300,7 +919,6 @@ static bool activation_rename(const cbm_activation_transaction_t *transaction, c
     if (!activation_directory_still_valid(transaction)) {
         return false;
     }
-#ifdef _WIN32
     wchar_t *wide_source = activation_utf8_to_wide(source);
     wchar_t *wide_destination = activation_utf8_to_wide(destination);
     DWORD flags = MOVEFILE_WRITE_THROUGH | (replace_destination ? MOVEFILE_REPLACE_EXISTING : 0);
@@ -1324,17 +942,6 @@ static bool activation_rename(const cbm_activation_transaction_t *transaction, c
     free(wide_source);
     free(wide_destination);
     return ok;
-#else
-    (void)source;
-    (void)destination;
-    (void)replace_destination;
-    int result;
-    do {
-        result = renameat(transaction->directory_fd, source_name, transaction->directory_fd,
-                          destination_name);
-    } while (result != 0 && errno == EINTR);
-    return result == 0;
-#endif
 }
 
 typedef enum {
@@ -1342,6 +949,239 @@ typedef enum {
     ACTIVATION_UNLINK_DEFERRED = 1,
     ACTIVATION_UNLINK_ERROR = 2,
 } activation_unlink_status_t;
+
+static wchar_t *activation_windows_base64_utf16(const wchar_t *value) {
+    static const wchar_t alphabet[] =
+        L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!value) {
+        return NULL;
+    }
+    size_t units = wcslen(value);
+    if (units > (SIZE_MAX - 2U) / 2U) {
+        return NULL;
+    }
+    size_t byte_count = units * 2U;
+    if (byte_count > SIZE_MAX - 2U) {
+        return NULL;
+    }
+    size_t groups = (byte_count + 2U) / 3U;
+    if (groups > (SIZE_MAX / sizeof(wchar_t) - 1U) / 4U) {
+        return NULL;
+    }
+    size_t encoded_length = groups * 4U;
+    wchar_t *encoded = malloc((encoded_length + 1U) * sizeof(*encoded));
+    if (!encoded) {
+        return NULL;
+    }
+    const uint16_t *source = (const uint16_t *)value;
+    size_t input = 0;
+    size_t output = 0;
+    while (input < byte_count) {
+        size_t remaining = byte_count - input;
+        uint32_t first = source[input / 2U];
+        unsigned char a = (unsigned char)(input % 2U == 0U ? first & 0xffU : first >> 8U);
+        input++;
+        uint32_t second = input < byte_count ? source[input / 2U] : 0U;
+        unsigned char b =
+            (unsigned char)(input < byte_count ? (input % 2U == 0U ? second & 0xffU : second >> 8U)
+                                               : 0U);
+        input++;
+        uint32_t third = input < byte_count ? source[input / 2U] : 0U;
+        unsigned char c =
+            (unsigned char)(input < byte_count ? (input % 2U == 0U ? third & 0xffU : third >> 8U)
+                                               : 0U);
+        input++;
+        encoded[output++] = alphabet[a >> 2U];
+        encoded[output++] = alphabet[((a & 0x03U) << 4U) | (b >> 4U)];
+        encoded[output++] = remaining > 1U ? alphabet[((b & 0x0fU) << 2U) | (c >> 6U)] : L'=';
+        encoded[output++] = remaining > 2U ? alphabet[c & 0x3fU] : L'=';
+    }
+    encoded[output] = L'\0';
+    return encoded;
+}
+
+static bool activation_windows_defer_unlink_until_exit(const wchar_t *path, DWORD *error_out) {
+    static const wchar_t script_format[] =
+        L"$n='%ls';$p='%ls';"
+        L"try{$m=[System.Threading.Mutex]::OpenExisting($n);"
+        L"try{$null=$m.WaitOne()} catch [System.Threading.AbandonedMutexException] {}"
+        L";$m.Dispose()} catch [System.Threading.WaitHandleCannotBeOpenedException] {} ;"
+        L"$s=@'\nusing System;\nusing System.Runtime.InteropServices;\n"
+        L"public static class CbmDeferredDelete {\n"
+        L"[DllImport(\"kernel32.dll\",CharSet=CharSet.Unicode,SetLastError=true,ExactSpelling=true)"
+        L"]\n"
+        L"public static extern bool DeleteFileW(string path);\n}\n'@\n"
+        L"Add-Type -TypeDefinition $s -ErrorAction Stop;"
+        L"for($i=0;$i -lt 40;$i++){"
+        L"if([CbmDeferredDelete]::DeleteFileW($p)){break};"
+        L"Start-Sleep -Milliseconds 250}";
+    wchar_t mutex_name[128];
+    unsigned long long sequence = (unsigned long long)atomic_fetch_add_explicit(
+                                      &activation_unique_sequence, 1U, memory_order_relaxed) +
+                                  1ULL;
+    int mutex_length = swprintf(
+        mutex_name, sizeof(mutex_name) / sizeof(mutex_name[0]), L"Local\\cbm-cleanup-%lu-%llu-%llu",
+        (unsigned long)GetCurrentProcessId(), (unsigned long long)GetTickCount64(), sequence);
+    if (mutex_length <= 0 || (size_t)mutex_length >= sizeof(mutex_name) / sizeof(mutex_name[0])) {
+        if (error_out) {
+            *error_out = ERROR_INVALID_NAME;
+        }
+        return false;
+    }
+    SetLastError(ERROR_SUCCESS);
+    HANDLE mutex = CreateMutexW(NULL, TRUE, mutex_name);
+    DWORD mutex_error = GetLastError();
+    if (!mutex || mutex_error == ERROR_ALREADY_EXISTS) {
+        DWORD error = mutex ? ERROR_ALREADY_EXISTS : mutex_error;
+        if (mutex) {
+            CloseHandle(mutex);
+        }
+        if (error_out) {
+            *error_out = error;
+        }
+        return false;
+    }
+
+    size_t path_length = wcslen(path);
+    bool extended = path_length >= 4U && wcsncmp(path, L"\\\\?\\", 4U) == 0;
+    bool unc = !extended && path_length >= 2U && path[0] == L'\\' && path[1] == L'\\';
+    size_t prefix_length = extended ? 0U : (unc ? 8U : 4U);
+    if (path_length > (SIZE_MAX - prefix_length - 1U) / sizeof(wchar_t)) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    wchar_t *extended_path = malloc((prefix_length + path_length + 1U) * sizeof(*extended_path));
+    if (!extended_path) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    size_t path_offset = 0U;
+    if (unc) {
+        memcpy(extended_path, L"\\\\?\\UNC\\", 8U * sizeof(wchar_t));
+        path_offset = 2U;
+    } else if (!extended) {
+        memcpy(extended_path, L"\\\\?\\", 4U * sizeof(wchar_t));
+    }
+    memcpy(extended_path + prefix_length, path + path_offset,
+           (path_length - path_offset + 1U) * sizeof(wchar_t));
+
+    size_t quote_count = 0U;
+    for (const wchar_t *cursor = extended_path; *cursor; cursor++) {
+        quote_count += *cursor == L'\'' ? 1U : 0U;
+    }
+    if (path_length > SIZE_MAX - prefix_length - quote_count - 1U) {
+        free(extended_path);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    wchar_t *quoted_path =
+        malloc((prefix_length + path_length + quote_count + 1U) * sizeof(*quoted_path));
+    if (!quoted_path) {
+        free(extended_path);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    wchar_t *quoted_out = quoted_path;
+    for (const wchar_t *cursor = extended_path; *cursor; cursor++) {
+        *quoted_out++ = *cursor;
+        if (*cursor == L'\'') {
+            *quoted_out++ = L'\'';
+        }
+    }
+    *quoted_out = L'\0';
+    free(extended_path);
+
+    size_t script_capacity = wcslen(script_format) + wcslen(mutex_name) + wcslen(quoted_path) + 1U;
+    wchar_t *script = script_capacity <= SIZE_MAX / sizeof(*script)
+                          ? malloc(script_capacity * sizeof(*script))
+                          : NULL;
+    int script_chars =
+        script ? swprintf(script, script_capacity, script_format, mutex_name, quoted_path) : -1;
+    if (!script || script_chars < 0 || (size_t)script_chars >= script_capacity) {
+        free(script);
+        free(quoted_path);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = script ? ERROR_INVALID_DATA : ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    free(quoted_path);
+    wchar_t *encoded = activation_windows_base64_utf16(script);
+    free(script);
+    if (!encoded) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+
+    wchar_t system_directory[MAX_PATH];
+    UINT system_length = GetSystemDirectoryW(system_directory, MAX_PATH);
+    wchar_t powershell_path[MAX_PATH + 64U];
+    int powershell_length =
+        system_length == 0U || system_length >= MAX_PATH
+            ? -1
+            : swprintf(powershell_path, sizeof(powershell_path) / sizeof(powershell_path[0]),
+                       L"%ls\\WindowsPowerShell\\v1.0\\powershell.exe", system_directory);
+    size_t command_capacity = wcslen(encoded) + MAX_PATH + 160U;
+    wchar_t *command_line = malloc(command_capacity * sizeof(*command_line));
+    int command_length = powershell_length < 0 || !command_line
+                             ? -1
+                             : swprintf(command_line, command_capacity,
+                                        L"\"%ls\" -NoLogo -NoProfile -NonInteractive "
+                                        L"-WindowStyle Hidden -ExecutionPolicy Bypass "
+                                        L"-EncodedCommand %ls",
+                                        powershell_path, encoded);
+    free(encoded);
+    if (command_length < 0 || (size_t)command_length >= command_capacity) {
+        free(command_line);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    startup.cb = sizeof(startup);
+    BOOL started =
+        CreateProcessW(powershell_path, command_line, NULL, NULL, FALSE,
+                       CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, NULL, NULL, &startup, &process);
+    DWORD error = started ? ERROR_SUCCESS : GetLastError();
+    free(command_line);
+    if (!started) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = error;
+        }
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    /* Keep this owned mutex until process exit. The helper waits for normal or
+     * abandoned mutex release, so it cannot race deletion against this image. */
+    if (error_out) {
+        *error_out = ERROR_SUCCESS;
+    }
+    return true;
+}
 
 static activation_unlink_status_t activation_unlink_expected(
     const cbm_activation_transaction_t *transaction, const char *path, const char *name,
@@ -1353,7 +1193,6 @@ static activation_unlink_status_t activation_unlink_expected(
     if (!exists) {
         return ACTIVATION_UNLINK_OK;
     }
-#ifdef _WIN32
     wchar_t *wide = activation_utf8_to_wide(path);
     if (!wide) {
         return ACTIVATION_UNLINK_ERROR;
@@ -1363,31 +1202,38 @@ static activation_unlink_status_t activation_unlink_expected(
         return ACTIVATION_UNLINK_OK;
     }
     DWORD error = GetLastError();
-    bool deferred = allow_windows_deferred &&
-                    (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
-                     error == ERROR_LOCK_VIOLATION) &&
-                    MoveFileExW(wide, NULL, MOVEFILE_DELAY_UNTIL_REBOOT) != 0;
+    bool deferred = false;
+    DWORD deferred_error = ERROR_SUCCESS;
+    if (allow_windows_deferred &&
+        (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+         error == ERROR_LOCK_VIOLATION)) {
+        deferred = activation_windows_defer_unlink_until_exit(wide, &deferred_error);
+        if (!deferred && MoveFileExW(wide, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            deferred = true;
+            deferred_error = ERROR_SUCCESS;
+        } else if (!deferred) {
+            deferred_error = GetLastError();
+        }
+    } else {
+        deferred_error = error;
+    }
     free(wide);
+    if (!deferred) {
+        char delete_error_text[16];
+        char deferred_error_text[16];
+        (void)snprintf(delete_error_text, sizeof(delete_error_text), "%lu", (unsigned long)error);
+        (void)snprintf(deferred_error_text, sizeof(deferred_error_text), "%lu",
+                       (unsigned long)deferred_error);
+        cbm_log_error("activation.unlink_failed", "delete_error", delete_error_text,
+                      "deferred_error", deferred_error_text);
+    }
     return deferred ? ACTIVATION_UNLINK_DEFERRED : ACTIVATION_UNLINK_ERROR;
-#else
-    (void)allow_windows_deferred;
-    int result;
-    do {
-        result = unlinkat(transaction->directory_fd, name, 0);
-    } while (result != 0 && errno == EINTR);
-    return result == 0 || errno == ENOENT ? ACTIVATION_UNLINK_OK : ACTIVATION_UNLINK_ERROR;
-#endif
 }
 
 static void activation_transaction_destroy(cbm_activation_transaction_t *transaction) {
     if (!transaction) {
         return;
     }
-#ifndef _WIN32
-    if (transaction->directory_fd >= 0) {
-        (void)close(transaction->directory_fd);
-    }
-#endif
     free(transaction->target_path);
     free(transaction->directory_path);
     free(transaction->target_name);
@@ -1432,9 +1278,6 @@ static cbm_activation_transaction_status_t activation_transaction_prepare(
     if (!transaction) {
         return CBM_ACTIVATION_TRANSACTION_NO_MEMORY;
     }
-#ifndef _WIN32
-    transaction->directory_fd = -1;
-#endif
     transaction->action = action;
     transaction->state = ACTIVATION_STAGED;
     transaction->target_path = activation_string_copy(target_path);
@@ -1447,14 +1290,9 @@ static cbm_activation_transaction_status_t activation_transaction_prepare(
         activation_transaction_destroy(transaction);
         return CBM_ACTIVATION_TRANSACTION_INVALID_ARGUMENT;
     }
-#ifdef _WIN32
     int ignored = 0;
     if (!activation_directory_secure(transaction->directory_path, &ignored,
                                      &transaction->directory_identity)) {
-#else
-    if (!activation_directory_secure(transaction->directory_path, &transaction->directory_fd,
-                                     &transaction->directory_identity)) {
-#endif
         activation_transaction_destroy(transaction);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
@@ -1535,7 +1373,6 @@ static bool activation_source_open(const char *path, activation_native_file_t *f
     if (!activation_target_parts(path, &directory, &name)) {
         return false;
     }
-#ifdef _WIN32
     activation_file_identity_t directory_identity;
     activation_file_identity_t expected;
     bool exists = false;
@@ -1578,38 +1415,6 @@ static bool activation_source_open(const char *path, activation_native_file_t *f
         free(name);
         return false;
     }
-#else
-    int directory_fd = -1;
-    activation_file_identity_t directory_identity;
-    if (!activation_directory_secure(directory, &directory_fd, &directory_identity)) {
-        free(directory);
-        free(name);
-        return false;
-    }
-    struct stat before;
-    bool before_valid = fstatat(directory_fd, name, &before, AT_SYMLINK_NOFOLLOW) == 0 &&
-                        S_ISREG(before.st_mode) && before.st_uid == geteuid() &&
-                        before.st_nlink == 1 && (before.st_mode & 0022) == 0;
-    int flags = O_RDONLY | O_CLOEXEC;
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    int file = before_valid ? openat(directory_fd, name, flags) : -1;
-    struct stat information;
-    bool valid = file >= 0 && fstat(file, &information) == 0 && S_ISREG(information.st_mode) &&
-                 information.st_uid == geteuid() && information.st_nlink == 1 &&
-                 (information.st_mode & 0022) == 0 && activation_posix_acl_empty(file) &&
-                 information.st_dev == before.st_dev && information.st_ino == before.st_ino;
-    (void)close(directory_fd);
-    if (!valid) {
-        if (file >= 0) {
-            (void)close(file);
-        }
-        free(directory);
-        free(name);
-        return false;
-    }
-#endif
     free(directory);
     free(name);
     *file_out = file;
@@ -1618,7 +1423,6 @@ static bool activation_source_open(const char *path, activation_native_file_t *f
 
 static bool activation_native_read(activation_native_file_t file, void *buffer, size_t capacity,
                                    size_t *read_out) {
-#ifdef _WIN32
     DWORD amount = 0;
     DWORD request = capacity > (size_t)UINT32_MAX ? UINT32_MAX : (DWORD)capacity;
     if (!ReadFile(file, buffer, request, &amount, NULL)) {
@@ -1626,17 +1430,6 @@ static bool activation_native_read(activation_native_file_t file, void *buffer, 
     }
     *read_out = (size_t)amount;
     return true;
-#else
-    ssize_t result;
-    do {
-        result = read(file, buffer, capacity);
-    } while (result < 0 && errno == EINTR);
-    if (result < 0) {
-        return false;
-    }
-    *read_out = (size_t)result;
-    return true;
-#endif
 }
 
 cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
@@ -1710,7 +1503,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_removal(
     return activation_transaction_prepare(target_path, ACTIVATION_REMOVE, transaction_out);
 }
 
-#ifdef _WIN32
 static bool activation_windows_copy_target_to_backup(cbm_activation_transaction_t *transaction) {
     if (!activation_directory_still_valid(transaction)) {
         return false;
@@ -1758,7 +1550,6 @@ static bool activation_windows_copy_target_to_backup(cbm_activation_transaction_
     bool backup_closed = backup != INVALID_HANDLE_VALUE && CloseHandle(backup) != 0;
     return valid && target_closed && backup_closed && activation_directory_still_valid(transaction);
 }
-#endif
 
 typedef enum {
     ACTIVATION_PUBLISH_OK = 0,
@@ -1776,64 +1567,6 @@ static bool activation_noreplace_primitive_unavailable(int error) {
     unavailable = unavailable || error == EOPNOTSUPP;
 #endif
     return unavailable;
-}
-#endif
-
-#ifndef _WIN32
-/* Portable last resort for platforms/filesystems without a no-replace rename.
- * linkat() atomically claims an absent destination.  Until the staging link is
- * removed both names deliberately retain the same verified inode, and the
- * transaction's staged_exists flag records that partial publication so
- * rollback can remove only the target link. */
-static activation_publish_status_t activation_publish_absent_link_fallback(
-    cbm_activation_transaction_t *transaction) {
-    if (!activation_directory_still_valid(transaction)) {
-        return ACTIVATION_PUBLISH_UNCHANGED_ERROR;
-    }
-    int linked;
-    do {
-        linked = linkat(transaction->directory_fd, transaction->staged_name,
-                        transaction->directory_fd, transaction->target_name, 0);
-    } while (linked != 0 && errno == EINTR);
-    if (linked != 0) {
-        return ACTIVATION_PUBLISH_UNCHANGED_ERROR;
-    }
-
-    activation_file_identity_t staged_identity;
-    activation_file_identity_t target_identity;
-    bool staged_exists = false;
-    bool target_exists = false;
-    bool linked_pair =
-        activation_posix_entry_snapshot_with_links(transaction, transaction->staged_name,
-                                                   (nlink_t)2, &staged_exists, &staged_identity) &&
-        staged_exists &&
-        activation_identity_equal(&staged_identity, &transaction->staged_identity) &&
-        activation_posix_entry_snapshot_with_links(transaction, transaction->target_name,
-                                                   (nlink_t)2, &target_exists, &target_identity) &&
-        target_exists && activation_identity_equal(&target_identity, &transaction->staged_identity);
-    if (!linked_pair) {
-        return ACTIVATION_PUBLISH_CHANGED_ERROR;
-    }
-
-    int removed;
-    do {
-        removed = unlinkat(transaction->directory_fd, transaction->staged_name, 0);
-    } while (removed != 0 && errno == EINTR);
-    if (removed != 0 && errno != ENOENT) {
-        return ACTIVATION_PUBLISH_CHANGED_ERROR;
-    }
-    transaction->staged_exists = false;
-
-    activation_file_identity_t published_identity;
-    bool published_exists = false;
-    if (!activation_posix_entry_snapshot_with_links(transaction, transaction->target_name,
-                                                    (nlink_t)1, &published_exists,
-                                                    &published_identity) ||
-        !published_exists ||
-        !activation_identity_equal(&published_identity, &transaction->staged_identity)) {
-        return ACTIVATION_PUBLISH_CHANGED_ERROR;
-    }
-    return ACTIVATION_PUBLISH_OK;
 }
 #endif
 
@@ -1904,47 +1637,12 @@ static activation_publish_status_t activation_publish_absent_replacement(
 #endif
 }
 
-#ifndef _WIN32
-static bool activation_linked_backup_pair_valid(const cbm_activation_transaction_t *transaction) {
-    activation_file_identity_t target_identity;
-    activation_file_identity_t backup_identity;
-    bool target_exists = false;
-    bool backup_exists = false;
-    return activation_posix_entry_snapshot_with_links(transaction, transaction->target_name,
-                                                      (nlink_t)2, &target_exists,
-                                                      &target_identity) &&
-           target_exists &&
-           activation_identity_equal(&target_identity, &transaction->target_identity) &&
-           activation_posix_entry_snapshot_with_links(transaction, transaction->backup_name,
-                                                      (nlink_t)2, &backup_exists,
-                                                      &backup_identity) &&
-           backup_exists &&
-           activation_identity_equal(&backup_identity, &transaction->target_identity);
-}
-
-static bool activation_remove_linked_backup(cbm_activation_transaction_t *transaction) {
-    if (!activation_linked_backup_pair_valid(transaction)) {
-        return false;
-    }
-    int result;
-    do {
-        result = unlinkat(transaction->directory_fd, transaction->backup_name, 0);
-    } while (result != 0 && errno == EINTR);
-    if (result == 0) {
-        transaction->backup_exists = false;
-        transaction->backup_contains_target = false;
-    }
-    return result == 0;
-}
-#endif
-
 /* Publish over an existing target without a disappearance window. POSIX
  * retains the old inode through a same-directory hard link before renameat.
  * Windows copies the verified old bytes into the already-private backup, then
  * MoveFileExW atomically replaces the target with the private staged file. */
 static activation_publish_status_t activation_publish_existing_replacement(
     cbm_activation_transaction_t *transaction) {
-#ifdef _WIN32
     transaction->backup_contains_target = false;
     if (!activation_windows_copy_target_to_backup(transaction)) {
         return ACTIVATION_PUBLISH_UNCHANGED_ERROR;
@@ -1961,41 +1659,6 @@ static activation_publish_status_t activation_publish_existing_replacement(
         !target_exists) {
         return ACTIVATION_PUBLISH_CHANGED_ERROR;
     }
-#else
-    activation_unlink_status_t reservation_removed =
-        activation_unlink_expected(transaction, transaction->backup_path, transaction->backup_name,
-                                   &transaction->backup_identity, false);
-    if (reservation_removed != ACTIVATION_UNLINK_OK) {
-        return ACTIVATION_PUBLISH_UNCHANGED_ERROR;
-    }
-    transaction->backup_exists = false;
-    if (!activation_directory_still_valid(transaction) ||
-        linkat(transaction->directory_fd, transaction->target_name, transaction->directory_fd,
-               transaction->backup_name, 0) != 0) {
-        return ACTIVATION_PUBLISH_UNCHANGED_ERROR;
-    }
-    transaction->backup_exists = true;
-    transaction->backup_contains_target = true;
-    transaction->backup_identity = transaction->target_identity;
-    bool staged_exists = false;
-    if (!activation_linked_backup_pair_valid(transaction) ||
-        !activation_path_matches(transaction, transaction->staged_path, transaction->staged_name,
-                                 &transaction->staged_identity, &staged_exists) ||
-        !staged_exists) {
-        return activation_remove_linked_backup(transaction) ? ACTIVATION_PUBLISH_UNCHANGED_ERROR
-                                                            : ACTIVATION_PUBLISH_CHANGED_ERROR;
-    }
-    if (!activation_sync_directory(transaction)) {
-        return activation_remove_linked_backup(transaction) ? ACTIVATION_PUBLISH_UNCHANGED_ERROR
-                                                            : ACTIVATION_PUBLISH_CHANGED_ERROR;
-    }
-    if (!activation_rename(transaction, transaction->staged_path, transaction->staged_name,
-                           transaction->target_path, transaction->target_name, true)) {
-        return activation_remove_linked_backup(transaction) ? ACTIVATION_PUBLISH_UNCHANGED_ERROR
-                                                            : ACTIVATION_PUBLISH_CHANGED_ERROR;
-    }
-    transaction->staged_exists = false;
-#endif
     return ACTIVATION_PUBLISH_OK;
 }
 
@@ -2018,30 +1681,7 @@ static bool activation_absent_target_snapshot(const cbm_activation_transaction_t
                                 &transaction->staged_identity, exists_out)) {
         return true;
     }
-#ifndef _WIN32
-    if (!transaction->staged_exists) {
-        return false;
-    }
-    activation_file_identity_t staged_identity;
-    activation_file_identity_t target_identity;
-    bool staged_exists = false;
-    bool target_exists = false;
-    if (!activation_posix_entry_snapshot_with_links(transaction, transaction->target_name,
-                                                    (nlink_t)2, &target_exists, &target_identity) ||
-        !target_exists ||
-        !activation_identity_equal(&target_identity, &transaction->staged_identity) ||
-        !activation_posix_entry_snapshot_with_links(transaction, transaction->staged_name,
-                                                    (nlink_t)2, &staged_exists, &staged_identity) ||
-        !staged_exists ||
-        !activation_identity_equal(&staged_identity, &transaction->staged_identity)) {
-        return false;
-    }
-    *exists_out = true;
-    *linked_pair_out = true;
-    return true;
-#else
     return false;
-#endif
 }
 
 static bool activation_remove_absent_published_target(cbm_activation_transaction_t *transaction,
@@ -2051,36 +1691,7 @@ static bool activation_remove_absent_published_target(cbm_activation_transaction
                                           transaction->target_name, &transaction->staged_identity,
                                           false) == ACTIVATION_UNLINK_OK;
     }
-#ifndef _WIN32
-    bool target_exists = false;
-    bool still_linked = false;
-    if (!activation_absent_target_snapshot(transaction, &target_exists, &still_linked) ||
-        !target_exists || !still_linked) {
-        return false;
-    }
-    int removed;
-    do {
-        removed = unlinkat(transaction->directory_fd, transaction->target_name, 0);
-    } while (removed != 0 && errno == EINTR);
-    if (removed != 0) {
-        return false;
-    }
-    activation_file_identity_t staged_identity;
-    bool staged_exists = false;
-    activation_file_identity_t absent_identity;
-    bool target_remains = false;
-    return activation_posix_entry_snapshot_with_links(transaction, transaction->staged_name,
-                                                      (nlink_t)1, &staged_exists,
-                                                      &staged_identity) &&
-           staged_exists &&
-           activation_identity_equal(&staged_identity, &transaction->staged_identity) &&
-           activation_posix_entry_snapshot_with_links(transaction, transaction->target_name,
-                                                      (nlink_t)1, &target_remains,
-                                                      &absent_identity) &&
-           !target_remains;
-#else
     return false;
-#endif
 }
 
 static cbm_activation_transaction_status_t activation_rollback_internal(
@@ -2239,6 +1850,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
         return CBM_ACTIVATION_TRANSACTION_INVALID_STATE;
     }
     if (!activation_directory_still_valid(transaction)) {
+        cbm_log_error("activation.finalize_failed", "reason", "directory_validation");
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     if (transaction->backup_contains_target) {
@@ -2246,6 +1858,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
             transaction, transaction->backup_path, transaction->backup_name,
             &transaction->backup_identity, true);
         if (removed == ACTIVATION_UNLINK_ERROR) {
+            cbm_log_error("activation.finalize_failed", "reason", "backup_cleanup");
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
         if (removed == ACTIVATION_UNLINK_DEFERRED) {

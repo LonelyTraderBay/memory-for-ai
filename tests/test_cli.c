@@ -2397,7 +2397,9 @@ TEST(cli_skill_files_content) {
     /* Reference capabilities */
     ASSERT(strstr(sk[0].content, "query_graph") != NULL);
     ASSERT(strstr(sk[0].content, "Cypher") != NULL);
-    ASSERT(strstr(sk[0].content, "18 MCP Tools") != NULL);
+    ASSERT(strstr(sk[0].content, "Common MCP Tools (selected)") != NULL);
+    ASSERT(strstr(sk[0].content, "targeted evidence in hundreds of tokens") != NULL);
+    ASSERT_NULL(strstr(sk[0].content, "~500 tokens vs ~80K"));
     ASSERT(strstr(sk[0].content, "compare_graphs") != NULL);
     ASSERT(strstr(sk[0].content, "get_code_actions") != NULL);
     ASSERT(strstr(sk[0].content, "get_runtime_traces") != NULL);
@@ -2414,6 +2416,10 @@ TEST(cli_codex_instructions) {
     ASSERT_NOT_NULL(instr);
     ASSERT(strstr(instr, "Codebase Knowledge Graph") != NULL);
     ASSERT(strstr(instr, "trace_path") != NULL);
+    ASSERT(strstr(instr, "structural discovery") != NULL);
+    ASSERT(strstr(instr, "literal strings") != NULL);
+    ASSERT(strstr(instr, "check_index_coverage") != NULL);
+    ASSERT_NULL(strstr(instr, "Always prefer graph tools over grep"));
     PASS();
 }
 
@@ -2624,12 +2630,10 @@ TEST(cli_editor_mcp_rejects_unsafe_windows_probe_namespaces) {
         cbm_mcp_command_path_probe_safe_for_testing("/mnt/remote/memory-for-ai", false));
     ASSERT_FALSE(cbm_mcp_command_path_probe_safe_for_testing("/tmp/memory-for-ai", false));
     ASSERT_TRUE(cbm_mcp_command_path_probe_safe_for_testing("C:/local/memory-for-ai", true));
-    ASSERT_TRUE(
-        cbm_mcp_command_path_probe_safe_for_testing("D:\\local\\memory-for-ai", true));
+    ASSERT_TRUE(cbm_mcp_command_path_probe_safe_for_testing("D:\\local\\memory-for-ai", true));
+    ASSERT_FALSE(cbm_mcp_command_path_probe_safe_for_testing("//server/share/memory-for-ai", true));
     ASSERT_FALSE(
-        cbm_mcp_command_path_probe_safe_for_testing("//server/share/memory-for-ai", true));
-    ASSERT_FALSE(cbm_mcp_command_path_probe_safe_for_testing(
-        "\\\\server\\share\\memory-for-ai", true));
+        cbm_mcp_command_path_probe_safe_for_testing("\\\\server\\share\\memory-for-ai", true));
     ASSERT_FALSE(cbm_mcp_command_path_probe_safe_for_testing("//?/C:/memory-for-ai", true));
     ASSERT_FALSE(
         cbm_mcp_command_path_probe_safe_for_testing("\\\\.\\pipe\\memory-for-ai", true));
@@ -7952,7 +7956,9 @@ TEST(cli_gemini_session_hook_uses_json_for_all_sources) {
                        strstr(data, "\"matcher\": \"clear\"") != NULL &&
                        strstr(data, "startup|resume|clear") == NULL;
     bool json_context = data && strstr(data, "hookSpecificOutput") != NULL &&
-                        strstr(data, "additionalContext") != NULL;
+                        strstr(data, "additionalContext") != NULL &&
+                        strstr(data, "callbacks") != NULL &&
+                        strstr(data, "negative/exhaustive") != NULL;
 
     free(data);
     test_rmdir_r(tmpdir);
@@ -8540,11 +8546,10 @@ TEST(cli_augment_installs_session_context_and_subagent) {
     snprintf(rule_path, sizeof(rule_path), "%s/rules/memory-for-ai.md", augment_dir);
     snprintf(scout_path, sizeof(scout_path), "%s/agents/memory-for-ai-scout.md", augment_dir);
     snprintf(agent_path, sizeof(agent_path), "%s/agents/memory-for-ai.md", augment_dir);
-    snprintf(auditor_path, sizeof(auditor_path), "%s/agents/memory-for-ai-auditor.md",
-             augment_dir);
+    snprintf(auditor_path, sizeof(auditor_path), "%s/agents/memory-for-ai-auditor.md", augment_dir);
 #ifdef _WIN32
-    snprintf(session_script_path, sizeof(session_script_path),
-             "%s/hooks/memory-for-ai-session.ps1", augment_dir);
+    snprintf(session_script_path, sizeof(session_script_path), "%s/hooks/memory-for-ai-session.ps1",
+             augment_dir);
     snprintf(coverage_script_path, sizeof(coverage_script_path),
              "%s/hooks/memory-for-ai-coverage.ps1", augment_dir);
 #else
@@ -11604,6 +11609,12 @@ TEST(cli_aider_instructions_are_cli_form_issue1032) {
     ASSERT_NULL(strstr(content, "search_graph(name_pattern"));
     /* States the constraint explicitly. */
     ASSERT(strstr(content, "no MCP support") != NULL);
+    ASSERT(strstr(content, "structural discovery") != NULL);
+    ASSERT(strstr(content, "literal strings, error messages") != NULL);
+    ASSERT(strstr(content, "limit=10") != NULL);
+    ASSERT(strstr(content, "index_status") != NULL);
+    ASSERT(strstr(content, "check_index_coverage") != NULL);
+    ASSERT_NULL(strstr(content, "ALWAYS prefer these commands"));
     PASS();
 }
 
@@ -11754,6 +11765,11 @@ TEST(cli_agent_instructions_content) {
     ASSERT(strstr(instr, "Verify (Tier 2, default)") != NULL);
     ASSERT(strstr(instr, "Auditor (Tier 3)") != NULL);
     ASSERT(strstr(instr, "check_index_coverage") != NULL);
+    ASSERT(strstr(instr, "Use MCP graph tools for structural discovery") != NULL);
+    ASSERT(strstr(instr, "literal strings, error messages") != NULL);
+    ASSERT(strstr(instr, "limit=10") != NULL);
+    ASSERT(strstr(instr, "index_status") != NULL);
+    ASSERT_NULL(strstr(instr, "ALWAYS prefer MCP graph tools"));
     ASSERT(strstr(instr, "missed-coverage range") != NULL);
     ASSERT(strstr(instr, "must not call or claim MCP access") != NULL);
     ASSERT(strstr(instr, "# Memory for AI\n") != NULL);
@@ -12587,6 +12603,8 @@ TEST(cli_upsert_gemini_hook_replace) {
     ASSERT_NOT_NULL(data);
     ASSERT(strstr(data, "google_search|read_file|grep_search") == NULL);
     ASSERT(strstr(data, "memory-for-ai") != NULL);
+    ASSERT(strstr(data, "callbacks") != NULL);
+    ASSERT(strstr(data, "negative/exhaustive") != NULL);
 
     test_rmdir_r(tmpdir);
     PASS();

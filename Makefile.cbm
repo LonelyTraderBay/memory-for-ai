@@ -167,7 +167,7 @@ CXXFLAGS_TSAN = $(CXXFLAGS_COMMON) -DCBM_SANITIZED_BUILD=1 -g -O1 \
 # guarantee that grep exists.  The Windows make environment is sufficient to
 # select the MinGW system libraries for both GCC and clang-based Windows builds.
 IS_MINGW :=
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 IS_MINGW := yes
 else ifneq (,$(findstring mingw,$(CC)))
 IS_MINGW := yes
@@ -201,7 +201,7 @@ endif
 # allocations already reach mimalloc here, but the profiler needs the same
 # observation point as Windows or the platform comparison is not like-for-like.
 # macOS ld has no --wrap, so it stays census-only.
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 IS_LINUX := no
 else
 IS_LINUX := $(shell uname -s 2>/dev/null | grep -q Linux && echo yes || echo no)
@@ -291,7 +291,6 @@ FOUNDATION_SRCS = \
     src/foundation/subprocess.c \
     src/foundation/sha256.c \
     src/foundation/secure_random.c \
-    src/foundation/macos_acl.c \
     src/foundation/private_file_lock.c \
     src/foundation/lock_registry.c
 
@@ -981,41 +980,70 @@ $(UNIXCODER_OBJ): $(UNIXCODER_BLOB_SRC) vendored/nomic/code_vectors.bin | $(BUIL
 OBJS_VENDORED_TEST = $(MIMALLOC_OBJ_TEST) $(SQLITE3_OBJ_TEST) $(TRE_OBJ_TEST) $(GRAMMAR_OBJS_TEST) $(TS_RUNTIME_OBJ_TEST) $(LSP_OBJ_TEST) $(PP_OBJ_TEST) $(LZ4_OBJ_TEST) $(ZSTD_OBJ_TEST) $(UNIXCODER_OBJ)
 OBJS_VENDORED_TSAN = $(MIMALLOC_OBJ_TSAN) $(SQLITE3_OBJ_TSAN) $(TRE_OBJ_TSAN) $(GRAMMAR_OBJS_TSAN) $(TS_RUNTIME_OBJ_TSAN) $(LSP_OBJ_TSAN) $(PP_OBJ_TSAN) $(LZ4_OBJ_TSAN) $(ZSTD_OBJ_TSAN) $(UNIXCODER_OBJ)
 
-# ── Foundation-only test (fast to RUN: 14 suites, no extraction suites) ──
-# Links the FULL product object set: the foundation layer grew real
-# dependencies on the rest of the tree (workspace→store/pipeline,
-# diagnostics→daemon IPC, slab_alloc→tree-sitter runtime), so a
-# foundation-only link stopped resolving at some point and nothing noticed,
-# because CI runs the full `make test` path, never this target. The rule
-# mirrors test-runner's link line exactly — with test_foundation_main.c in
-# place of test_main.c — so the two lanes cannot drift apart. It must sit
-# AFTER OBJS_VENDORED_TEST for the parse-time prerequisite-expansion reason
-# noted where the old rule used to live.
-$(BUILD_DIR)/test-foundation: $(TEST_FOUNDATION_SRCS) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_TEST) $(PROJECT_HDRS) Makefile.cbm | $(BUILD_DIR)
-	$(CC) $(CFLAGS_TEST) -Itests -o $@ \
-		$(TEST_FOUNDATION_SRCS) $(PROD_SRCS) \
-		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
-		$(OBJS_VENDORED_TEST) \
-		$(LDFLAGS_TEST)
+# First-party test objects: source edits rebuild one translation unit, and
+# compiler-generated .d files invalidate only actual header consumers. Production
+# and sanitizer-specific vendored objects retain their existing separate flags.
+TEST_EXE_SUFFIX = $(if $(filter yes,$(IS_MINGW)),.exe,)
+TEST_CORE_SRCS = $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC)
+TEST_CORE_OBJS = $(patsubst %.c,$(BUILD_DIR)/obj-test/%.o,$(TEST_CORE_SRCS))
+TEST_RUNNER_OBJS = $(patsubst %.c,$(BUILD_DIR)/obj-test/%.o,$(ALL_TEST_SRCS))
+TEST_FOUNDATION_OBJS = $(patsubst %.c,$(BUILD_DIR)/obj-test/%.o,$(TEST_FOUNDATION_SRCS))
+TEST_CONFIG_SIG = CC=$(CC)|FLAGS=$(CFLAGS_TEST)|GRAMMAR=$(GRAMMAR_CFLAGS_TEST)|LINK=$(LDFLAGS_TEST)
+
+# Changing sanitizer/compiler flags must never reuse differently instrumented objects.
+$(filter-out $(UNIXCODER_OBJ),$(OBJS_VENDORED_TEST)): $(BUILD_DIR)/.test-config
+
+$(BUILD_DIR)/.test-config: build-config-check | $(BUILD_DIR)
+ifeq ($(OS),Windows_NT)
+	$(file >$@.tmp,$(TEST_CONFIG_SIG))
+	@powershell -NoProfile -Command "$$a='$@'; $$b='$@.tmp'; if ((Test-Path -LiteralPath $$a) -and [IO.File]::ReadAllText($$a) -eq [IO.File]::ReadAllText($$b)) { Remove-Item -LiteralPath $$b } else { Move-Item -LiteralPath $$b -Destination $$a -Force }"
+else
+	@printf '%s\n' '$(subst ','"'"',$(TEST_CONFIG_SIG))' > "$@.tmp"
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv -f $@.tmp $@; fi
+endif
+
+$(BUILD_DIR)/obj-test/%.o: %.c $(BUILD_DIR)/.test-config Makefile.cbm | $(BUILD_DIR)
+ifeq ($(OS),Windows_NT)
+	@if not exist "$(@D)" mkdir "$(@D)"
+else
+	@mkdir -p "$(@D)"
+endif
+	$(CC) $(CFLAGS_TEST) -Itests -Itests/repro -MMD -MP -c -o $@ $<
+
+-include $(TEST_CORE_OBJS:.o=.d) $(TEST_RUNNER_OBJS:.o=.d) $(TEST_FOUNDATION_OBJS:.o=.d)
+
+$(BUILD_DIR)/test-foundation$(TEST_EXE_SUFFIX): $(TEST_FOUNDATION_OBJS) $(TEST_CORE_OBJS) $(OBJS_VENDORED_TEST) Makefile.cbm | $(BUILD_DIR)
+ifeq ($(OS),Windows_NT)
+	$(file >$@.rsp,$(TEST_FOUNDATION_OBJS) $(TEST_CORE_OBJS) $(OBJS_VENDORED_TEST))
+else
+	@printf '%s\n' $(TEST_FOUNDATION_OBJS) $(TEST_CORE_OBJS) $(OBJS_VENDORED_TEST) > "$@.rsp"
+endif
+	$(CC) $(CFLAGS_TEST) -o $@ @$@.rsp $(LDFLAGS_TEST)
 
 test-foundation: $(BUILD_DIR)/test-foundation
-	cd $(CURDIR) && $(BUILD_DIR)/test-foundation
+	cd "$(CURDIR)" && "$(BUILD_DIR)/test-foundation$(TEST_EXE_SUFFIX)"
 
-$(BUILD_DIR)/test-runner: $(ALL_TEST_SRCS) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_TEST) $(PROJECT_HDRS) Makefile.cbm | $(BUILD_DIR)
-	$(CC) $(CFLAGS_TEST) -Itests -Itests/repro -o $@ \
-		$(ALL_TEST_SRCS) $(PROD_SRCS) \
-		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
-		$(OBJS_VENDORED_TEST) \
-		$(LDFLAGS_TEST)
+$(BUILD_DIR)/test-runner$(TEST_EXE_SUFFIX): $(TEST_RUNNER_OBJS) $(TEST_CORE_OBJS) $(OBJS_VENDORED_TEST) Makefile.cbm | $(BUILD_DIR)
+ifeq ($(OS),Windows_NT)
+	$(file >$@.rsp,$(TEST_RUNNER_OBJS) $(TEST_CORE_OBJS) $(OBJS_VENDORED_TEST))
+else
+	@printf '%s\n' $(TEST_RUNNER_OBJS) $(TEST_CORE_OBJS) $(OBJS_VENDORED_TEST) > "$@.rsp"
+endif
+	$(CC) $(CFLAGS_TEST) -o $@ @$@.rsp $(LDFLAGS_TEST)
+
+ifeq ($(IS_MINGW),yes)
+$(BUILD_DIR)/test-runner: $(BUILD_DIR)/test-runner.exe
+$(BUILD_DIR)/test-foundation: $(BUILD_DIR)/test-foundation.exe
+endif
 
 test: $(BUILD_DIR)/test-runner
-	cd $(CURDIR) && $(BUILD_DIR)/test-runner
+	cd "$(CURDIR)" && "$(BUILD_DIR)/test-runner$(TEST_EXE_SUFFIX)"
 
 # Parallel variant: every suite as its own process; identical gate quality
 # (see the ZERO-LOSS CONTRACT in scripts/run-tests-parallel.sh — union guard
 # against --list-suites + aggregated pass/fail/skip totals).
 test-par: $(BUILD_DIR)/test-runner
-	cd $(CURDIR) && bash scripts/run-tests-parallel.sh $(BUILD_DIR)/test-runner
+	cd "$(CURDIR)" && bash scripts/run-tests-parallel.sh "$(BUILD_DIR)/test-runner$(TEST_EXE_SUFFIX)"
 
 # Focused native development is intentionally a separate, explicit target so
 # an inherited TEST_SUITES value cannot silently narrow the gating test target.
@@ -1023,7 +1051,7 @@ TEST_SUITES ?=
 test-focused: $(BUILD_DIR)/test-runner
 	@test -n "$(strip $(TEST_SUITES))" || \
 		(echo "TEST_SUITES is required for test-focused"; exit 2)
-	cd $(CURDIR) && $(BUILD_DIR)/test-runner $(TEST_SUITES)
+	cd "$(CURDIR)" && "$(BUILD_DIR)/test-runner$(TEST_EXE_SUFFIX)" $(TEST_SUITES)
 
 # ── Cumulative bug-reproduction runner (RED board by design, non-gating) ──
 # Mirrors test-runner's link line but uses repro_main.c (own main + counters)
@@ -1216,7 +1244,7 @@ clean-c:
 
 # clang-tidy and clang-format: use Homebrew LLVM on macOS, overridable via make args
 # e.g. make lint-format CLANG_FORMAT=clang-format-18
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 LLVM_BIN :=
 CLANG_TIDY ?= clang-tidy
 CLANG_FORMAT ?= clang-format
@@ -1256,6 +1284,7 @@ lint-cppcheck:
 	@echo "=== cppcheck ==="
 	@$(CPPCHECK) --enable=warning,style,performance,portability \
 		--std=c11 --language=c \
+		--platform=win64 -D_WIN32 -D_WIN64 -D__x86_64__ \
 		--suppressions-list=.cppcheck \
 		--error-exitcode=1 \
 		--inline-suppr \
@@ -1355,7 +1384,7 @@ diag:
 # catch a deliberately leaked allocation. So the lane is simply "the normal
 # ASan test build, compiled by Homebrew LLVM instead of Apple clang, run with
 # leak detection turned on".
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 LSAN_LLVM_BIN ?=
 else
 LSAN_LLVM_BIN ?= $(shell brew --prefix llvm 2>/dev/null)/bin
@@ -1374,8 +1403,7 @@ test-lsan:
 LINT_MEM_CHECKS = -*,clang-analyzer-unix.Malloc,clang-analyzer-unix.MallocSizeof,clang-analyzer-core.NullDereference,clang-analyzer-core.CallAndMessage,clang-analyzer-core.UndefinedBinaryOperatorResult,clang-analyzer-core.uninitialized.*,clang-analyzer-cplusplus.NewDelete,clang-analyzer-cplusplus.NewDeleteLeaks
 lint-mem:
 	@echo "=== clang-analyzer memory lane (non-gating; triage, don't suppress) ==="
-	@printf '%s\n' $(LINT_SRCS) | xargs -P 10 -I{} $(CLANG_TIDY) --quiet \
-		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null; true
+	@printf '%s\n' $(LINT_SRCS) | python3 scripts/lint-mem-runner.py "$(CLANG_TIDY)" "$(LINT_MEM_CHECKS)" "" 10 $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null; true
 
 # Gating variant: identical run, but vendored-tree diagnostics are excluded
 # (analyzer diagnostics bypass --header-filter by design; this mirrors the
@@ -1389,10 +1417,13 @@ lint-mem:
 # that function invalidates it and the finding must be argued again against
 # the new code. A suppression is never allowed to outlive its reasoning, and
 # NOLINT is never honoured here.
+# Analyzer findings are judged by the gate (including its argued whitelist),
+# not clang-tidy's repository-wide WarningsAsErrors. Compiler -Werror stays on;
+# keep analyzer diagnostics as warnings so vendored findings excluded by the
+# gate do not fail clang-tidy; all other clang-tidy warnings remain errors.
 lint-mem-ci:
 	@echo "=== clang-analyzer memory gate ==="
-	@printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
-		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null \
+	@set -o pipefail; printf '%s\n' $(LINT_SRCS) | python3 scripts/lint-mem-runner.py "$(CLANG_TIDY)" "$(LINT_MEM_CHECKS)" "-clang-analyzer-*" 4 $(CFLAGS_COMMON) $(SYSROOT_FLAG) \
 		| python3 scripts/lint-mem-gate.py
 
 # ── Security audit (6 layers) ────────────────────────────────────
