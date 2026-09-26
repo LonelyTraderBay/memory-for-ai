@@ -54,7 +54,9 @@ enum {
      * the OS finishes reclaiming a dead holder's lock. This only bounds a peer
      * that never finishes, so a command cannot hang indefinitely. */
     MAIN_STARTUP_CONTENTION_CEILING_MS = 120000,
-    MAIN_MCP_STARTUP_TIMEOUT_MS = 30000,
+    /* Concurrent cold CLI clients can contend while the daemon listener is
+     * becoming ready, especially on busy Windows hosts. Keep the wait bounded. */
+    MAIN_MCP_STARTUP_TIMEOUT_MS = 60000,
     MAIN_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000,
     MAIN_HOOK_CONNECT_TIMEOUT_MS = 250,
     MAIN_HOOK_REQUEST_TIMEOUT_MS = 1500,

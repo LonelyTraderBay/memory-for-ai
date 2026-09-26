@@ -310,7 +310,7 @@ process that should share one daemon must see the same value — set it in the
 environment of your MCP client and your shell alike, or a CLI invocation without
 it will coordinate through the default location instead.
 
-Environment used by daemon-owned components—such as diagnostics, daemon logging, and process-wide indexing resource limits—is captured from the first daemon-backed session that starts the daemon. Later sessions join the existing process and cannot replace those values. To change them, close every daemon-backed session, update the relevant agent configurations consistently, and restart a session. `CBM_ALLOWED_ROOT` remains session-specific, a conflicting `MFA_CACHE_DIR` is rejected, and one-shot CLI commands use their own current environment without starting the daemon.
+Environment used by daemon-owned components—such as diagnostics, daemon logging, and process-wide indexing resource limits—is captured from the first daemon-backed session that starts the daemon. Later sessions join the existing process and cannot replace those values. To change them, close every daemon-backed session, update the relevant agent configurations consistently, and restart a session. `CBM_ALLOWED_ROOT` remains session-specific, and a conflicting `MFA_CACHE_DIR` is rejected. A daemon-backed one-shot `cli` command can start a temporary daemon when no generation is available; it uses that command's current environment and waits up to 60 seconds for the daemon to accept the client. If startup is still unavailable at the deadline, the command fails visibly. This does not create the permanent daemon started by `daemon start`.
 
 
 ### Roots that are always refused
