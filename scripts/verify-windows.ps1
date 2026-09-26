@@ -35,7 +35,7 @@ if ($LASTEXITCODE -ne 0 -or $compilerTarget -notmatch '^x86_64-w64-windows-gnu')
     throw "Unexpected compiler target: $compilerTarget"
 }
 $savedEnvironment = @{}
-foreach ($key in @('PATH','MSYSTEM','CHERE_INVOKING','TEMP','TMP','TMPDIR','CBM_CI_TEMP_ROOT','CBM_VERIFY_SUITES','CBM_VERIFY_BUILD_DIR','CBM_VERIFY_NO_SANITIZER')) {
+foreach ($key in @('PATH','MSYSTEM','CHERE_INVOKING','TEMP','TMP','TMPDIR','CBM_CI_TEMP_ROOT','CBM_VERIFY_BUILD_DIR')) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 $previousDirectory = Get-Location
@@ -64,9 +64,7 @@ try {
     $env:PATH = (@($gitPath, (Join-Path $MsysRoot 'clang64\bin'), (Join-Path $MsysRoot 'usr\bin')) + $toolPaths + @("$env:SystemRoot\system32", $env:SystemRoot, "$env:SystemRoot\System32\WindowsPowerShell\v1.0") | Select-Object -Unique) -join ';'
     $env:MSYSTEM = 'CLANG64'
     $env:CHERE_INVOKING = '1'
-    $env:CBM_VERIFY_SUITES = $Suites
     $env:CBM_VERIFY_BUILD_DIR = $BuildDir
-    $env:CBM_VERIFY_NO_SANITIZER = if ($NoSanitizer) { '1' } else { '0' }
     if (-not $env:CBM_CI_TEMP_ROOT) {
         $ownedTemp = & "$PSScriptRoot/ci/new-protected-temp-root.ps1" -Prefix 'cbm-verify-' -ProtectDir (Join-Path $repoRoot $BuildDir)
         $env:CBM_CI_TEMP_ROOT = $ownedTemp
@@ -78,7 +76,14 @@ try {
     Invoke-Check 'Metadata' 'python3 scripts/check-product-metadata.py'
     if ($Suites) { $Phase = 'Native' }
     if ($Phase -in @('All','Native')) {
-        Invoke-Check 'Native' 'if [ "$CBM_VERIFY_NO_SANITIZER" = 1 ]; then if [ -n "$CBM_VERIFY_SUITES" ]; then scripts/test.sh --suites "$CBM_VERIFY_SUITES" CC=clang CXX=clang++ SANITIZE= "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; else scripts/test.sh CC=clang CXX=clang++ SANITIZE= "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; fi; else if [ -n "$CBM_VERIFY_SUITES" ]; then scripts/test.sh --suites "$CBM_VERIFY_SUITES" CC=clang CXX=clang++ "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; else scripts/test.sh CC=clang CXX=clang++ "BUILD_DIR=$CBM_VERIFY_BUILD_DIR"; fi; fi'
+        $nativeCommandParts = @('scripts/test.sh','CC=clang','CXX=clang++')
+        if ($NoSanitizer) { $nativeCommandParts += 'SANITIZE=' }
+        if ($Suites) {
+            $nativeCommandParts += '--suites'
+            $nativeCommandParts += '"' + $Suites + '"'
+        }
+        $nativeCommandParts += '"BUILD_DIR=$CBM_VERIFY_BUILD_DIR"'
+        Invoke-Check 'Native' ($nativeCommandParts -join ' ')
     }
     if ($Phase -in @('All','Frontend')) {
         Invoke-Check 'Frontend' 'cd graph-ui && npm ci && npm run test:coverage && npm run build && npm run test:browser:install && npm run test:browser'
