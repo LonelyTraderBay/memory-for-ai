@@ -44,9 +44,19 @@ class WindowsX64Contract(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_packaging_refuses_unsupported_target_before_output(self):
+        if os.name == "nt":
+            clang = shutil.which("clang")
+            self.assertIsNotNone(clang, "Windows contract tests require MSYS2 CLANG64")
+            clang_path = Path(clang).resolve()
+            self.assertEqual(clang_path.parent.parent.name.lower(), "clang64", str(clang_path))
+            bash = clang_path.parents[2] / "usr" / "bin" / "bash.exe"
+            self.assertTrue(bash.is_file(), str(bash))
+            bash = str(bash)
+        else:
+            bash = shutil.which("bash") or "bash"
         for target in (("windows", "arm64"), ("linux", "amd64"), ("darwin", "arm64")):
             result = subprocess.run(
-                ["bash", "scripts/package-release.sh", *target,
+                [bash, "scripts/package-release.sh", *target,
                  "--selected-binary", "missing-fixture", "--expected-sha256", "0" * 64,
                  "--third-party-notices", "missing-notices", "--out-dir", "build/must-not-publish-x64-test"],
                 cwd=ROOT, capture_output=True, text=True)
