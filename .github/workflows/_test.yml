@@ -14,7 +14,8 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
           msystem: CLANG64
           path-type: inherit
@@ -36,7 +37,7 @@ jobs:
             ccache-test-windows-latest-CLANG64-
       - name: Canonical Windows x64 native verification
         shell: pwsh
-        run: ./scripts/verify-windows.ps1 -Phase Native
+        run: ./scripts/verify-windows.ps1 -Phase Native -MsysRoot '${{ steps.msys2.outputs['msys2-location'] }}'
         env:
           CBM_SKIP_PERF: ${{ inputs.skip_perf && '1' || '' }}
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -58,7 +59,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
           msystem: CLANG64
           path-type: inherit
@@ -72,13 +74,14 @@ jobs:
           cache: false
       - name: Canonical Packages verification
         shell: pwsh
-        run: ./scripts/verify-windows.ps1 -Phase Packages
+        run: ./scripts/verify-windows.ps1 -Phase Packages -MsysRoot '${{ steps.msys2.outputs['msys2-location'] }}'
   test-frontend:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
           msystem: CLANG64
           path-type: inherit
@@ -88,13 +91,14 @@ jobs:
           node-version: '22'
       - name: Canonical Frontend verification
         shell: pwsh
-        run: ./scripts/verify-windows.ps1 -Phase Frontend
+        run: ./scripts/verify-windows.ps1 -Phase Frontend -MsysRoot '${{ steps.msys2.outputs['msys2-location'] }}'
   test-windows-guards:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
           msystem: CLANG64
           path-type: inherit
@@ -104,7 +108,7 @@ jobs:
           node-version: '22'
       - name: Canonical Product verification
         shell: pwsh
-        run: ./scripts/verify-windows.ps1 -Phase Product
+        run: ./scripts/verify-windows.ps1 -Phase Product -MsysRoot '${{ steps.msys2.outputs['msys2-location'] }}'
   artifact-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 15

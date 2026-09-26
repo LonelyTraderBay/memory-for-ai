@@ -10,7 +10,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
           msystem: CLANG64
           path-type: inherit
@@ -20,4 +21,4 @@ jobs:
           node-version: '22'
       - name: Canonical Lint verification
         shell: pwsh
-        run: ./scripts/verify-windows.ps1 -Phase Lint
+        run: ./scripts/verify-windows.ps1 -Phase Lint -MsysRoot '${{ steps.msys2.outputs['msys2-location'] }}'
