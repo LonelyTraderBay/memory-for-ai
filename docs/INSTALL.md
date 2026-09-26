@@ -36,7 +36,7 @@ uname -sm        # macOS / Linux → e.g. "Linux x86_64", "Darwin arm64"
 powershell -Command "$PSVersionTable.PSVersion"   # must print a version table
 ```
 
-If you get `'powershell' is not recognized …` while `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, that directory is missing from PATH — add it (System Properties → Environment Variables → Path), then restart your coding agent. Without this, everything works **except** `search_code`, which returns `search failed: the contained command could not complete`.
+If you get `'powershell' is not recognized …` while `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, that directory is missing from PATH — add it (System Properties → Environment Variables → Path), then restart your coding agent. Without this PATH entry, `search_code` returns `search failed: the contained command could not complete`. Deferred cleanup of an old executable uses Windows PowerShell from its system-directory path, independently of PATH. The hidden helper waits for the caller to exit, then retries deletion for up to 10 seconds. If the helper cannot start, reboot deletion is attempted; registering it can fail without sufficient permission. A deferred-cleanup warning confirms scheduling, not deletion: inspect the reported backup path after exit, and retain it for manual cleanup if it remains.
 
 **4. git on PATH (all platforms).** Freshness checks, the background watcher, and `detect_changes` shell out to `git`. Verify with `git --version`; if it is missing, install Git first (any current build; on Windows also confirm `git.exe` lands on PATH).
 

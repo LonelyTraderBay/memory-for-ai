@@ -167,7 +167,7 @@ CXXFLAGS_TSAN = $(CXXFLAGS_COMMON) -DCBM_SANITIZED_BUILD=1 -g -O1 \
 # guarantee that grep exists.  The Windows make environment is sufficient to
 # select the MinGW system libraries for both GCC and clang-based Windows builds.
 IS_MINGW :=
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 IS_MINGW := yes
 else ifneq (,$(findstring mingw,$(CC)))
 IS_MINGW := yes
@@ -201,7 +201,7 @@ endif
 # allocations already reach mimalloc here, but the profiler needs the same
 # observation point as Windows or the platform comparison is not like-for-like.
 # macOS ld has no --wrap, so it stays census-only.
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 IS_LINUX := no
 else
 IS_LINUX := $(shell uname -s 2>/dev/null | grep -q Linux && echo yes || echo no)
@@ -1216,7 +1216,7 @@ clean-c:
 
 # clang-tidy and clang-format: use Homebrew LLVM on macOS, overridable via make args
 # e.g. make lint-format CLANG_FORMAT=clang-format-18
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 LLVM_BIN :=
 CLANG_TIDY ?= clang-tidy
 CLANG_FORMAT ?= clang-format
@@ -1355,7 +1355,7 @@ diag:
 # catch a deliberately leaked allocation. So the lane is simply "the normal
 # ASan test build, compiled by Homebrew LLVM instead of Apple clang, run with
 # leak detection turned on".
-ifeq ($(OS),Windows_NT)
+ifneq ($(filter Windows_NT windows,$(OS)),)
 LSAN_LLVM_BIN ?=
 else
 LSAN_LLVM_BIN ?= $(shell brew --prefix llvm 2>/dev/null)/bin

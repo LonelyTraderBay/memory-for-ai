@@ -34,7 +34,7 @@
 struct cbm_dir {
     HANDLE find_handle;
     WIN32_FIND_DATAW find_data;
-    wchar_t wide_pattern[CBM_PATH_MAX];
+    wchar_t *wide_pattern;
     cbm_dirent_t entry;
     bool first;
     bool done;
@@ -50,7 +50,7 @@ cbm_dir_t *cbm_opendir(const char *path) {
     }
 
     size_t wlen = wcslen(wpath);
-    if (wlen == 0 || wlen + 2 >= CBM_PATH_MAX) {
+    if (wlen == 0 || wlen > (SIZE_MAX / sizeof(wchar_t)) - 3U) {
         free(wpath);
         return NULL;
     }
@@ -61,7 +61,13 @@ cbm_dir_t *cbm_opendir(const char *path) {
         return NULL;
     }
 
-    wmemcpy(d->wide_pattern, wpath, wlen + 1);
+    d->wide_pattern = (wchar_t *)malloc((wlen + 3U) * sizeof(wchar_t));
+    if (!d->wide_pattern) {
+        free(d);
+        free(wpath);
+        return NULL;
+    }
+    wmemcpy(d->wide_pattern, wpath, wlen + 1U);
     wchar_t *p = d->wide_pattern + wlen - SKIP_ONE;
     if (*p != L'\\' && *p != L'/') {
         ++p;
@@ -75,6 +81,7 @@ cbm_dir_t *cbm_opendir(const char *path) {
 
     d->find_handle = FindFirstFileW(d->wide_pattern, &d->find_data);
     if (d->find_handle == INVALID_HANDLE_VALUE) {
+        free(d->wide_pattern);
         free(d);
         return NULL;
     }
@@ -162,6 +169,7 @@ void cbm_closedir(cbm_dir_t *d) {
         if (d->find_handle != INVALID_HANDLE_VALUE) {
             FindClose(d->find_handle);
         }
+        free(d->wide_pattern);
         free(d);
     }
 }

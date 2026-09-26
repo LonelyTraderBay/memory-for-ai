@@ -1343,6 +1343,241 @@ typedef enum {
     ACTIVATION_UNLINK_ERROR = 2,
 } activation_unlink_status_t;
 
+#ifdef _WIN32
+static wchar_t *activation_windows_base64_utf16(const wchar_t *value) {
+    static const wchar_t alphabet[] =
+        L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!value) {
+        return NULL;
+    }
+    size_t units = wcslen(value);
+    if (units > (SIZE_MAX - 2U) / 2U) {
+        return NULL;
+    }
+    size_t byte_count = units * 2U;
+    if (byte_count > SIZE_MAX - 2U) {
+        return NULL;
+    }
+    size_t groups = (byte_count + 2U) / 3U;
+    if (groups > (SIZE_MAX / sizeof(wchar_t) - 1U) / 4U) {
+        return NULL;
+    }
+    size_t encoded_length = groups * 4U;
+    wchar_t *encoded = malloc((encoded_length + 1U) * sizeof(*encoded));
+    if (!encoded) {
+        return NULL;
+    }
+    const uint16_t *source = (const uint16_t *)value;
+    size_t input = 0;
+    size_t output = 0;
+    while (input < byte_count) {
+        size_t remaining = byte_count - input;
+        uint32_t first = source[input / 2U];
+        unsigned char a = (unsigned char)(input % 2U == 0U ? first & 0xffU : first >> 8U);
+        input++;
+        uint32_t second = input < byte_count ? source[input / 2U] : 0U;
+        unsigned char b =
+            (unsigned char)(input < byte_count ? (input % 2U == 0U ? second & 0xffU : second >> 8U)
+                                               : 0U);
+        input++;
+        uint32_t third = input < byte_count ? source[input / 2U] : 0U;
+        unsigned char c =
+            (unsigned char)(input < byte_count ? (input % 2U == 0U ? third & 0xffU : third >> 8U)
+                                               : 0U);
+        input++;
+        encoded[output++] = alphabet[a >> 2U];
+        encoded[output++] = alphabet[((a & 0x03U) << 4U) | (b >> 4U)];
+        encoded[output++] = remaining > 1U ? alphabet[((b & 0x0fU) << 2U) | (c >> 6U)] : L'=';
+        encoded[output++] = remaining > 2U ? alphabet[c & 0x3fU] : L'=';
+    }
+    encoded[output] = L'\0';
+    return encoded;
+}
+
+static bool activation_windows_defer_unlink_until_exit(const wchar_t *path, DWORD *error_out) {
+    static const wchar_t script_format[] =
+        L"$n='%ls';$p='%ls';"
+        L"try{$m=[System.Threading.Mutex]::OpenExisting($n);"
+        L"try{$null=$m.WaitOne()} catch [System.Threading.AbandonedMutexException] {}"
+        L";$m.Dispose()} catch [System.Threading.WaitHandleCannotBeOpenedException] {} ;"
+        L"$s=@'\nusing System;\nusing System.Runtime.InteropServices;\n"
+        L"public static class CbmDeferredDelete {\n"
+        L"[DllImport(\"kernel32.dll\",CharSet=CharSet.Unicode,SetLastError=true,ExactSpelling=true)"
+        L"]\n"
+        L"public static extern bool DeleteFileW(string path);\n}\n'@\n"
+        L"Add-Type -TypeDefinition $s -ErrorAction Stop;"
+        L"for($i=0;$i -lt 40;$i++){"
+        L"if([CbmDeferredDelete]::DeleteFileW($p)){break};"
+        L"Start-Sleep -Milliseconds 250}";
+    wchar_t mutex_name[128];
+    unsigned long long sequence = (unsigned long long)atomic_fetch_add_explicit(
+                                      &activation_unique_sequence, 1U, memory_order_relaxed) +
+                                  1ULL;
+    int mutex_length = swprintf(
+        mutex_name, sizeof(mutex_name) / sizeof(mutex_name[0]), L"Local\\cbm-cleanup-%lu-%llu-%llu",
+        (unsigned long)GetCurrentProcessId(), (unsigned long long)GetTickCount64(), sequence);
+    if (mutex_length <= 0 || (size_t)mutex_length >= sizeof(mutex_name) / sizeof(mutex_name[0])) {
+        if (error_out) {
+            *error_out = ERROR_INVALID_NAME;
+        }
+        return false;
+    }
+    SetLastError(ERROR_SUCCESS);
+    HANDLE mutex = CreateMutexW(NULL, TRUE, mutex_name);
+    DWORD mutex_error = GetLastError();
+    if (!mutex || mutex_error == ERROR_ALREADY_EXISTS) {
+        DWORD error = mutex ? ERROR_ALREADY_EXISTS : mutex_error;
+        if (mutex) {
+            CloseHandle(mutex);
+        }
+        if (error_out) {
+            *error_out = error;
+        }
+        return false;
+    }
+
+    size_t path_length = wcslen(path);
+    bool extended = path_length >= 4U && wcsncmp(path, L"\\\\?\\", 4U) == 0;
+    bool unc = !extended && path_length >= 2U && path[0] == L'\\' && path[1] == L'\\';
+    size_t prefix_length = extended ? 0U : (unc ? 8U : 4U);
+    if (path_length > (SIZE_MAX - prefix_length - 1U) / sizeof(wchar_t)) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    wchar_t *extended_path = malloc((prefix_length + path_length + 1U) * sizeof(*extended_path));
+    if (!extended_path) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    size_t path_offset = 0U;
+    if (unc) {
+        memcpy(extended_path, L"\\\\?\\UNC\\", 8U * sizeof(wchar_t));
+        path_offset = 2U;
+    } else if (!extended) {
+        memcpy(extended_path, L"\\\\?\\", 4U * sizeof(wchar_t));
+    }
+    memcpy(extended_path + prefix_length, path + path_offset,
+           (path_length - path_offset + 1U) * sizeof(wchar_t));
+
+    size_t quote_count = 0U;
+    for (const wchar_t *cursor = extended_path; *cursor; cursor++) {
+        quote_count += *cursor == L'\'' ? 1U : 0U;
+    }
+    if (path_length > SIZE_MAX - prefix_length - quote_count - 1U) {
+        free(extended_path);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    wchar_t *quoted_path =
+        malloc((prefix_length + path_length + quote_count + 1U) * sizeof(*quoted_path));
+    if (!quoted_path) {
+        free(extended_path);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    wchar_t *quoted_out = quoted_path;
+    for (const wchar_t *cursor = extended_path; *cursor; cursor++) {
+        *quoted_out++ = *cursor;
+        if (*cursor == L'\'') {
+            *quoted_out++ = L'\'';
+        }
+    }
+    *quoted_out = L'\0';
+    free(extended_path);
+
+    size_t script_capacity = wcslen(script_format) + wcslen(mutex_name) + wcslen(quoted_path) + 1U;
+    wchar_t *script = script_capacity <= SIZE_MAX / sizeof(*script)
+                          ? malloc(script_capacity * sizeof(*script))
+                          : NULL;
+    int script_chars =
+        script ? swprintf(script, script_capacity, script_format, mutex_name, quoted_path) : -1;
+    if (!script || script_chars < 0 || (size_t)script_chars >= script_capacity) {
+        free(script);
+        free(quoted_path);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = script ? ERROR_INVALID_DATA : ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+    free(quoted_path);
+    wchar_t *encoded = activation_windows_base64_utf16(script);
+    free(script);
+    if (!encoded) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+
+    wchar_t system_directory[MAX_PATH];
+    UINT system_length = GetSystemDirectoryW(system_directory, MAX_PATH);
+    wchar_t powershell_path[MAX_PATH + 64U];
+    int powershell_length =
+        system_length == 0U || system_length >= MAX_PATH
+            ? -1
+            : swprintf(powershell_path, sizeof(powershell_path) / sizeof(powershell_path[0]),
+                       L"%ls\\WindowsPowerShell\\v1.0\\powershell.exe", system_directory);
+    size_t command_capacity = wcslen(encoded) + MAX_PATH + 160U;
+    wchar_t *command_line = malloc(command_capacity * sizeof(*command_line));
+    int command_length = powershell_length < 0 || !command_line
+                             ? -1
+                             : swprintf(command_line, command_capacity,
+                                        L"\"%ls\" -NoLogo -NoProfile -NonInteractive "
+                                        L"-WindowStyle Hidden -ExecutionPolicy Bypass "
+                                        L"-EncodedCommand %ls",
+                                        powershell_path, encoded);
+    free(encoded);
+    if (command_length < 0 || (size_t)command_length >= command_capacity) {
+        free(command_line);
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        return false;
+    }
+
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    ZeroMemory(&startup, sizeof(startup));
+    ZeroMemory(&process, sizeof(process));
+    startup.cb = sizeof(startup);
+    BOOL started =
+        CreateProcessW(powershell_path, command_line, NULL, NULL, FALSE,
+                       CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, NULL, NULL, &startup, &process);
+    DWORD error = started ? ERROR_SUCCESS : GetLastError();
+    free(command_line);
+    if (!started) {
+        CloseHandle(mutex);
+        if (error_out) {
+            *error_out = error;
+        }
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    /* Keep this owned mutex until process exit. The helper waits for normal or
+     * abandoned mutex release, so it cannot race deletion against this image. */
+    if (error_out) {
+        *error_out = ERROR_SUCCESS;
+    }
+    return true;
+}
+#endif
+
 static activation_unlink_status_t activation_unlink_expected(
     const cbm_activation_transaction_t *transaction, const char *path, const char *name,
     const activation_file_identity_t *expected, bool allow_windows_deferred) {
@@ -1363,11 +1598,31 @@ static activation_unlink_status_t activation_unlink_expected(
         return ACTIVATION_UNLINK_OK;
     }
     DWORD error = GetLastError();
-    bool deferred = allow_windows_deferred &&
-                    (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
-                     error == ERROR_LOCK_VIOLATION) &&
-                    MoveFileExW(wide, NULL, MOVEFILE_DELAY_UNTIL_REBOOT) != 0;
+    bool deferred = false;
+    DWORD deferred_error = ERROR_SUCCESS;
+    if (allow_windows_deferred &&
+        (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+         error == ERROR_LOCK_VIOLATION)) {
+        deferred = activation_windows_defer_unlink_until_exit(wide, &deferred_error);
+        if (!deferred && MoveFileExW(wide, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            deferred = true;
+            deferred_error = ERROR_SUCCESS;
+        } else if (!deferred) {
+            deferred_error = GetLastError();
+        }
+    } else {
+        deferred_error = error;
+    }
     free(wide);
+    if (!deferred) {
+        char delete_error_text[16];
+        char deferred_error_text[16];
+        (void)snprintf(delete_error_text, sizeof(delete_error_text), "%lu", (unsigned long)error);
+        (void)snprintf(deferred_error_text, sizeof(deferred_error_text), "%lu",
+                       (unsigned long)deferred_error);
+        cbm_log_error("activation.unlink_failed", "delete_error", delete_error_text,
+                      "deferred_error", deferred_error_text);
+    }
     return deferred ? ACTIVATION_UNLINK_DEFERRED : ACTIVATION_UNLINK_ERROR;
 #else
     (void)allow_windows_deferred;
@@ -2239,6 +2494,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
         return CBM_ACTIVATION_TRANSACTION_INVALID_STATE;
     }
     if (!activation_directory_still_valid(transaction)) {
+        cbm_log_error("activation.finalize_failed", "reason", "directory_validation");
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     if (transaction->backup_contains_target) {
@@ -2246,6 +2502,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
             transaction, transaction->backup_path, transaction->backup_name,
             &transaction->backup_identity, true);
         if (removed == ACTIVATION_UNLINK_ERROR) {
+            cbm_log_error("activation.finalize_failed", "reason", "backup_cleanup");
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
         if (removed == ACTIVATION_UNLINK_DEFERRED) {

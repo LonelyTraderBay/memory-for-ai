@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_stdio import McpServer  # noqa: E402
@@ -154,7 +155,7 @@ def verify_relocated_runtime(binary, work):
     # not Python, creates this tree during the first real install.
     target = os.path.join(
         work,
-        "install_Ωμέγα",
+        "install_Ω'mega",
         *("segment_%02d_%s" % (i, "x" * 32) for i in range(7)),
         "bin",
     )
@@ -234,6 +235,18 @@ def verify_relocated_runtime(binary, work):
             uninstall.returncode, uninstall.stdout[-1200:]))
     if os.path.exists(installed_extended):
         return fail("long-path uninstall retained the installed executable")
+    cleanup_deadline = time.monotonic() + 15.0
+    while time.monotonic() < cleanup_deadline:
+        try:
+            leftovers = [name for name in os.listdir(windows_extended_path(target))
+                         if name.startswith(".cbm-backup-")]
+        except OSError as exc:
+            return fail("could not inspect long-path uninstall backups: %s" % exc)
+        if not leftovers:
+            break
+        time.sleep(0.1)
+    if leftovers:
+        return fail("post-exit cleanup retained long-path executable backup(s): %r" % leftovers)
     stop_runtime_daemon()
     return None
 
@@ -246,66 +259,88 @@ def make_fixture(root):
             f.write(text.encode("utf-8"))  # exact bytes, identical across copies
 
 
+def stop_cache_daemon(binary, cache):
+    """Stop the daemon that owns this test's isolated cache and log handles."""
+    env = os.environ.copy()
+    env["MFA_CACHE_DIR"] = cache
+    for attempt in range(2):
+        try:
+            stopped = run_product([binary, "daemon", "stop"], cache, env,
+                                  timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return "could not stop isolated daemon for %r: %s" % (cache, exc)
+        if stopped.returncode != 0:
+            return "isolated daemon stop %d/2 failed for %r (rc=%d): %s" % (
+                attempt + 1, cache, stopped.returncode, stopped.stdout[-500:])
+    return None
+
+
 def index_and_count(binary, repo, cache):
     """Index `repo` into an isolated cache and return label-resolved counts."""
     os.makedirs(cache, exist_ok=True)
-    with McpServer(binary, cache_dir=cache) as s:
-        s.initialize()
-        resp = s.call_tool("index_repository", {"repo_path": repo}, timeout=180)
-        index_txt, err = s.tool_text(resp)
-        if err:
-            return {"error": "index tools/call error: %r" % err}
-        lp = s.call_tool("list_projects", {}, timeout=60)
-        lp_txt, _ = s.tool_text(lp)
-        projects = json.loads(lp_txt).get("projects") or []
-        if not projects:
-            # The count summary cannot explain a venue-specific empty listing;
-            # carry the index response and the cache contents into the log.
-            try:
-                cache_entries = sorted(os.listdir(cache))
-            except OSError as exc:
-                cache_entries = ["<listdir failed: %s>" % exc]
-            # The supervisor's worker logs carry the actual pipeline error.
-            log_tails = []
-            logs_dir = os.path.join(cache, "logs")
-            if os.path.isdir(logs_dir):
-                for log_name in sorted(os.listdir(logs_dir)):
-                    try:
-                        with open(os.path.join(logs_dir, log_name), "rb") as lf:
-                            tail = lf.read()[-800:].decode("utf-8", "replace")
-                        log_tails.append("%s: %s" % (log_name, tail))
-                    except OSError as exc:
-                        log_tails.append("%s: <unreadable: %s>" % (log_name, exc))
-            try:
-                repo_entries = sorted(os.listdir(repo))
-            except OSError as exc:
-                repo_entries = ["<listdir failed: %s>" % exc]
-            return {"error": "no project listed after index; index said %r; "
-                             "cache holds %r; repo holds %r; worker logs: %s"
-                             % (index_txt[:400], cache_entries, repo_entries,
-                                " | ".join(log_tails) or "<none>")}
-        p = projects[0]
-        out = {"name": p.get("name"), "nodes": p.get("nodes"),
-               "edges": p.get("edges")}
-        # Definition-level counts prove the parser ran (not just discovery).
-        # query_graph defaults to TOON text; this scripted consumer requests
-        # format="json" ({"columns":[...],"rows":[["<n>"]],...}) explicitly.
-        name = p.get("name")
-        defs = 0
-        for label in ("Function", "Class", "Method"):
-            q = "MATCH (n:%s) RETURN count(n)" % label
-            r = s.call_tool("query_graph",
-                            {"query": q, "project": name, "format": "json"},
-                            timeout=60)
-            t, _ = s.tool_text(r)
-            try:
-                rows = json.loads(t).get("rows") or []
-                if rows and rows[0]:
-                    defs += int(rows[0][0])
-            except Exception:
-                pass
-        out["definition_nodes"] = defs
-        return out
+    try:
+        with McpServer(binary, cache_dir=cache) as s:
+            s.initialize()
+            resp = s.call_tool("index_repository", {"repo_path": repo}, timeout=180)
+            index_txt, err = s.tool_text(resp)
+            if err:
+                return {"error": "index tools/call error: %r" % err}
+            # Counts are opt-in to keep list_projects lean for agent clients.
+            lp = s.call_tool("list_projects", {"include_details": True}, timeout=60)
+            lp_txt, _ = s.tool_text(lp)
+            projects = json.loads(lp_txt).get("projects") or []
+            if not projects:
+                # The count summary cannot explain a venue-specific empty listing;
+                # carry the index response and the cache contents into the log.
+                try:
+                    cache_entries = sorted(os.listdir(cache))
+                except OSError as exc:
+                    cache_entries = ["<listdir failed: %s>" % exc]
+                # The supervisor's worker logs carry the actual pipeline error.
+                log_tails = []
+                logs_dir = os.path.join(cache, "logs")
+                if os.path.isdir(logs_dir):
+                    for log_name in sorted(os.listdir(logs_dir)):
+                        try:
+                            with open(os.path.join(logs_dir, log_name), "rb") as lf:
+                                tail = lf.read()[-800:].decode("utf-8", "replace")
+                            log_tails.append("%s: %s" % (log_name, tail))
+                        except OSError as exc:
+                            log_tails.append("%s: <unreadable: %s>" % (log_name, exc))
+                try:
+                    repo_entries = sorted(os.listdir(repo))
+                except OSError as exc:
+                    repo_entries = ["<listdir failed: %s>" % exc]
+                return {"error": "no project listed after index; index said %r; "
+                                 "cache holds %r; repo holds %r; worker logs: %s"
+                                 % (index_txt[:400], cache_entries, repo_entries,
+                                    " | ".join(log_tails) or "<none>")}
+            p = projects[0]
+            out = {"name": p.get("name"), "nodes": p.get("nodes"),
+                   "edges": p.get("edges")}
+            # Definition-level counts prove the parser ran (not just discovery).
+            # query_graph defaults to TOON text; this scripted consumer requests
+            # format="json" ({"columns":[...],"rows":[["<n>"]],...}) explicitly.
+            name = p.get("name")
+            defs = 0
+            for label in ("Function", "Class", "Method"):
+                q = "MATCH (n:%s) RETURN count(n)" % label
+                r = s.call_tool("query_graph",
+                                {"query": q, "project": name, "format": "json"},
+                                timeout=60)
+                t, _ = s.tool_text(r)
+                try:
+                    rows = json.loads(t).get("rows") or []
+                    if rows and rows[0]:
+                        defs += int(rows[0][0])
+                except Exception:
+                    pass
+            out["definition_nodes"] = defs
+            return out
+    finally:
+        stop_error = stop_cache_daemon(binary, cache)
+        if stop_error:
+            raise RuntimeError(stop_error)
 
 
 def main():
@@ -406,7 +441,9 @@ def main():
                                   % (key, log_name, tail))
                 failures.append(key)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        # The fixture includes paths beyond legacy MAX_PATH. Prefix the root
+        # itself too, otherwise rmtree can silently leave the test tree behind.
+        shutil.rmtree(windows_extended_path(work))
 
     if failures:
         print("\nREGRESSION (red): %d/%d non-ASCII repo path variants lost "

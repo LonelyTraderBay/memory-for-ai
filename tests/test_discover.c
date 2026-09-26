@@ -6,6 +6,7 @@
 #include "test_framework.h"
 #include "test_helpers.h"
 #include "discover/discover.h"
+#include "foundation/constants.h"
 #include "foundation/platform.h"
 
 typedef struct {
@@ -431,6 +432,83 @@ TEST(discover_bounded_count_fails_closed_after_deadline) {
     th_cleanup(base);
     ASSERT_EQ(status, CBM_DISCOVER_ERROR);
     ASSERT_EQ(count, -1);
+    PASS();
+}
+
+TEST(discover_path_argument_over_limit_is_specific_and_empty) {
+    char oversized[CBM_SZ_4K + 1];
+    memset(oversized, 'x', sizeof(oversized) - 1U);
+    oversized[0] = '/';
+    oversized[sizeof(oversized) - 1U] = '\0';
+
+    cbm_file_info_t *files = NULL;
+    int count = 7;
+    cbm_discover_opts_t opts = {.mode = CBM_MODE_FULL};
+    ASSERT_EQ(cbm_discover(oversized, &opts, &files, &count), CBM_DISCOVER_PATH_TOO_LONG);
+    ASSERT_NULL(files);
+    ASSERT_EQ(count, 0);
+
+    count = 7;
+    ASSERT_EQ(cbm_discover_count_bounded(oversized, &opts, 100, 0, &count),
+              CBM_DISCOVER_PATH_TOO_LONG);
+    ASSERT_EQ(count, -1);
+    PASS();
+}
+
+TEST(discover_handles_paths_above_legacy_enumeration_buffer) {
+    char *base = th_mktempdir("cbm_disc_long_supported");
+    ASSERT(base != NULL);
+
+    char absolute_dir[CBM_SZ_4K];
+    char relative_dir[CBM_SZ_4K] = "";
+    int base_length = snprintf(absolute_dir, sizeof(absolute_dir), "%s", base);
+    ASSERT(base_length > 0);
+    ASSERT_LT(base_length, (int)sizeof(absolute_dir));
+
+    char segment[181];
+    memset(segment, 'd', sizeof(segment) - 1U);
+    segment[sizeof(segment) - 1U] = '\0';
+    while (strlen(absolute_dir) <= 1100U) {
+        size_t absolute_length = strlen(absolute_dir);
+        size_t relative_length = strlen(relative_dir);
+        int absolute_added = snprintf(absolute_dir + absolute_length,
+                                      sizeof(absolute_dir) - absolute_length, "/%s", segment);
+        int relative_added =
+            snprintf(relative_dir + relative_length, sizeof(relative_dir) - relative_length, "%s%s",
+                     relative_length == 0U ? "" : "/", segment);
+        ASSERT_GT(absolute_added, 0);
+        ASSERT_LT((size_t)absolute_added, sizeof(absolute_dir) - absolute_length);
+        ASSERT_GT(relative_added, 0);
+        ASSERT_LT((size_t)relative_added, sizeof(relative_dir) - relative_length);
+    }
+    ASSERT_GT(strlen(absolute_dir), 1024U);
+    ASSERT_LT(strlen(absolute_dir), CBM_SZ_4K - 64U);
+    ASSERT(th_mkdir_p(absolute_dir) == 0);
+
+    char source_path[CBM_SZ_4K];
+    char source_rel_path[CBM_SZ_4K];
+    int source_length = snprintf(source_path, sizeof(source_path), "%s/path_probe.c", absolute_dir);
+    int source_rel_length =
+        snprintf(source_rel_path, sizeof(source_rel_path), "%s/path_probe.c", relative_dir);
+    ASSERT_GT(source_length, 0);
+    ASSERT_LT(source_length, (int)sizeof(source_path));
+    ASSERT_GT(source_rel_length, 0);
+    ASSERT_LT(source_rel_length, (int)sizeof(source_rel_path));
+    FILE *source = cbm_fopen(source_path, "wb");
+    ASSERT_NOT_NULL(source);
+    fputs("int path_probe(void) { return 1; }\n", source);
+    ASSERT_EQ(fclose(source), 0);
+
+    cbm_discover_opts_t opts = {.mode = CBM_MODE_FULL};
+    cbm_file_info_t *files = NULL;
+    int count = 0;
+    int rc = cbm_discover(base, &opts, &files, &count);
+    bool found = rc == CBM_DISCOVER_OK && discover_has_rel_path(files, count, source_rel_path);
+
+    cbm_discover_free(files, count);
+    th_cleanup(base);
+    ASSERT_EQ(rc, CBM_DISCOVER_OK);
+    ASSERT_TRUE(found);
     PASS();
 }
 
@@ -1766,6 +1844,8 @@ SUITE(discover) {
     RUN_TEST(discover_wide_sibling_fanout_exceeds_initial_walk_stack);
     RUN_TEST(discover_bounded_count_is_allocation_free_and_limit_exact);
     RUN_TEST(discover_bounded_count_fails_closed_after_deadline);
+    RUN_TEST(discover_path_argument_over_limit_is_specific_and_empty);
+    RUN_TEST(discover_handles_paths_above_legacy_enumeration_buffer);
     RUN_TEST(discover_bounded_count_matches_shebang_discovery);
     RUN_TEST(discover_skips_git_dir);
     RUN_TEST(discover_with_gitignore);

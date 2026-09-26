@@ -1176,7 +1176,7 @@ static int cli_activation_transaction_finalize_close(
                      deferred ? deferred : "unknown");
         (void)fprintf(stderr,
                       "warning: old executable cleanup was deferred until "
-                      "reboot: %s\n",
+                      "process exit or reboot: %s\n",
                       deferred ? deferred : "unknown path");
     }
     return cli_activation_transaction_abort(transaction_io);
@@ -1202,7 +1202,7 @@ static void cli_activation_transaction_finalize_committed_or_fail_stop(
                      deferred ? deferred : "unknown");
         (void)fprintf(stderr,
                       "warning: old executable cleanup was deferred until "
-                      "reboot: %s\n",
+                      "process exit or reboot: %s\n",
                       deferred ? deferred : "unknown path");
     }
     cli_activation_transaction_abort_or_fail_stop(transaction_io, component);

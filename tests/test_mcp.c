@@ -912,8 +912,10 @@ TEST(mcp_tools_list_latest_metadata) {
     ASSERT_NOT_NULL(strstr(json, "\"title\":\"Index repository\""));
     ASSERT_NOT_NULL(strstr(json, "\"title\":\"Check index coverage\""));
     /* move_symbol supports Go package moves through an explicit destination
-     * file because a Go package spans multiple source files. Keep that
-     * capability discoverable in the MCP input schema. */
+     * file because a
+     * Go package spans multiple source files. Keep that
+     * capability discoverable in the MCP
+     * input schema. */
     ASSERT_NOT_NULL(strstr(json, "\"destination_file\""));
     /* No tool may declare an outputSchema. The blanket permissive schema
      * ({"type":"object","additionalProperties":true}) carried zero information
@@ -2920,20 +2922,11 @@ TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_
     ASSERT_NOT_NULL(store);
     char source_path[512];
     snprintf(source_path, sizeof(source_path), "%s/project/main.go", tmp);
-    struct stat source_stat;
-    ASSERT_EQ(stat(source_path, &source_stat), 0);
-#ifdef __APPLE__
-    int64_t source_mtime_ns =
-        ((int64_t)source_stat.st_mtimespec.tv_sec * (int64_t)CBM_NSEC_PER_SEC) +
-        (int64_t)source_stat.st_mtimespec.tv_nsec;
-#elif defined(_WIN32)
-    int64_t source_mtime_ns = (int64_t)source_stat.st_mtime * (int64_t)CBM_NSEC_PER_SEC;
-#else
-    int64_t source_mtime_ns = ((int64_t)source_stat.st_mtim.tv_sec * (int64_t)CBM_NSEC_PER_SEC) +
-                              (int64_t)source_stat.st_mtim.tv_nsec;
-#endif
-    ASSERT_EQ(cbm_store_upsert_file_hash(store, "test-project", "main.go", "", source_mtime_ns,
-                                         source_stat.st_size),
+    cbm_path_info_t source_info = {0};
+    ASSERT_EQ(cbm_path_info_utf8(source_path, &source_info), 0);
+    ASSERT_TRUE(source_info.is_regular);
+    ASSERT_EQ(cbm_store_upsert_file_hash(store, "test-project", "main.go", "", source_info.mtime_ns,
+                                         source_info.size),
               CBM_STORE_OK);
     cbm_project_t project = {0};
     ASSERT_EQ(cbm_store_get_project(store, "test-project", &project), CBM_STORE_OK);
@@ -2969,6 +2962,41 @@ TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_
 
     yyjson_doc_free(doc);
     free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    cleanup_snippet_dir(tmp);
+    PASS();
+}
+
+TEST(tool_check_index_coverage_matches_utf8_file_metadata) {
+    char tmp[256];
+    cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *rel_path = "probe_\xce\xa9.go";
+    char source_path[512];
+    snprintf(source_path, sizeof(source_path), "%s/project/%s", tmp, rel_path);
+    ASSERT_EQ(th_write_file(source_path, "package main\n"), 0);
+    cbm_path_info_t info = {0};
+    ASSERT_EQ(cbm_path_info_utf8(source_path, &info), 0);
+    ASSERT_EQ(
+        cbm_store_upsert_file_hash(store, "test-project", rel_path, "", info.mtime_ns, info.size),
+        CBM_STORE_OK);
+    cbm_project_t project = {0};
+    ASSERT_EQ(cbm_store_get_project(store, "test-project", &project), CBM_STORE_OK);
+    ASSERT_EQ(write_coverage_meta(store, project.indexed_at, "complete"), CBM_STORE_OK);
+    cbm_project_free_fields(&project);
+    const char *args = "{\"project\":\"test-project\",\"paths\":[\"probe_\xce\xa9.go\"]}";
+    char *response = cbm_mcp_handle_tool(srv, "check_index_coverage", args);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(response_contains_json_fragment(response, "\"freshness\":\"metadata_match\""));
+    free(response);
+
+    ASSERT_EQ(th_write_file(source_path, "package changed\n"), 0);
+    response = cbm_mcp_handle_tool(srv, "check_index_coverage", args);
+    ASSERT_NOT_NULL(response);
+    ASSERT_TRUE(response_contains_json_fragment(response, "\"freshness\":\"metadata_changed\""));
     free(response);
     cbm_mcp_server_free(srv);
     cleanup_snippet_dir(tmp);
@@ -4407,6 +4435,110 @@ TEST(tool_index_repository_missing_path) {
     free(resp);
 
     cbm_mcp_server_free(srv);
+    PASS();
+}
+
+static int mcp_count_named_nodes(const char *db_path, const char *project, const char *name) {
+    cbm_store_t *store = cbm_store_open_path_existing(db_path);
+    if (!store) {
+        return -1;
+    }
+    cbm_node_t *nodes = NULL;
+    int count = 0;
+    int rc = cbm_store_find_nodes_by_name(store, project, name, &nodes, &count);
+    cbm_store_free_nodes(nodes, count);
+    cbm_store_close(store);
+    return rc == CBM_STORE_OK ? count : -1;
+}
+
+/* Exercise the public MCP contract against a real prior generation. A nested
+ * descendant crosses
+ * the discovery limit after the baseline index is live;
+ * MCP must report the typed failure
+ * without replacing that generation. */
+TEST(tool_index_repository_descendant_path_too_long_preserves_generation) {
+    char *created_root = th_mktempdir("cbm_mcp_path_limit_repo");
+    if (!created_root) {
+        FAIL("could not create repository fixture");
+    }
+    char repo[256];
+    snprintf(repo, sizeof(repo), "%s", created_root);
+    char source_path[512];
+    int source_len = snprintf(source_path, sizeof(source_path), "%s/main.py", repo);
+    bool paths_fit = source_len > 0 && (size_t)source_len < sizeof(source_path);
+    bool source_ready =
+        paths_fit && th_write_file(source_path, "def StableGeneration():\n    return 1\n") == 0;
+    if (!source_ready) {
+        (void)th_rmtree(repo);
+        FAIL("could not create baseline source file");
+    }
+
+    mcp_search_cache_t cache;
+    if (!mcp_search_cache_open(&cache, "cbm_mcp_path_limit_db")) {
+        (void)th_rmtree(repo);
+        FAIL("could not create MCP cache fixture");
+    }
+    char *project = cbm_project_name_from_path(repo);
+    char db_path[CBM_SZ_1K];
+    int db_len = project ? snprintf(db_path, sizeof(db_path), "%s/%s.db", cache.path, project) : -1;
+    bool db_path_fits = db_len > 0 && (size_t)db_len < sizeof(db_path);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    char args[CBM_SZ_1K];
+    int args_len = snprintf(args, sizeof(args), "{\"repo_path\":\"%s\",\"mode\":\"full\"}", repo);
+    bool args_fit = args_len > 0 && (size_t)args_len < sizeof(args);
+    char *baseline_response =
+        srv && db_path_fits && args_fit ? cbm_mcp_handle_tool(srv, "index_repository", args) : NULL;
+    bool baseline_indexed = baseline_response && response_contains_json_fragment(
+                                                     baseline_response, "\"status\":\"indexed\"");
+    free(baseline_response);
+    int stable_before =
+        baseline_indexed ? mcp_count_named_nodes(db_path, project, "StableGeneration") : -1;
+
+    size_t component_count = 0;
+    size_t final_path_len = 0;
+    bool deep_tree_ready =
+        baseline_indexed && th_make_path_limit_tree(repo, &component_count, &final_path_len) == 0;
+    bool source_changed =
+        deep_tree_ready &&
+        th_write_file(source_path, "def ChangedGeneration():\n    return 2\n") == 0;
+    char *failure_response = NULL;
+    if (srv && source_changed) {
+        failure_response = cbm_mcp_handle_tool(srv, "index_repository", args);
+    }
+    bool typed_error =
+        failure_response &&
+        response_contains_json_fragment(failure_response, "\"error_code\":\"path_too_long\"");
+    bool explained_error =
+        failure_response && response_contains_json_fragment(failure_response, "\"hint\":");
+    free(failure_response);
+
+    if (srv) {
+        cbm_mcp_server_free(srv);
+    }
+    int stable_after =
+        baseline_indexed ? mcp_count_named_nodes(db_path, project, "StableGeneration") : -1;
+    int changed_after =
+        baseline_indexed ? mcp_count_named_nodes(db_path, project, "ChangedGeneration") : -1;
+    int deep_tree_cleanup = deep_tree_ready ? th_remove_path_limit_tree(repo, component_count) : -1;
+    if (project) {
+        cleanup_project_db(cache.path, project);
+    }
+    bool cache_cleanup = mcp_search_cache_close(&cache);
+    int repo_cleanup = th_rmtree(repo);
+    free(project);
+
+    ASSERT_TRUE(baseline_indexed);
+    ASSERT_EQ(stable_before, 1);
+    ASSERT_TRUE(deep_tree_ready);
+    ASSERT_GT(final_path_len, CBM_SZ_4K - 1);
+    ASSERT_TRUE(source_changed);
+    ASSERT_TRUE(typed_error);
+    ASSERT_TRUE(explained_error);
+    ASSERT_EQ(stable_after, 1);
+    ASSERT_EQ(changed_after, 0);
+    ASSERT_EQ(deep_tree_cleanup, 0);
+    ASSERT_TRUE(cache_cleanup);
+    ASSERT_EQ(repo_cleanup, 0);
     PASS();
 }
 
@@ -14195,6 +14327,7 @@ SUITE(mcp) {
     RUN_TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges);
     RUN_TEST(tool_check_index_coverage_preserves_multiple_scope_labels);
     RUN_TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_issue1613);
+    RUN_TEST(tool_check_index_coverage_matches_utf8_file_metadata);
     RUN_TEST(tool_check_index_coverage_rejects_stale_generation);
     RUN_TEST(tool_check_index_coverage_requires_source_when_file_metadata_changed);
     RUN_TEST(tool_check_index_coverage_surfaces_lookup_errors);
@@ -14226,6 +14359,7 @@ SUITE(mcp) {
 
     /* Pipeline-dependent tool handlers */
     RUN_TEST(tool_index_repository_missing_path);
+    RUN_TEST(tool_index_repository_descendant_path_too_long_preserves_generation);
     RUN_TEST(tool_get_code_snippet_missing_qn);
     RUN_TEST(tool_get_code_snippet_not_found);
     RUN_TEST(tool_search_code_missing_pattern);

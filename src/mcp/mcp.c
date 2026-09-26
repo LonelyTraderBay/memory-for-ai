@@ -5278,16 +5278,16 @@ static coverage_path_result_t coverage_normalize_rel(const char *input, bool all
     return written > 0U || allow_root ? COVERAGE_PATH_OK : COVERAGE_PATH_INVALID;
 }
 
+#ifndef _WIN32
 static int64_t coverage_stat_mtime_ns(const struct stat *st) {
 #ifdef __APPLE__
     return ((int64_t)st->st_mtimespec.tv_sec * (int64_t)CBM_NSEC_PER_SEC) +
            (int64_t)st->st_mtimespec.tv_nsec;
-#elif defined(_WIN32)
-    return (int64_t)st->st_mtime * (int64_t)CBM_NSEC_PER_SEC;
 #else
     return ((int64_t)st->st_mtim.tv_sec * (int64_t)CBM_NSEC_PER_SEC) + (int64_t)st->st_mtim.tv_nsec;
 #endif
 }
+#endif
 
 static const char *coverage_path_freshness(cbm_store_t *store, const char *project,
                                            const char *root_path, const char *rel_path,
@@ -5302,8 +5302,13 @@ static const char *coverage_path_freshness(cbm_store_t *store, const char *proje
     if (n < 0 || (size_t)n >= sizeof(abs_path)) {
         return "unavailable";
     }
+#ifdef _WIN32
+    cbm_path_info_t path_info = {0};
+    if (cbm_path_info_utf8(abs_path, &path_info) != 0) {
+#else
     struct stat st;
     if (stat(abs_path, &st) != 0) {
+#endif
         return "missing";
     }
     if (!cbm_path_within_root(root_path, abs_path)) {
@@ -5319,7 +5324,12 @@ static const char *coverage_path_freshness(cbm_store_t *store, const char *proje
     if (rc != CBM_STORE_OK) {
         return "unavailable";
     }
+#ifdef _WIN32
+    bool matches = path_info.is_regular && !path_info.is_symlink &&
+                   hash.mtime_ns == path_info.mtime_ns && hash.size == path_info.size;
+#else
     bool matches = hash.mtime_ns == coverage_stat_mtime_ns(&st) && hash.size == st.st_size;
+#endif
     cbm_store_clear_file_hash(&hash);
     return matches ? "metadata_match" : "metadata_changed";
 }
@@ -9466,9 +9476,18 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
         }
     } else {
         yyjson_mut_obj_add_str(doc, root, "status", "error");
-        yyjson_mut_obj_add_str(doc, root, "hint",
-                               "Pipeline failed. Check repo_path exists and contains source files. "
-                               "Try mode='fast' for a quicker diagnostic run.");
+        if (rc == CBM_PIPELINE_ERROR_PATH_TOO_LONG) {
+            yyjson_mut_obj_add_str(doc, root, "error_code", "path_too_long");
+            yyjson_mut_obj_add_str(
+                doc, root, "hint",
+                "A repository path exceeds the 4095-byte UTF-8 discovery limit. No partial index "
+                "was published; the existing index generation is unchanged. Shorten the path or "
+                "move the repository closer to the filesystem root, then retry.");
+        } else {
+            yyjson_mut_obj_add_str(doc, root, "hint",
+                                   "Pipeline failed. Check repo_path exists and contains source "
+                                   "files. Try mode='fast' for a quicker diagnostic run.");
+        }
     }
 
     char *json = yy_doc_to_str(doc);
