@@ -200,6 +200,9 @@ fi
 # Step 0: fast build/security harness regressions run before the compiler-heavy
 # suite. The Windows package surface is static here; native launcher behavior is
 # exercised by scripts/test-windows.ps1.
+echo "=== Benchmark failure contracts ==="
+python3 "$ROOT/tests/test_benchmark_contract.py"
+
 echo "=== Step 0a: build directory safety contract ==="
 bash "$ROOT/tests/test_build_dir_safety.sh"
 

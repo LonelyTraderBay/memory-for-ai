@@ -612,4 +612,6 @@ jobs:
         # against the real supervisor->worker spawn path: under the mandatory
         # coordination daemon, CBM_INDEX_SUPERVISOR=0 is a fail-closed refusal, so
         # the driver no longer sets it anywhere.
-        run: ./scripts/test-windows.ps1 -GuardsOnly -Binary build/c/memory-for-ai.exe
+        run: |
+          ./tests/windows/test_guard_build_selection.ps1
+          ./scripts/test-windows.ps1 -GuardsOnly -Binary build/c/memory-for-ai.exe

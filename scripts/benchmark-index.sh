@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # Index a single benchmark repository and capture metrics.
 # Usage: benchmark-index.sh <binary> <lang> <repo_path> <results_dir>
@@ -14,6 +15,8 @@ REPO=$(cd "$REPO" && pwd -P)
 
 OUT="$RESULTS_DIR/$LANG"
 mkdir -p "$OUT"
+# A failed rerun must not leave an earlier successful measurement behind.
+rm -f "$OUT/index-time.txt" "$OUT/nodes.txt" "$OUT/edges.txt" "$OUT/project.txt" "$OUT/00-index.json"
 
 echo "INDEX: $LANG ($REPO)"
 
@@ -34,14 +37,16 @@ echo "$FILE_COUNT" > "$OUT/file-count.txt"
 echo "$LOC" > "$OUT/loc.txt"
 
 # Index via CLI and capture timing
-START_MS=$(python3 -c "import time; print(int(time.time()*1000))")
+START_MS=$(python3 -c "import time; print(int(time.perf_counter_ns()/1000000))")
 
-INDEX_JSON=$("$BINARY" cli index_repository "{\"repo_path\":\"$REPO\",\"mode\":\"full\"}" 2>/dev/null || echo '{"error":"index failed"}')
+ARGS=$(python3 -c 'import json,sys; print(json.dumps({"repo_path":sys.argv[1],"mode":"full"}))' "$REPO")
+INDEX_JSON=$("$BINARY" cli index_repository "$ARGS")
 
-END_MS=$(python3 -c "import time; print(int(time.time()*1000))")
+END_MS=$(python3 -c "import time; print(int(time.perf_counter_ns()/1000000))")
 ELAPSED=$((END_MS - START_MS))
 
 echo "$INDEX_JSON" > "$OUT/00-index.json"
+INDEX_JSON=$(printf '%s\n' "$INDEX_JSON" | python3 "$SCRIPT_DIR/benchmark-response.py" index)
 echo "$ELAPSED" > "$OUT/index-time.txt"
 
 # Extract node/edge counts (CLI wraps in MCP content envelope)
@@ -53,8 +58,8 @@ if 'content' in d:
     inner=json.loads(d['content'][0]['text'])
 else:
     inner=d
-print(inner.get('nodes',0))
-" 2>/dev/null || echo "0")
+print(inner['nodes'])
+")
 EDGES=$(echo "$INDEX_JSON" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -62,8 +67,8 @@ if 'content' in d:
     inner=json.loads(d['content'][0]['text'])
 else:
     inner=d
-print(inner.get('edges',0))
-" 2>/dev/null || echo "0")
+print(inner['edges'])
+")
 PROJECT=$(echo "$INDEX_JSON" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -71,8 +76,8 @@ if 'content' in d:
     inner=json.loads(d['content'][0]['text'])
 else:
     inner=d
-print(inner.get('project',''))
-" 2>/dev/null || echo "")
+print(inner['project'])
+")
 
 echo "$NODES" > "$OUT/nodes.txt"
 echo "$EDGES" > "$OUT/edges.txt"

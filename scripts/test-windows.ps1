@@ -3,7 +3,7 @@
     Run the native-Windows product-surface test suite for memory-for-ai.
 
 .DESCRIPTION
-    Builds the product binary if it is not already present, stages it under its
+    Incrementally builds the product binary unless -Binary is supplied, stages it under its
     release name, then runs the deterministic Windows integration tests under
     tests/windows/ against it (real stdio / CLI / HTTP UI, real SQLite DB).
     Windows ships ONE binary, exactly like Linux and macOS.
@@ -89,7 +89,6 @@ function Resolve-Binary {
     param([string]$Explicit)
     if ($Explicit) { return (Resolve-Path $Explicit).Path }
     $built = Join-Path $repoRoot "build\c\memory-for-ai.exe"
-    if (Test-Path $built) { return $built }
     Write-Host "Building $Target via Makefile.cbm ..." -ForegroundColor Cyan
     & $Make "-j" "-f" "Makefile.cbm" $Target "SANITIZE=" "TMP=$tmp" "TEMP=$tmp" "TMPDIR=$tmp" | Out-Host
     $buildExit = $LASTEXITCODE
