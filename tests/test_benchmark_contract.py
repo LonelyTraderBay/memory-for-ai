@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -15,6 +16,32 @@ spec.loader.exec_module(validator)
 
 
 class BenchmarkContract(unittest.TestCase):
+    def test_native_lane_supplies_existing_binary_to_retrieval(self):
+        bash = os.environ.get("CBM_TEST_BASH") or shutil.which("bash")
+        self.assertIsNotNone(bash, "Bash is required for native entry contracts")
+        script = (ROOT / "scripts/test.sh").read_text(encoding="utf-8")
+        entry = "WATCHDOG_BINARY=" + script.split("WATCHDOG_BINARY=", 1)[1].split("# Step 5d", 1)[0]
+        # Exercise the real entry's argument wiring. Other guards are irrelevant
+        # here; the retrieval consumer requires an actual path, just as pathlib
+        # resolve(strict=True) does in evaluate-retrieval.py.
+        consumer = """set -eu
+bash() { :; }
+python3() {
+    "$CONTRACT_PYTHON" -c 'from pathlib import Path; import sys; Path(sys.argv[1]).resolve(strict=True)' "$2"
+}
+"""
+        for platform, suffix in (("windows", ".exe"), ("linux", "")):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp) / "workspace space"
+                output = work / "output space"
+                output.mkdir(parents=True)
+                (output / ("memory-for-ai" + suffix)).write_bytes(b"")
+                env = dict(os.environ, ROOT=work.as_posix(), BUILD_DIR="output space",
+                           OS=platform, CONTRACT_PYTHON=sys.executable)
+                run = subprocess.run([str(bash), "-c", consumer + entry], env=env,
+                                     capture_output=True, text=True, timeout=15)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_response_rejects_errors_at_every_envelope(self):
         for bad in ({"error": "failed"}, {"result": {"isError": True}},
                     {"result": {"content": [{"type": "text", "text": "not json"}]}},

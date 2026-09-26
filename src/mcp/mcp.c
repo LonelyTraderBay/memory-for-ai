@@ -9498,7 +9498,8 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
             yyjson_mut_obj_add_str(doc, root, "error_code", "path_too_long");
             yyjson_mut_obj_add_str(
                 doc, root, "hint",
-                "A repository path exceeds the 4095-byte UTF-8 discovery limit. No partial index "
+                "A repository path exceeds the discovery limit (at most 4095 UTF-8 bytes; the "
+                "filesystem may impose a lower limit). No partial index "
                 "was published; the existing index generation is unchanged. Shorten the path or "
                 "move the repository closer to the filesystem root, then retry.");
         } else {

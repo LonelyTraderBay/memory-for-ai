@@ -1,5 +1,12 @@
 # Quy định cho AI khi phát triển `memory-for-ai`
 
+## Phạm vi nền tảng
+
+Chỉ hỗ trợ Windows native x64 (`windows-amd64`), dùng MSYS2 CLANG64.
+Không phát hành Linux/macOS/Windows ARM64/WSL. Lõi C, SQLite, MCP và dữ liệu
+người dùng giữ nguyên hợp đồng. Các job Linux chỉ xử lý source/artifact hoặc
+fuzz helper độc lập, không chứng nhận sản phẩm trên Linux.
+
 ## 1. Mục tiêu ưu tiên
 
 Khi thiết kế hoặc sửa code, luôn ưu tiên theo thứ tự:
@@ -144,14 +151,13 @@ npm.cmd run build
 cd ..
 
 # Native: dùng entry point chuẩn khi môi trường hỗ trợ
-scripts/test.sh --suites <suite-lien-quan>
+./scripts/verify-windows.ps1 -Suites "suite-lien-quan"
 ```
 
-Tren Windows neu toolchain khong co sanitizer runtime, co the chay native
-khong sanitizer bang `mingw32-make -f Makefile.cbm build/c/test-runner
-SANITIZE=` roi chay `build/c/test-runner.exe`; phai ghi ro day la native lane.
-ASan/UBSan/TSan chi duoc ket luan sau khi da chay tren WSL/Linux/CI co runtime
-tuong ung.
+Lệnh đầy đủ chuẩn: `./scripts/verify-windows.ps1`. CLANG64 dùng ASan/UBSan
+mặc định. Chỉ dùng `-NoSanitizer` khi cần kiểm tra native không sanitizer và
+phải báo rõ giới hạn. TSan/MSan toàn sản phẩm không còn nằm trong ma trận;
+không tuyên bố các test Windows thay thế được chúng.
 
 Với thay đổi MCP/edit, tối thiểu chạy các suite `mcp`, `edit` và integration tương ứng. Với thay đổi pipeline/store/index, chạy regression suite của module đó. Không tuyên bố hoàn tất nếu chỉ compile mà chưa kiểm tra hành vi.
 

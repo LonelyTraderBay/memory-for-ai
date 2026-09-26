@@ -21,16 +21,7 @@ class ContractError(Exception):
     """The release-container namespace or selected-byte binding is invalid."""
 
 
-TARGETS = (
-    "linux-amd64",
-    "linux-arm64",
-    "linux-amd64-portable",
-    "linux-arm64-portable",
-    "darwin-amd64",
-    "darwin-arm64",
-    "windows-amd64",
-    "windows-arm64",
-)
+TARGETS = ("windows-amd64",)
 VARIANTS = ("unstripped", "debug-stripped", "stripped")
 FIELD_KEY = {variant: variant.replace("-", "_") for variant in VARIANTS}
 SELECTION_FIELDS = (

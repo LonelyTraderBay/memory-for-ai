@@ -14,14 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#else
-#include <unistd.h>
-#endif
 
 enum {
     LOCK_REGISTRY_RESOURCE_CAP = 4096,
@@ -100,11 +96,7 @@ static cbm_lock_registry_t *lock_registry_live;
 static cbm_lock_registry_t *lock_registry_retired;
 
 static uint64_t lock_registry_current_pid(void) {
-#ifdef _WIN32
     return (uint64_t)GetCurrentProcessId();
-#else
-    return (uint64_t)getpid();
-#endif
 }
 
 static bool lock_registry_is_live_unlocked(const cbm_lock_registry_t *registry) {
@@ -1022,19 +1014,6 @@ bool cbm_lock_lease_has_release_handle_for_test(const cbm_lock_lease_t *lease,
 bool cbm_lock_lease_used_abort_lock_failure_path_for_test(const cbm_lock_lease_t *lease) {
     return lease && lease->test_abort_lock_failure_path;
 }
-
-#ifndef _WIN32
-bool cbm_lock_lease_fail_close_after_consuming_for_test(cbm_lock_lease_t *lease,
-                                                        cbm_lock_registry_release_handle_t handle) {
-    if (!lease) {
-        return false;
-    }
-    cbm_private_file_lock_t *lock = handle == CBM_LOCK_REGISTRY_RELEASE_RW     ? lease->rw
-                                    : handle == CBM_LOCK_REGISTRY_RELEASE_TURN ? lease->turn
-                                                                               : NULL;
-    return cbm_private_file_lock_fail_close_after_consuming_for_test(lock);
-}
-#endif
 
 bool cbm_lock_registry_fail_next_native_release_step_for_test(
     cbm_lock_registry_t *registry, cbm_lock_registry_release_handle_t handle,

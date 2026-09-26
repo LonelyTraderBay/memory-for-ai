@@ -19,6 +19,7 @@
 #include "foundation/win_utf8.h"
 #endif
 #include <ctype.h>
+#include <errno.h>
 #include <stdint.h> // int64_t
 #include <stdio.h>
 #include <stdlib.h>
@@ -849,8 +850,13 @@ static cbm_gitignore_t *try_load_nested_gitignore(const walk_frame_t *frame, fil
         return NULL;
     }
     struct stat gi_st;
-    if (wide_stat(gi_path, &gi_st) == 0 && S_ISREG(gi_st.st_mode)) {
+    errno = 0;
+    int stat_rc = wide_stat(gi_path, &gi_st);
+    if (stat_rc == 0 && S_ISREG(gi_st.st_mode)) {
         return cbm_gitignore_load(gi_path);
+    }
+    if (stat_rc != 0 && errno == ENAMETOOLONG) {
+        file_list_fail_path_too_long(out);
     }
     return NULL;
 }
@@ -910,8 +916,11 @@ static void walk_dir_process_entry(cbm_dirent_t *entry, const walk_frame_t *fram
     }
 
     struct stat st;
+    errno = 0;
     if (safe_stat(abs_path, &st) != 0) {
-        if (out->count_only) {
+        if (errno == ENAMETOOLONG) {
+            file_list_fail_path_too_long(out);
+        } else if (out->count_only) {
             out->failed = true;
         }
         return;
@@ -999,9 +1008,12 @@ static void walk_dir(const char *dir_path, const char *rel_prefix, const cbm_dis
             frame.local_gi = loaded;
         }
 
+        errno = 0;
         cbm_dir_t *d = cbm_opendir(frame.dir);
         if (!d) {
-            if (out->count_only) {
+            if (errno == ENAMETOOLONG) {
+                file_list_fail_path_too_long(out);
+            } else if (out->count_only) {
                 out->failed = true;
             }
             continue;
@@ -1169,7 +1181,11 @@ static cbm_discover_status_t discover_impl(const char *repo_path, const cbm_disc
 
     /* Verify directory exists */
     struct stat st;
-    if (wide_stat(repo_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    errno = 0;
+    if (wide_stat(repo_path, &st) != 0) {
+        return errno == ENAMETOOLONG ? CBM_DISCOVER_PATH_TOO_LONG : CBM_DISCOVER_ERROR;
+    }
+    if (!S_ISDIR(st.st_mode)) {
         return CBM_DISCOVER_ERROR;
     }
 

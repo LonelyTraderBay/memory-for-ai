@@ -152,7 +152,8 @@ typedef enum {
 /* Walk a repository directory tree and discover all source files.
  * Applies hardcoded filters, gitignore patterns, and language detection.
  * Returns 0 on success, -1 on other errors, and CBM_DISCOVER_PATH_TOO_LONG
- * when any path needed for a complete walk exceeds the 4095-byte UTF-8 limit.
+ * when any path needed for a complete walk exceeds the 4095-byte UTF-8 buffer
+ * limit or the filesystem's native path/component limit.
  * A path-too-long result discards all partial results.
  * Caller must call cbm_discover_free() on the results. */
 int cbm_discover(const char *repo_path, const cbm_discover_opts_t *opts, cbm_file_info_t **out,
@@ -163,7 +164,7 @@ int cbm_discover(const char *repo_path, const cbm_discover_opts_t *opts, cbm_fil
  * allocation. deadline_ms is an absolute cbm_now_ms() deadline; zero disables
  * it. Returns LIMIT_EXCEEDED when at least max_files + 1 indexable files exist,
  * ERROR on traversal/deadline/allocation failure, PATH_TOO_LONG if the complete
- * walk exceeds the path representation limit, or OK with the exact count. */
+ * walk exceeds the buffer/native filesystem limit, or OK with the exact count. */
 cbm_discover_status_t cbm_discover_count_bounded(const char *repo_path,
                                                  const cbm_discover_opts_t *opts, int max_files,
                                                  uint64_t deadline_ms, int *count_out);

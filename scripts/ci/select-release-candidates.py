@@ -20,16 +20,7 @@ class ContractError(Exception):
     """Candidate or VirusTotal evidence is incomplete or incoherent."""
 
 
-TARGETS = (
-    "linux-amd64",
-    "linux-arm64",
-    "linux-amd64-portable",
-    "linux-arm64-portable",
-    "darwin-amd64",
-    "darwin-arm64",
-    "windows-amd64",
-    "windows-arm64",
-)
+TARGETS = ("windows-amd64",)
 VARIANTS = ("unstripped", "debug-stripped", "stripped")
 PROVENANCE_FIELDS = (
     "target",

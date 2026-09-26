@@ -1,142 +1,56 @@
-# Installation reference
+# Installing memory-for-ai on Windows x64
 
-How to get memory-for-ai running on your machine, inside one specific project, or in CI — and how to verify, update, and remove it.
-
-## Choose your path
-
-| Situation | Path |
-|---|---|
-| My machine, many repos, configure all my coding agents at once | [Standard install](#standard-install) (one line) |
-| One repo deserves its own fenced MCP server named after it | [Per-project install](#per-project-install) |
-| Headless container / CI runner | [Standard install](#standard-install) with `--skip-config`, then the [CI settings](#containers-and-ci); or a [package manager](#package-managers) |
-| I manage packages via npm / pip / brew / scoop / winget / choco / AUR / Nix / Go | [Package managers](#package-managers) |
-| I want to inspect exactly what will be written before anything is | `memory-for-ai install --dry-run` |
-| I can't run installers at all | [Manual MCP configuration](#manual-mcp-configuration) |
+Only native Windows x64 is supported. Linux, macOS, Windows ARM64, x64
+emulation on ARM64 and WSL are outside the product support matrix. Historical
+releases may contain other platforms; current releases contain only
+`memory-for-ai-windows-amd64.zip` and its MCPB bundle.
 
 ## Preflight: check your machine first
 
-Two minutes here prevents every common install failure. Run the checks for your OS; each line either passes silently or tells you exactly what to fix.
-
-**1. Platform support.** Release archives exist for macOS (amd64/arm64), Linux (amd64/arm64, plus fully static `-portable` builds), and Windows (amd64/arm64). Check yours:
-
-```bash
-uname -sm        # macOS / Linux → e.g. "Linux x86_64", "Darwin arm64"
-```
-
-```powershell
-# Windows
-[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-```
-
-**2. Disk and memory.** The installed binary is ~300 MB — it embeds 162 tree-sitter grammars and the nomic-embed-code vector model, so nothing downloads at runtime (release *archives* are smaller thanks to compression). Each indexed repository adds a SQLite graph under `~/.cache/memory-for-ai/`: a typical repo of a few thousand files costs tens of MB; very large trees scale with graph rows (the Linux kernel — 75K files, 12.5M nodes+edges — is ≈ 1 GB). Keep at least 2 GB free. Indexing is parallel and memory-aware — large repos on small machines: set `CBM_MEM_BUDGET_MB` (see [Containers and CI](#containers-and-ci)).
-
-**3. Windows only: PowerShell must be on PATH.** At runtime, the `search_code` tool executes PowerShell for text scanning on Windows. Most systems have this by default; some stripped/hardened images do not. Verify **before** installing:
-
-```powershell
-powershell -Command "$PSVersionTable.PSVersion"   # must print a version table
-```
-
-If you get `'powershell' is not recognized …` while `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, that directory is missing from PATH — add it (System Properties → Environment Variables → Path), then restart your coding agent. Without this PATH entry, `search_code` returns `search failed: the contained command could not complete`. Deferred cleanup of an old executable uses Windows PowerShell from its system-directory path, independently of PATH. The hidden helper waits for the caller to exit, then retries deletion for up to 10 seconds. If the helper cannot start, reboot deletion is attempted; registering it can fail without sufficient permission. A deferred-cleanup warning confirms scheduling, not deletion: inspect the reported backup path after exit, and retain it for manual cleanup if it remains.
-
-**4. git on PATH (all platforms).** Freshness checks, the background watcher, and `detect_changes` shell out to `git`. Verify with `git --version`; if it is missing, install Git first (any current build; on Windows also confirm `git.exe` lands on PATH).
-
-**5. Already installed? (old-version check).** The installer is also the updater — re-running it never doubles anything; it stops the daemon, swaps the binary, and migrates agent config only when the prior definition is byte-identical to what it wrote.
-
-```bash
-memory-for-ai --version                 # prints the installed build, or: command not found
-command -v memory-for-ai                # POSIX: install location
-where.exe memory-for-ai                 # Windows: install location
-memory-for-ai cli list_projects         # existing indexes survive an update
-```
-
-- Found → skip to [Update](#update) (or just run the installer again — same thing).
-- Not found → continue to any install path below.
-- Moving from the **old `codebase-memory` name**: the current installer writes the new `memory-for-ai` entries; remove stale entries of the previous name with its own uninstaller if one is present.
-
-**6. Agent present.** At least one supported coding agent (Claude Code, Codex CLI, Cursor, VS Code, …) — the full 45-surface matrix is at [What install writes](#what-install-writes). No supported agent? You can still drive everything through [CLI mode](../README.md#cli-mode) or [Manual MCP configuration](#manual-mcp-configuration).
+- Windows x64 with PowerShell and Git available on PATH.
+- `powershell -Command "$PSVersionTable.PSVersion"` and `git --version` work.
+- Allow roughly 2 GB free disk; large repositories require additional cache space.
+- Use an installation/cache directory owned by your account. ACL checks fail
+  closed on directories another account can modify.
 
 ## Standard install
 
-Downloads the verified release archive for your platform, checks its SHA-256 against the release `checksums.txt`, installs the binary (default `~/.local/bin`), configures every detected coding agent (see [What install writes](#what-install-writes)), strips macOS quarantine and ad-hoc signs the binary.
-
-**macOS / Linux:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh | bash
-```
-
-**Windows (PowerShell):**
-
 ```powershell
 Invoke-WebRequest -Uri https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.ps1 -OutFile install.ps1
-Unblock-File .\install.ps1     # removes Mark-of-the-Web
+Unblock-File .\install.ps1
 .\install.ps1
 ```
 
-If script execution is blocked: `Set-ExecutionPolicy -Scope Process Bypass`, or `PowerShell -ExecutionPolicy Bypass -File .\install.ps1`.
-
-**Options** (both scripts):
-
-| Flag | Meaning |
-|---|---|
-| `--dir=<path>` | Install directory (default `~/.local/bin`; make sure it is on `PATH`) |
-| `--clients=<list>` | Configure only the comma-separated clients (e.g. `--clients=claude,cursor`) |
-| `--skip-config` | Install the binary only — no agent configuration |
-| `--project` | Per-project mode — see below |
-| `--name=<name>` | Override the derived server name (per-project mode) |
-
-After install: **restart your coding agent** and say **"Index this project"**. First index of an average repo finishes in seconds; the Linux kernel takes ~3 minutes.
-
-Prefer manual download? Grab `memory-for-ai-<os>-<arch>.tar.gz` (`.zip` on Windows) from the [latest release](https://github.com/LonelyTraderBay/memory-for-ai/releases/latest), extract, run the bundled `install.sh` / `install.ps1`. Linux `-portable` archives are fully static builds.
+The installer downloads the x64 archive, verifies SHA-256 before extracting,
+and configures detected clients. Restart the client afterward. It does not
+require WSL, Docker, Node.js or Go for the native binary. Git supports watcher
+freshness; `search_code` uses PowerShell at runtime.
 
 ## Per-project install
 
-For when a repository should carry its own memory: an MCP server named after the repo, an index no other repo can see, zero global configuration changes. One command from the repository root:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh | bash -s -- --project
-```
-
 ```powershell
-# Windows, from the repo root, with install.ps1 downloaded
-powershell -ExecutionPolicy Bypass -File .\install.ps1 --project
+.\install.ps1 --project
 ```
 
-What it does, exactly:
-
-1. Installs or refreshes the **shared binary** (one binary still serves all repos) — **without touching any global agent config**.
-2. Writes a repo-local `.mcp.json` entry named `memory-for-ai-<repo-directory>` (invalid characters collapse to `-`; `--name=` overrides) whose command is the installed binary run with `--scope=<repository>`.
-3. Indexes the repository immediately.
-
-Guarantees while pinned with `--scope`: any tool argument naming a different project is refused before the tool runs; `list_projects` shows only the pinned project; indexing is confined to paths inside the repository. An agent opened in a different repo sees its own server. `uninstall` removes the shared binary and global config but never touches a repo's own `.mcp.json` (the repository owns that file).
-
-**Which clients see the per-project server.** The entry lands in the standard repo-root `.mcp.json`, so every client that documents project-scope `.mcp.json` support picks it up — Claude Code and VS Code among them. Clients that keep project MCP config under their own filename (Cursor: `.cursor/mcp.json`; Gemini CLI: `.gemini/settings.json`) or read only global config will not adopt the entry on their own. For those, either run the regular global `install` as well (it configures all detected clients; the one shared binary then serves both the global unscooped server and this repo's scoped one), or copy the entry into that client's own project config — `install --project --dry-run` previews exactly what would be written.
-
-Semantics and test coverage for scoped sessions: [CONFIGURATION.md §3b](CONFIGURATION.md#3b-per-project-scoped-sessions---scope-install---project). Agent-facing usage: [AGENT_GUIDE.md §9](AGENT_GUIDE.md#9-project-isolation--team-sharing).
+Creates a project-local MCP entry scoped to the current repository. Optional
+`--name=<name>` selects the server name; `--skip-config` installs the binary
+without changing client configuration. See [configuration](CONFIGURATION.md)
+for scope, cache locations and daemon rendezvous ownership.
 
 ## Package managers
 
-```bash
-npm install -g memory-for-ai-mcp     # npm — downloads the verified runtime set at install time (command stays `memory-for-ai`)
-pip install memory-for-ai           # PyPI
-brew install memory-for-ai          # Homebrew
-scoop install memory-for-ai         # Windows Scoop
-winget install memory-for-ai        # Windows Winget
-choco install memory-for-ai         # Chocolatey
-yay -S codebase-memory-mcp-bin     # Arch AUR — community package under the previous product name (or paru)
+These wrappers also target Windows x64 only:
+
+```powershell
+npm install -g memory-for-ai-mcp
+pip install memory-for-ai
 go install github.com/LonelyTraderBay/memory-for-ai/pkg/go/cmd/memory-for-ai@latest
 ```
 
-The npm/PyPI/Go wrappers verify and publish a coherent cached runtime set (executable + authenticated assets) without disturbing a running native install, then the usual `memory-for-ai install` configures agents. Update with the same package manager (`npm install -g memory-for-ai-mcp@latest`, `pip install -U memory-for-ai`, …).
-
-Nix (flake) — run without installing:
-
-```bash
-nix run github:LonelyTraderBay/memory-for-ai                     # standard server
-nix run github:LonelyTraderBay/memory-for-ai#memory-for-ai-ui -- --ui=true --port=9749
-```
-
-Packages: `default` (standard server), `memory-for-ai-ui` (graph UI embedded), `graph-ui` (frontend assets only). Note: launched by hand, the server exits when `stdin` closes (normal MCP behavior) — keep stdin open while testing the UI: `sleep infinity | memory-for-ai --ui=true`.
+Scoop, Chocolatey and winget definitions remain under `pkg/`; their publication
+is separate from building the release. Homebrew, AUR and Nix are not current
+supported installation routes. Wrappers verify the runtime set before publishing
+it and retain the current installation if validation fails.
 
 ## What install writes
 
@@ -164,107 +78,66 @@ Claude Code, Codex CLI, Gemini CLI, Zed, OpenCode, Antigravity, Aider, KiloCode,
 
 ## Manual MCP configuration
 
-If you prefer not to use `install` at all:
+Use an absolute Windows executable path in the client's MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "memory-for-ai": {
-      "command": "/absolute/path/to/memory-for-ai",
+      "command": "C:/Users/you/AppData/Local/Programs/memory-for-ai/memory-for-ai.exe",
       "args": []
     }
   }
 }
 ```
 
-Add to `~/.claude.json` (user scope) or the project `.mcp.json`; for a per-project pinned server, append `"--scope=<repo>"` to `args`. Restart the agent and verify with `/mcp` — you should see `memory-for-ai` with 23 tools. Quick transport check: `echo '{}' | /path/to/binary` must print JSON.
-
-## Containers and CI
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh \
-  | bash -s -- --skip-config --dir=/usr/local/bin
-memory-for-ai config set auto_index true
-memory-for-ai config set auto_index_limit 20000
-```
-
-Environment that matters in constrained runtimes — full table in [CONFIGURATION.md](CONFIGURATION.md#4-environment-variables):
-
-| Variable | Why in CI |
-|---|---|
-| `CBM_WORKERS=<n>` | Container CPU quota is invisible to `sysconf`; set the worker count to the cgroup limit. |
-| `CBM_MEM_BUDGET_MB=<n>` | Cap the indexing budget below the container memory limit. |
-| `MFA_CACHE_DIR=<path>` | Keep indexes on a cache volume across CI steps. One canonical root per account. |
-| `CBM_ALLOWED_ROOT=<dir>` | Confine `index_repository` when the server may be driven by untrusted callers. |
-
-Agent-facing CI notes (auto-index, watcher suppression, always-refused roots): [AGENT_GUIDE.md §10](AGENT_GUIDE.md#10-ci-and-containers).
+For project isolation, add `--scope=C:/path/to/repository` to `args`. Restart
+the client; the server exposes 23 MCP tools. Use `index_status` and
+`check_index_coverage` before trusting graph completeness or freshness.
 
 ## Update
 
-Updates run **from the install script, not from inside the running binary** (`memory-for-ai update` prints the exact command). The script beside the binary is the updater — re-running it *is* the update: it stops the daemon, retires the running binary, installs the new one, and cleans up.
-
-```bash
-bash "<install-dir>/install.sh"          # macOS / Linux
-powershell -ExecutionPolicy Bypass -File "<install-dir>\install.ps1"   # Windows
-```
-
-Why: on Windows a running executable cannot replace its own image; on macOS/Linux it is a deliberate choice — the binary makes **no network request of its own accord** (no background version checks, nothing phones home). You learn about releases from the install script, your package manager, or GitHub. npm/PyPI/Go installs update through their package manager on every platform.
+Re-run `install.ps1`, or update through the package manager used to install.
+The Windows installer retires the prior executable before publishing the new
+one; a running process cannot overwrite its own image. Existing indexes are
+preserved. On failure, inspect the error and retained backup before retrying.
 
 ## Uninstall
 
-```bash
-memory-for-ai uninstall
-```
-
-Removes owned agent config entries, skills, hooks, instructions, and the binary. Indexed graphs are listed and deleted only after confirmation. The install script beside the binary is **reported, not deleted** — it may be your own copy, a symlink, or package-manager owned; the uninstaller prints its path and the `rm` command instead of deleting a file it cannot prove it owns. A repo-local `.mcp.json` from `install --project` belongs to that repository and is never touched.
+Run `memory-for-ai uninstall` to remove managed client configuration, then
+remove the native installation through its original installer/package manager.
+Do not delete the cache unless you explicitly want to discard saved indexes.
 
 ## Build from source
 
-Prerequisites: C and C++ compilers (gcc/clang), zlib, git. Then:
+Use native Windows x64 with MSYS2 CLANG64, Node.js for graph UI, and the Go
+version in `pkg/go/go.mod` for package-wrapper tests:
 
-```bash
-git clone https://github.com/LonelyTraderBay/memory-for-ai.git
-cd memory-for-ai
-scripts/build.sh --with-ui        # shipped composition (graph UI embedded)
-scripts/build.sh                  # without UI (development)
-# → build/c/memory-for-ai  (.exe on Windows)
+```powershell
+./scripts/setup-windows-toolchain.ps1
+./scripts/verify-windows.ps1
 ```
 
-**Windows toolchain notes.** CI pins MSYS2 **CLANG64** (`mingw-w64-clang-x86_64-toolchain`); a standalone MinGW GCC (e.g. WinLibs 16.x) also builds cleanly. Either way you need zlib (`pacman -S mingw-w64-clang-x86_64-zlib`, or build zlib once and point the compiler at it) and `make` (`mingw32-make`). Pass `SANITIZE=` on Windows when the compiler's sanitizer runtime archives are absent; the bundled MinGW GCC currently has no usable AddressSanitizer/UBSan runtime. Run the full unsanitized native runner for Windows behavior, and use WSL/Linux/CI for sanitizer coverage. GCC 14+ turns `-Wincompatible-pointer-types` and friends into hard errors; the tree is clean under GCC 16.2 / clang as shipped.
-
-Test suite (the same entry CI gates run):
-
-```bash
-scripts/test.sh                   # full lane: sanitizer build + all suites + guards
-scripts/test.sh --suites <name>   # one suite, incremental
-build/c/test-runner --list-suites
-```
-
-On Windows, put PowerShell on PATH **before** running the suite: the `mcp`/`incremental` search-code tests spawn a real `powershell` child process, exactly like the runtime feature (see [Preflight](#preflight-check-your-machine-first)).
-
-Artifact-flow check (build candidates, package, extract, smoke): `scripts/ci/smoke-artifact.sh <linux|darwin|windows> <amd64|arm64>`.
+The verification command runs native tests, UI checks, package wrappers,
+Windows product guards and lint. Use `-Suites "mcp,edit,edit_integration"` for
+an explicitly limited iteration. `-NoSanitizer` is functional-only verification;
+ASan/UBSan are enabled by default. Full-product TSan/MSan are outside this
+matrix; see [Windows x64](WINDOWS-X64.md) for measured results and limits.
 
 ## Verifying release artifacts
 
-Every release ships `checksums.txt` (SHA-256, verified by both install scripts before extraction), SLSA Level 3 build provenance, and Sigstore cosign bundles:
-
-```bash
-gh attestation verify ./memory-for-ai \
-  --repo LonelyTraderBay/memory-for-ai \
-  --signer-workflow LonelyTraderBay/memory-for-ai/.github/workflows/_build.yml
-```
-
-All executable candidates are VirusTotal-scanned before release; the selected bytes ship unchanged and release notes link the exact verdicts. Policy, evidence TSVs, and the single documented Microsoft `!ml` false-positive tolerance: [SECURITY.md](SECURITY.md). Windows SmartScreen may warn on unsigned software — "More info" → "Run anyway" after checking the checksum.
+Verify the downloaded archive against `checksums.txt` using `Get-FileHash
+-Algorithm SHA256`. The release pipeline retains candidate selection evidence,
+provenance and signatures. See [security policy](../SECURITY.md) for verification
+and antivirus handling. A local build or passing unit tests do not certify a
+published artifact.
 
 ## Install troubleshooting
 
-| Problem | Fix |
+| Problem | Check |
 |---|---|
-| `curl \| bash` blocked by policy | Download `install.sh`, inspect, run it locally (`bash install.sh`) |
-| Binary not on `PATH` | `export PATH="$HOME/.local/bin:$PATH"` (or the `--dir` you chose) |
-| Windows: `search failed: the contained command could not complete` from `search_code` | `powershell.exe` is not on PATH. Verify `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` exists, add that directory to the system PATH, restart the agent — see [Preflight](#preflight-check-your-machine-first) |
-| Antivirus quarantines the binary | Known Defender `Wacatac.B!ml` false positive — evidence & verification: [SECURITY.md](SECURITY.md#antivirus-false-positives) |
-| macOS "cannot be opened" | Handled automatically by `install`; manually: `xattr -d com.apple.quarantine <binary>` |
-| Agent doesn't show the server after install | Restart the agent; check `/mcp`; confirm the config path is absolute; `echo '{}' \| <binary>` should print JSON |
-| Hook trust prompts (Codex) | Review/trust via `/hooks`; changing a hook definition changes its trust hash |
-| "secure daemon endpoint could not be created" | Set `MFA_RUNTIME_DIR` to a directory you own — [CONFIGURATION.md](CONFIGURATION.md#relocating-the-daemon-rendezvous-directory) |
+| Unsupported platform | Native Windows x64 is required; ARM64/emulation/WSL are excluded. |
+| `search_code` cannot complete | Ensure Windows PowerShell is on PATH, then restart the client. |
+| Secure daemon endpoint refused | Use an owned runtime directory; see `MFA_RUNTIME_DIR` in CONFIGURATION.md. |
+| Server missing in the client | Restart the client and verify its absolute executable path. |
+| Antivirus quarantine | Inspect the exact artifact and release evidence; do not disable protection. |

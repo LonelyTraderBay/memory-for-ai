@@ -291,7 +291,6 @@ FOUNDATION_SRCS = \
     src/foundation/subprocess.c \
     src/foundation/sha256.c \
     src/foundation/secure_random.c \
-    src/foundation/macos_acl.c \
     src/foundation/private_file_lock.c \
     src/foundation/lock_registry.c
 
@@ -1285,6 +1284,7 @@ lint-cppcheck:
 	@echo "=== cppcheck ==="
 	@$(CPPCHECK) --enable=warning,style,performance,portability \
 		--std=c11 --language=c \
+		--platform=win64 -D_WIN32 -D_WIN64 -D__x86_64__ \
 		--suppressions-list=.cppcheck \
 		--error-exitcode=1 \
 		--inline-suppr \
@@ -1404,7 +1404,7 @@ LINT_MEM_CHECKS = -*,clang-analyzer-unix.Malloc,clang-analyzer-unix.MallocSizeof
 lint-mem:
 	@echo "=== clang-analyzer memory lane (non-gating; triage, don't suppress) ==="
 	@printf '%s\n' $(LINT_SRCS) | xargs -P 10 -I{} $(CLANG_TIDY) --quiet \
-		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null; true
+		--checks='$(LINT_MEM_CHECKS)' --warnings-as-errors='' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null; true
 
 # Gating variant: identical run, but vendored-tree diagnostics are excluded
 # (analyzer diagnostics bypass --header-filter by design; this mirrors the
@@ -1418,10 +1418,13 @@ lint-mem:
 # that function invalidates it and the finding must be argued again against
 # the new code. A suppression is never allowed to outlive its reasoning, and
 # NOLINT is never honoured here.
+# Analyzer findings are judged by the gate (including its argued whitelist),
+# not clang-tidy's repository-wide WarningsAsErrors. Compiler -Werror stays on;
+# pipefail also rejects analyzer/compiler execution failures.
 lint-mem-ci:
 	@echo "=== clang-analyzer memory gate ==="
-	@printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
-		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null \
+	@set -o pipefail; printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
+		--checks='$(LINT_MEM_CHECKS)' --warnings-as-errors='' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) \
 		| python3 scripts/lint-mem-gate.py
 
 # ── Security audit (6 layers) ────────────────────────────────────

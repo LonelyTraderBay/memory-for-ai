@@ -150,3 +150,19 @@ chỉ được merge main khi `dco` và `ci-ok` cùng toàn bộ job bắt buộ
 head SHA. UI hiện qua 59 test, build và 1 browser smoke; coverage dòng 52,99%.
 Regression Make đã qua cả cmd/PowerShell và MSYS2; mutation riêng của bộ đọc
 coverage qua với mã hiện tại và thất bại khi đổi về kiểu long hẹp trên Windows.
+
+### Sửa lỗi phát hiện trong CI đa nền tảng
+
+- P1: discovery phân biệt `ENAMETOOLONG` của filesystem với lỗi I/O khác, kể cả
+  khi đường dẫn chưa vượt buffer nội bộ. Full walk và bounded count cùng trả lỗi
+  có kiểu; pipeline/MCP giữ nguyên generation đã publish theo RULE-002 ở trên.
+  Fixture đường dẫn hợp lệ lấy giới hạn thực tế từ `pathconf`; test cây quá dài
+  vẫn bắt buộc kiểm tra lỗi và dữ liệu cũ, không thêm skip trên macOS.
+- P2: entry point native truyền đúng đuôi `.exe` trên Windows cho các consumer
+  yêu cầu file tồn tại, bao gồm retrieval smoke. Contract chạy đoạn entry thật
+  với artifact Windows/POSIX và thư mục có khoảng trắng.
+- P2: test watcher dùng cơ chế chờ hữu hạn đã có theo hợp đồng phát hiện ít nhất
+  một lần; cleanup chạy trước assertion để lỗi test không tạo leak giả.
+  Test deadline của lock registry giữ nguyên tỷ lệ thời hạn/giới hạn và chuỗi
+  đánh thức, tăng cửa sổ quan sát từ 100 ms lên 1 giây để runner macOS bận có thể
+  quan sát thread vào queue. Không đổi timeout hay logic khóa trong sản phẩm.

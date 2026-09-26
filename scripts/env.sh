@@ -91,7 +91,9 @@ verify_compiler() {
 # macOS: cc (Apple Clang). Linux/Windows: gcc (system default).
 # CI overrides via CC=gcc CXX=g++ args. Local macOS overrides via CC=cc.
 if [[ -z "${CC:-}" ]]; then
-    if [[ "$OS" == "darwin" ]]; then
+    if [[ "$OS" == "windows" ]]; then
+        export CC=clang CXX=clang++
+    elif [[ "$OS" == "darwin" ]]; then
         export CC=cc CXX=c++
     else
         export CC=gcc CXX=g++

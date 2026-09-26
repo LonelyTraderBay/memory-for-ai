@@ -13,8 +13,6 @@
 #include <string.h>
 #include <stdint.h>
 
-#ifdef _WIN32
-
 /* ── Windows implementation ────────────────────────────────── */
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -728,239 +726,6 @@ int cbm_exec_no_shell(const char *const *argv) {
     return (int)exit_code;
 }
 
-#else /* POSIX */
-
-/* ── POSIX implementation ────────────────────────────────── */
-
-#include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-struct cbm_dir {
-    DIR *dir;
-    cbm_dirent_t entry;
-};
-
-cbm_dir_t *cbm_opendir(const char *path) {
-    if (!path) {
-        return NULL;
-    }
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return NULL;
-    }
-    cbm_dir_t *d = (cbm_dir_t *)calloc(CBM_ALLOC_ONE, sizeof(cbm_dir_t));
-    if (!d) {
-        closedir(dir);
-        return NULL;
-    }
-    d->dir = dir;
-    return d;
-}
-
-cbm_dirent_t *cbm_readdir(cbm_dir_t *d) {
-    if (!d || !d->dir) {
-        return NULL;
-    }
-    struct dirent *de;
-    while ((de = readdir(d->dir)) != NULL) {
-        /* Skip "." and ".." */
-        if (de->d_name[0] == '.' &&
-            (de->d_name[SKIP_ONE] == '\0' ||
-             (de->d_name[SKIP_ONE] == '.' && de->d_name[PAIR_LEN] == '\0'))) {
-            continue;
-        }
-        size_t nlen = strlen(de->d_name);
-        if (nlen >= CBM_DIRENT_NAME_MAX) {
-            nlen = CBM_DIRENT_NAME_MAX - SKIP_ONE;
-        }
-        memcpy(d->entry.name, de->d_name, nlen);
-        d->entry.name[nlen] = '\0';
-        unsigned char type = de->d_type;
-#if defined(DT_UNKNOWN) && defined(AT_SYMLINK_NOFOLLOW)
-        if (type == DT_UNKNOWN) {
-            struct stat state;
-            if (fstatat(dirfd(d->dir), de->d_name, &state, AT_SYMLINK_NOFOLLOW) == 0) {
-                if (S_ISDIR(state.st_mode)) {
-                    type = DT_DIR;
-                } else if (S_ISREG(state.st_mode)) {
-                    type = DT_REG;
-                } else if (S_ISLNK(state.st_mode)) {
-                    type = DT_LNK;
-                }
-            }
-        }
-#endif
-        d->entry.is_dir = (type == DT_DIR);
-        d->entry.d_type = type;
-        return &d->entry;
-    }
-    return NULL;
-}
-
-int cbm_path_info_utf8(const char *path, cbm_path_info_t *out) {
-    if (!path || !out) {
-        return CBM_NOT_FOUND;
-    }
-    struct stat state;
-    if (lstat(path, &state) != 0) {
-        return CBM_NOT_FOUND;
-    }
-    memset(out, 0, sizeof(*out));
-    out->is_regular = S_ISREG(state.st_mode);
-    out->is_directory = S_ISDIR(state.st_mode);
-    out->is_symlink = S_ISLNK(state.st_mode);
-    out->size = (int64_t)state.st_size;
-#ifdef __APPLE__
-    out->mtime_ns = ((int64_t)state.st_mtimespec.tv_sec * INT64_C(1000000000)) +
-                    (int64_t)state.st_mtimespec.tv_nsec;
-#else
-    out->mtime_ns =
-        ((int64_t)state.st_mtim.tv_sec * INT64_C(1000000000)) + (int64_t)state.st_mtim.tv_nsec;
-#endif
-    return 0;
-}
-
-void cbm_closedir(cbm_dir_t *d) {
-    if (d) {
-        if (d->dir) {
-            closedir(d->dir);
-        }
-        free(d);
-    }
-}
-
-FILE *cbm_popen(const char *cmd, const char *mode) {
-    return popen(cmd, mode);
-}
-
-int cbm_pclose(FILE *f) {
-    return pclose(f);
-}
-
-FILE *cbm_fopen(const char *path, const char *mode) {
-    return fopen(path, mode);
-}
-
-static int cbm_open_directory_component(int parent, const char *component, int flags) {
-    int descriptor = openat(parent, component, flags);
-#if defined(O_NOFOLLOW) && defined(AT_SYMLINK_NOFOLLOW)
-    if (descriptor < 0) {
-        struct stat state;
-        if (fstatat(parent, component, &state, AT_SYMLINK_NOFOLLOW) == 0 &&
-            S_ISLNK(state.st_mode) && state.st_uid == 0U) {
-            descriptor = openat(parent, component, flags & ~O_NOFOLLOW);
-        }
-    }
-#endif
-    return descriptor;
-}
-
-bool cbm_mkdir_p(const char *path, int mode) {
-    if (!path || path[0] == '\0') {
-        return false;
-    }
-    char *tmp = strdup(path);
-    if (!tmp) {
-        return false;
-    }
-
-    int flags = O_RDONLY;
-#ifdef O_DIRECTORY
-    flags |= O_DIRECTORY;
-#endif
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-    int directory = open(path[0] == '/' ? "/" : ".", flags);
-    if (directory < 0) {
-        free(tmp);
-        return false;
-    }
-
-    bool ok = true;
-    char *cursor = tmp;
-    while (*cursor == '/') {
-        cursor++;
-    }
-    while (ok && *cursor) {
-        char *separator = strchr(cursor, '/');
-        if (separator) {
-            *separator = '\0';
-        }
-        if (cursor[0] != '\0' && strcmp(cursor, ".") != 0) {
-            int next = cbm_open_directory_component(directory, cursor, flags);
-            if (next < 0 && errno == ENOENT) {
-                if (mkdirat(directory, cursor, (mode_t)mode) != 0 && errno != EEXIST) {
-                    ok = false;
-                } else {
-                    next = cbm_open_directory_component(directory, cursor, flags);
-                }
-            }
-            if (ok && next < 0) {
-                ok = false;
-            }
-            if (ok) {
-                (void)close(directory);
-                directory = next;
-            }
-        }
-        if (!separator) {
-            break;
-        }
-        *separator = '/';
-        cursor = separator + 1;
-        while (*cursor == '/') {
-            cursor++;
-        }
-    }
-    (void)close(directory);
-    free(tmp);
-    return ok;
-}
-
-int cbm_unlink(const char *path) {
-    return unlink(path);
-}
-
-int cbm_rmdir(const char *path) {
-    return rmdir(path);
-}
-
-int cbm_exec_no_shell(const char *const *argv) {
-    if (!argv || !argv[0]) {
-        return CBM_NOT_FOUND;
-    }
-    pid_t pid = fork();
-    if (pid < 0) {
-        return CBM_NOT_FOUND;
-    }
-    if (pid == 0) {
-        /* Child: exec directly — no shell interpretation */
-        /* 127 = standard "command not found" exit code (POSIX convention) */
-        enum { EXEC_NOT_FOUND = 127 };
-        execvp(argv[0], (char *const *)argv);
-        _exit(EXEC_NOT_FOUND);
-    }
-    /* Parent: wait for child */
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
-        return CBM_NOT_FOUND;
-    }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    return CBM_NOT_FOUND; /* killed by signal */
-}
-
-#endif /* _WIN32 */
-
 /* Canonicalize an EXISTING path (collapse `..`, resolve links/junctions):
  * realpath on POSIX; a final path queried from an opened handle on Windows.
  * The previous Windows callers used the ANSI CRT (_access/_fullpath) on UTF-8
@@ -973,7 +738,6 @@ int cbm_canonical_path(const char *path, char *out, size_t out_sz) {
     if (!path || !out || out_sz == 0) {
         return 0;
     }
-#ifdef _WIN32
     wchar_t *wpath = cbm_path_to_wide(path);
     if (!wpath) {
         return 0;
@@ -1031,10 +795,6 @@ int cbm_canonical_path(const char *path, char *out, size_t out_sz) {
     memcpy(out, utf8, len + 1);
     free(utf8);
     return 1;
-#else
-    /* Callers pass >= 4K buffers (>= PATH_MAX on our platforms). */
-    return realpath(path, out) != NULL;
-#endif
 }
 
 /* rename() with overwrite semantics on every platform: POSIX rename already
@@ -1042,7 +802,6 @@ int cbm_canonical_path(const char *path, char *out, size_t out_sz) {
  * exists, so use write-through MoveFileExW(MOVEFILE_REPLACE_EXISTING) there
  * (wide paths — raw MoveFileExA would re-mangle non-ASCII cache paths). */
 int cbm_rename_replace(const char *src, const char *dst) {
-#ifdef _WIN32
     wchar_t *wsrc = cbm_path_to_wide(src);
     wchar_t *wdst = cbm_path_to_wide(dst);
     int ret = CBM_NOT_FOUND;
@@ -1099,16 +858,12 @@ int cbm_rename_replace(const char *src, const char *dst) {
     free(wsrc);
     free(wdst);
     return ret;
-#else
-    return rename(src, dst);
-#endif
 }
 
 int cbm_rename_noreplace(const char *src, const char *dst) {
     if (!src || !dst || !src[0] || !dst[0]) {
         return CBM_NOT_FOUND;
     }
-#ifdef _WIN32
     wchar_t *wsrc = cbm_path_to_wide(src);
     wchar_t *wdst = cbm_path_to_wide(dst);
     int ret = CBM_NOT_FOUND;
@@ -1120,21 +875,6 @@ int cbm_rename_noreplace(const char *src, const char *dst) {
     free(wsrc);
     free(wdst);
     return ret;
-#else
-    /* link()+unlink() provides no-overwrite semantics portably (including
-     * macOS, where renameat2(RENAME_NOREPLACE) is unavailable). Both paths
-     * are adjacent database files and therefore on the same filesystem. */
-    if (link(src, dst) != 0) {
-        return CBM_NOT_FOUND;
-    }
-    if (unlink(src) != 0) {
-        int saved_errno = errno;
-        (void)unlink(dst);
-        errno = saved_errno;
-        return CBM_NOT_FOUND;
-    }
-    return 0;
-#endif
 }
 
 /* Remove a SQLite database's -wal/-shm/-journal sidecars (both platforms). Any code
@@ -1191,12 +931,6 @@ int cbm_remove_db_sidecars(const char *db_path) {
 
 /* ── Clone-or-copy ───────────────────────────────────────────────── */
 
-#if defined(__APPLE__)
-#include <sys/clonefile.h>
-#elif defined(__linux__)
-#include <linux/fs.h>
-#include <sys/ioctl.h>
-#endif
 #include <fcntl.h>
 
 static int stream_copy_file(const char *src, const char *dst) {
@@ -1235,30 +969,5 @@ int cbm_clone_or_copy_file(const char *src, const char *dst) {
     if (!src || !dst) {
         return CBM_NOT_FOUND;
     }
-#if defined(__APPLE__)
-    /* clonefile refuses to overwrite; the staging name is freshly minted by
-     * the caller, but clear any leftover defensively so the fast path is
-     * never abandoned for a stale artifact. */
-    (void)cbm_unlink(dst);
-    if (clonefile(src, dst, 0) == 0) {
-        return 0;
-    }
-#elif defined(__linux__)
-    int in_fd = open(src, O_RDONLY | O_CLOEXEC);
-    if (in_fd >= 0) {
-        int out_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-        if (out_fd >= 0) {
-            int cloned = ioctl(out_fd, FICLONE, in_fd);
-            int close_rc = close(out_fd);
-            (void)close(in_fd);
-            if (cloned == 0 && close_rc == 0) {
-                return 0;
-            }
-            (void)cbm_unlink(dst);
-        } else {
-            (void)close(in_fd);
-        }
-    }
-#endif
     return stream_copy_file(src, dst);
 }

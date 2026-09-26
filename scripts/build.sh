@@ -31,7 +31,7 @@ construction (CCACHE_COMPILERCHECK=content).
 Options:
   --with-ui       Build the web UI as a content-addressed sidecar (needs node).
   --version V     Stamp the version string (release venue passes the tag).
-  --arch ARCH     Force target arch (arm64 | x86_64), e.g. under Rosetta.
+  --arch ARCH     Only x86_64 is supported; other targets are rejected.
   -h, --help      This text.
 
 Make passthrough (VAR=VAL, forwarded verbatim):
@@ -39,7 +39,6 @@ Make passthrough (VAR=VAL, forwarded verbatim):
   BUILD_DIR=      Build in an isolated directory — REQUIRED when a clean
                   product build must not wipe build/c's test-runner (e.g.
                   build/smoke for the local ladder smoke).
-  STATIC=1        Fully static portable build (Alpine/musl leg).
   EXTRA_CFLAGS= EXTRA_LDFLAGS=   Sanitizer soak builds (see _soak.yml).
 
 Environment:
@@ -74,6 +73,11 @@ done
 source "$ROOT/scripts/env.sh"
 # shellcheck source=path-safety.sh
 source "$ROOT/scripts/path-safety.sh"
+
+if [ "$OS" != windows ] || [ "$ARCH" != x86_64 ] || [ "${MSYSTEM:-}" != CLANG64 ]; then
+    echo "Only native Windows x64 with MSYS2 CLANG64 is supported." >&2
+    exit 2
+fi
 
 # Parse remaining arguments. BUILD_DIR is tracked for the clean step below so
 # containerized legs can build in their own directory instead of deleting and

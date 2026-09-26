@@ -119,7 +119,11 @@ if ($env:CBM_ARCH) {
     }
 }
 
-Write-Host "memory-for-ai installer (Windows)"
+if ($Arch -ne 'amd64' -or [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
+    throw 'memory-for-ai supports native Windows x64 only. ARM64 and emulation are unsupported.'
+}
+
+Write-Host "memory-for-ai installer (Windows x64)"
 Write-Host "  arch:    $Arch"
 Write-Host "  target:  $InstallDir\$BinName"
 Write-Host ""

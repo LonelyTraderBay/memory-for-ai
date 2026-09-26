@@ -26,24 +26,17 @@ Modes:
                  only those suites — seconds, not minutes. Skips the contract
                  steps and prod-binary guards; the full default run remains
                  the merge gate. Suite names: build/c/test-runner --list-suites.
-  --tsan         ThreadSanitizer leg (data-race gate): builds and runs the
-                 widened TSan runner via make test-tsan — the same leg CI's
-                 tsan jobs and the compose test-tsan service run.
+  --tsan         Rejected: TSan is unavailable in the Windows x64 toolchain.
 
 Options:
-  --arch ARCH    Force target arch (arm64 | x86_64), e.g. under Rosetta.
+  --arch ARCH    Target architecture; only x86_64 is supported.
   -h, --help     This text.
 
 Make passthrough (VAR=VAL, forwarded verbatim):
-  CC= CXX=       Compiler override, e.g. CC=gcc-14 CXX=g++-14.
+  CC= CXX=       Supported compiler: CC=clang CXX=clang++.
   BUILD_DIR=     Build in an isolated directory (containers/sanitizer variants).
-  SANITIZE=      Override sanitizer flags. Platform defaults when unset:
-                 unix/CLANG64 use the Makefile's ASan+UBSan test flags;
-                 CLANGARM64 (Windows on ARM, no ASan runtime) gets CI's
-                 trap-UBSan set (-fsanitize=undefined -fsanitize-trap=undefined
-                 -fstack-protector-strong -fno-omit-frame-pointer) applied HERE
-                 so local and CI build identical test binaries. Pass SANITIZE=
-                 (empty) for a plain build when debugging a trap.
+  SANITIZE=      Explicitly disable sanitizer instrumentation for a functional-only run.
+                 Default: ASan + UBSan on Windows x64 CLANG64.
 
 Environment:
   CBM_TEST_SEQUENTIAL=1   Single-process runner instead of the parallel harness.
@@ -135,6 +128,11 @@ source "$ROOT/scripts/env.sh"
 # shellcheck source=path-safety.sh
 source "$ROOT/scripts/path-safety.sh"
 
+if [ "$OS" != windows ] || [ "$ARCH" != x86_64 ] || [ "${MSYSTEM:-}" != CLANG64 ]; then
+    echo "Only native Windows x64 with MSYS2 CLANG64 is supported." >&2
+    exit 2
+fi
+
 # Forward CC/CXX and collect make-passthrough args. BUILD_DIR is honored for
 # the explicit target path below so containerized legs can build in their own
 # directory instead of clobbering the host's native build/c artifacts.
@@ -164,26 +162,14 @@ for arg in "$@"; do
     prev_arg="$arg"
 done
 
-# Platform default absorbed FROM CI (previously inline in _test.yml, so the
-# local arm64 leg silently built without it — that divergence is why the SQLite
-# page-cache misalignment was fatal only on the windows-11-arm runner): native
-# ARM64 Windows has no ASan runtime, so its sanitizer gate is UBSan in trap
-# mode + stack protector. Applied here, once, for every venue; an explicit
-# SANITIZE=... (or SANITIZE=) argument overrides.
-if [ "$SANITIZE_GIVEN" -eq 0 ] && [ "${MSYSTEM:-}" = "CLANGARM64" ]; then
-    MAKE_ARGS+=("SANITIZE=-fsanitize=undefined -fsanitize-trap=undefined -fstack-protector-strong -fno-omit-frame-pointer")
-fi
+# Windows x64 uses the Makefile ASan/UBSan defaults.
 
 print_env "test.sh"
 
-# ── TSan mode (--tsan): the data-race gate ──
-# One entry for every venue: CI's tsan jobs and the compose test-tsan service
-# both run this instead of carrying their own make invocation.
+# Keep an explicit error for callers of the retired TSan entry.
 if [ "$TSAN" -eq 1 ]; then
-    echo "=== test.sh: TSan leg (make test-tsan) ==="
-    make -j"$NPROC" -f Makefile.cbm "$BUILD_DIR/test-runner-tsan" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"}
-    make -f Makefile.cbm test-tsan ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"}
-    exit "$?"
+    echo "TSan is not available in the supported Windows x64 toolchain." >&2
+    exit 2
 fi
 
 # ── Iteration mode (--suites): incremental rebuild + subset run ──
@@ -203,6 +189,7 @@ fi
 # suite. The Windows package surface is static here; native launcher behavior is
 # exercised by scripts/test-windows.ps1.
 echo "=== Benchmark failure contracts ==="
+python3 "$ROOT/tests/test_windows_x64_contract.py"
 python3 "$ROOT/tests/test_benchmark_contract.py"
 python3 "$ROOT/tests/test_incremental_build.py" --cc "${CC:-cc}"
 
@@ -316,6 +303,9 @@ fi
 echo "=== Step 5: parent-death watchdog regression (#406/#407) ==="
 make -j"$NPROC" -f Makefile.cbm cbm TEST_SEAMS=1 ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"}
 WATCHDOG_BINARY="$ROOT/$BUILD_DIR/memory-for-ai"
+if [ "$OS" = "windows" ]; then
+    WATCHDOG_BINARY="$WATCHDOG_BINARY.exe"
+fi
 CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_parent_watchdog.sh"
 
 # Step 5b: worker-mode parent-death watchdog (#845). A supervised index worker

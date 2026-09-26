@@ -8,24 +8,23 @@ The normative coding rules are in [AGENTS.md](AGENTS.md). The human-readable che
 
 ## Build from Source
 
-**Prerequisites**: C compiler (gcc or clang), make, zlib, Git. Optional: Node.js 22+ (for graph UI).
+**Supported product:** Windows native x64 only. Use MSYS2 CLANG64; install
+Node.js for graph UI and the Go version declared in `pkg/go/go.mod` for wrappers.
 
-```bash
+```powershell
 git clone https://github.com/LonelyTraderBay/memory-for-ai.git
 cd memory-for-ai
-git config core.hooksPath scripts/hooks  # activates pre-commit checks + pre-push DCO gate
-scripts/build.sh
+git config core.hooksPath scripts/hooks
+./scripts/setup-windows-toolchain.ps1
+./scripts/verify-windows.ps1
 ```
 
-macOS: `xcode-select --install` provides clang.
-Linux: `sudo apt install build-essential zlib1g-dev` (Debian/Ubuntu) or `sudo dnf install gcc zlib-devel` (Fedora).
-
-The binary is output to `build/c/memory-for-ai`.
+The product is `build/c/memory-for-ai.exe`. See [Windows x64 scope](docs/WINDOWS-X64.md).
 
 ## Run Tests
 
-```bash
-scripts/test.sh
+```powershell
+./scripts/verify-windows.ps1
 ```
 
 This builds with ASan + UBSan and runs the full C test suite. Key test files:
@@ -36,8 +35,8 @@ This builds with ASan + UBSan and runs the full C test suite. Key test files:
 
 ## Run Linter
 
-```bash
-scripts/lint.sh
+```powershell
+./scripts/verify-windows.ps1 -Phase Lint
 ```
 
 Runs clang-tidy, cppcheck, and clang-format. All must pass before committing (also enforced by pre-commit hook).
@@ -155,7 +154,7 @@ If in doubt, open an issue and ask.
 
 - **C code only** — this project was rewritten from Go to pure C in v0.5.0. Go PRs will be acknowledged and potentially ported, but cannot be merged directly.
 - Include tests for new functionality
-- Run `scripts/test.sh` and `scripts/lint.sh` before submitting
+- Run `scripts/verify-windows.ps1` before submitting
 - Keep PRs focused — avoid unrelated reformatting or refactoring
 
 ## Security
@@ -226,7 +225,7 @@ Forgot to sign? `git commit --amend -s` fixes the last commit;
 ```sh
 python3 tests/test_benchmark_contract.py
 python3 tests/test_incremental_build.py --cc clang
-scripts/test.sh --suites edit,mcp,edit_integration,store_edges,ui
+./scripts/verify-windows.ps1 -Suites "edit,mcp,edit_integration,store_edges,ui"
 cd graph-ui
 npm ci
 npm run test:coverage
@@ -241,8 +240,7 @@ Set `CBM_TEST_PAR_JOBS` to limit concurrency on smaller machines.
 
 The native test runner now compiles first-party translation units separately.
 Generated `.d` dependencies track headers; a configuration stamp invalidates test
-objects when compiler/flags change. Production and TSan targets retain their
-existing build paths. POSIX recipes remain compatible with macOS system Make;
+objects when compiler/flags change. Production retains its existing build path. Windows CLANG64 is the supported toolchain;
 response files avoid the native Windows command-length limit. On Windows use `npm.cmd` and `SANITIZE=` when the runtime
 is unavailable; this is a native lane, not ASan/UBSan/TSan evidence.
 `scripts/test-windows.ps1` always invokes the selected Make target unless an

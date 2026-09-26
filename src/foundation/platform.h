@@ -10,6 +10,10 @@
 #ifndef CBM_PLATFORM_H
 #define CBM_PLATFORM_H
 
+#if !defined(_WIN64) || !defined(__x86_64__)
+#error "memory-for-ai supports native Windows x64 only; use MSYS2 CLANG64"
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>

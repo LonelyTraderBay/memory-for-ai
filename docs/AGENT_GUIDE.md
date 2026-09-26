@@ -1,5 +1,7 @@
 # Agent operating guide — memory-for-ai
 
+**Supported host:** Windows native x64 only. Development and CI use MSYS2 CLANG64 and `scripts/verify-windows.ps1`; Linux/macOS/ARM64/WSL are unsupported product targets. See [scope and verification limits](WINDOWS-X64.md).
+
 **Audience.** You are an AI coding agent (or the person configuring one) and the memory-for-ai MCP server is available in your session. This document is the complete operating manual: what the graph is, what each of the 23 tools does exactly, which tool to pick for which task, how to avoid wrong conclusions, and how to fit the index to your specific project.
 
 For repository changes, follow the normative [AGENTS.md](../AGENTS.md) and the human-readable [development standard](DEVELOPMENT-STANDARD.md). In particular, keep warning-as-error builds green, verify mutation tools after writes, and synchronize public documentation when schemas or behaviour change.
@@ -145,7 +147,7 @@ The graph is evidence, not truth. The indexer reports what it could not fully in
 7. **Freshness.** The watcher keeps indexes fresh after Git/filesystem changes, but verify when it matters: `index_status` reports git context and coverage; if the repo moved ahead (e.g. big rebase), re-run `index_repository` — incremental cost is proportional to the change. Stale trace cursors error loudly (`stale_cursor`) rather than returning wrong pages. Measured example ([AB-RESULTS.md](AB-RESULTS.md)): a 12-day-stale index still returned correct relationship *names* but line numbers/snippets had drifted by ~140 lines; an 18.5 s re-index restored exact agreement. Topology degrades gracefully — coordinates do not. Check freshness before citing line-level output.
 8. **Trust per edge.** `trace_path(include_evidence=true)` labels each hop `lsp` (type-aware, strongest), `language_rule`, `heuristic`, or `unresolved`. For conclusions that will drive destructive action, prefer `lsp`-resolved edges and corroborate with source.
 9. **Entry points and tests.** Dead-code style queries must exclude entry points (`exclude_entry_points=true`, or negative degree + manual review); remember test files are invisible to `trace_path` by default — a "dead" private helper may be called from a test.
-10. **Path-limit error.** If `index_repository` returns `error_code="path_too_long"`, discovery rejected the whole run rather than publishing a graph with unknown omissions; the prior index generation is unchanged. Shorten the offending tree path or move the repository closer to the filesystem root, then retry. Windows directory enumeration supports paths through the same 4095-byte UTF-8 budget as the walker; longer paths fail explicitly.
+10. **Path-limit error.** If `index_repository` returns `error_code="path_too_long"`, discovery rejected the whole run rather than publishing a graph with unknown omissions; the prior index generation is unchanged. Shorten the offending tree path or move the repository closer to the filesystem root, then retry. Windows directory enumeration supports paths through the same 4095-byte UTF-8 budget as the walker; the filesystem may impose a smaller path/component limit (for example on macOS). Both buffer overflow and native `ENAMETOOLONG` fail explicitly, including bounded discovery counts.
 
 ## 8. Tuning the index to your project
 
@@ -213,10 +215,10 @@ Keys must start with `.`; language names are case-insensitive; unknown names are
 
 ### Per-project install (`install --project`)
 
-Run from the repo root (the shell/PowerShell installers forward the flag):
+After installing the Windows x64 binary, run from the repo root:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh | bash -s -- --project
+```powershell
+memory-for-ai install --project
 ```
 
 Installs/refreshes the shared binary **without touching global agent configs**, writes a repo-local `.mcp.json` entry named `memory-for-ai-<repo-directory>` (`--name=` to override) pinned with `--scope`, and indexes immediately. Agents in other repos see their own servers; `uninstall` never touches the repo's own `.mcp.json`. Full walkthrough: [INSTALL.md](INSTALL.md#per-project-install).
@@ -229,11 +231,11 @@ Installs/refreshes the shared binary **without touching global agent configs**, 
 
 Index each repository as its own project, then `index_repository(repo_path=<any>, mode="cross-repo-intelligence", target_projects=["*"])` matches Routes/Channels across projects into `CROSS_HTTP_CALLS` / `CROSS_ASYNC_CALLS` / `CROSS_CHANNEL` edges. Re-run after any target re-indexes. Explore with `trace_path(mode="cross_service")`.
 
-## 10. CI and containers
+## 10. Windows CI and resource limits
 
 | Setting | Effect |
 |---|---|
-| `CBM_WORKERS=<n>` | Override parallel-indexing worker count — use in containers where `sysconf(_SC_NPROCESSORS_ONLN)` reports host CPUs instead of the cgroup quota. |
+| `CBM_WORKERS=<n>` | Override parallel-indexing worker count on shared Windows runners with limited CPU or memory budgets. |
 | `CBM_MEM_BUDGET_MB=<n>` | Pin the in-memory graph budget below the cgroup limit to leave headroom for siblings. |
 | `MFA_CACHE_DIR=<path>` | Move indexes/config (e.g. onto a CI cache volume). All CBM processes on the account must agree on one canonical root. |
 | `config set auto_index true` + `auto_index_limit <n>` | Auto-index new projects on first session connect (default limit 50,000 files). |

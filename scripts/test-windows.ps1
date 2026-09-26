@@ -6,7 +6,7 @@
     Incrementally builds the product binary unless -Binary is supplied, stages it under its
     release name, then runs the deterministic Windows integration tests under
     tests/windows/ against it (real stdio / CLI / HTTP UI, real SQLite DB).
-    Windows ships ONE binary, exactly like Linux and macOS.
+    Windows x64 ships one native binary.
 
     Two categories of test:
 
@@ -36,9 +36,9 @@
     fail-closed refusal seam, never an in-process fallback, so the old
     determinism override would turn every indexing guard into a refusal.
 
-    On native Windows the MinGW/LLVM toolchain ships no libasan/libubsan, so the
-    build disables sanitizers (SANITIZE=). Where the toolchain provides
-    AddressSanitizer/UBSan (Linux containers, WSL), prefer scripts/test.sh.
+    These product guards exercise the release-style binary without sanitizers.
+    The canonical scripts/verify-windows.ps1 entry separately runs native
+    ASan/UBSan suites using MSYS2 CLANG64.
 
 .PARAMETER Binary
     Path to an existing product executable. If omitted, the script builds it

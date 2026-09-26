@@ -74,6 +74,18 @@ def windows_extended_path(path):
     return "\\\\?\\" + absolute
 
 
+def remove_fixture_tree(path):
+    # MSYS2 Python joins children with '/', which Win32 rejects after '\\?\'.
+    # Normalize only that spelling; preserve every other cleanup failure.
+    def normalize_child(function, child, exc_info):
+        normalized = windows_extended_path(child)
+        if normalized == child:
+            raise exc_info[1]
+        function(normalized)
+
+    shutil.rmtree(windows_extended_path(path), onerror=normalize_child)
+
+
 def run_product(argv, cwd, env, timeout=120):
     options = {
         "cwd": cwd,
@@ -443,7 +455,7 @@ def main():
     finally:
         # The fixture includes paths beyond legacy MAX_PATH. Prefix the root
         # itself too, otherwise rmtree can silently leave the test tree behind.
-        shutil.rmtree(windows_extended_path(work))
+        remove_fixture_tree(work)
 
     if failures:
         print("\nREGRESSION (red): %d/%d non-ASCII repo path variants lost "

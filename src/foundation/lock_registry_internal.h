@@ -37,10 +37,6 @@ bool cbm_lock_lease_fail_next_release_step_for_test(cbm_lock_lease_t *lease,
 bool cbm_lock_lease_has_release_handle_for_test(const cbm_lock_lease_t *lease,
                                                 cbm_lock_registry_release_handle_t handle);
 bool cbm_lock_lease_used_abort_lock_failure_path_for_test(const cbm_lock_lease_t *lease);
-#ifndef _WIN32
-bool cbm_lock_lease_fail_close_after_consuming_for_test(cbm_lock_lease_t *lease,
-                                                        cbm_lock_registry_release_handle_t handle);
-#endif
 bool cbm_lock_registry_fail_next_native_release_step_for_test(
     cbm_lock_registry_t *registry, cbm_lock_registry_release_handle_t handle,
     cbm_private_file_lock_release_step_t step);
