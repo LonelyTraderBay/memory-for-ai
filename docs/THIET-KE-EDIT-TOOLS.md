@@ -325,3 +325,15 @@ Response prefixes: `move_symbol: DRY-RUN` / `move_symbol: APPLIED` / `move_symbo
 3. **5c** ✅ (`54a56cda`) — `handle_move_symbol` trong mcp.c: plan/apply, circular check, re-export detection, schema + tool count 22→23.
 4. **5d** ✅ (`98eab359`) — Integration + fault-injection tests (suite `edit_integration` 17 test). Phát hiện và sửa 2 bug thật: TS importer resolve về Module node (không phải symbol) nên sweep phải nhìn cả 2 target; và use-after-free con trỏ `irel` sau `cbm_edit_free_node`.
 5. **5e** ✅ — Docs (AGENT_GUIDE, llms.txt 22→23 tools) + metadata đã regen ở 5c.
+
+## Cập nhật 2026-09-26: định danh backup và phát hiện drift
+
+Thiết kế hiện hành nằm tại [PRIORITY-HARDENING.md](PRIORITY-HARDENING.md).
+Backup dùng `backups/<sha256(canonical-parent + filename)>/bk_<sequence>`;
+không còn chọn theo basename/epoch/PID. Record đã công bố không bị ghi đè.
+File tạm hoặc tên record sai không được chọn để undo. Backup kiểu cũ vẫn giữ
+nguyên và cần người dùng xác định nguồn trước khi phục hồi thủ công.
+
+Guard so sánh SHA-256 nội dung, mtime độ phân giải cao và size; sửa cùng kích
+thước hoặc khôi phục mtime không đủ để vượt guard. Đây vẫn là optimistic
+concurrency: không khóa các trình sửa file bên ngoài sau lần kiểm tra cuối.

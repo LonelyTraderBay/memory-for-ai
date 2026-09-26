@@ -13617,20 +13617,12 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("file path too long", true);
     }
 
-    /* Basename — backup files are named bk_<epoch>_<pid>_<basename>. */
-    const char *base = abs_path;
-    for (const char *p = abs_path; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            base = p + 1;
-        }
-    }
-
     char backup_dir[CBM_SZ_4K];
     const char *ws_cache = cbm_workspace_cache_dir();
     snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
 
     char backup_path[CBM_SZ_4K] = {0};
-    int brc = cbm_edit_latest_backup(backup_dir, base, backup_path, sizeof(backup_path));
+    int brc = cbm_edit_latest_backup(backup_dir, abs_path, backup_path, sizeof(backup_path));
     if (brc == CBM_EDIT_ERR_RANGE) {
         char msg[CBM_SZ_1K];
         snprintf(msg, sizeof(msg),

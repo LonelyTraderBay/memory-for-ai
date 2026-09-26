@@ -256,3 +256,18 @@ Index each repository as its own project, then `index_repository(repo_path=<any>
 | Graph UI not loading | Start with `--ui=true --port=9749`, open `http://localhost:9749`. Owned by the shared daemon — concurrent sessions don't duplicate it. |
 | "secure daemon endpoint could not be created" | The default rendezvous ancestry failed the privacy walk. Set `MFA_RUNTIME_DIR` to a directory you own (see [CONFIGURATION.md](CONFIGURATION.md#relocating-the-daemon-rendezvous-directory)). |
 | Version/build conflict on start | All CBM processes must share one exact build + cache root. Close other sessions or update via the install script (it coordinates a safe activation window). |
+
+### Backup identity and drift checks
+
+Edit backups are keyed by the canonical parent directory plus filename, including
+the project path; equal basenames in separate directories never share history.
+Repeated writes keep immutable sequence-numbered records. The source guard compares
+content SHA-256 as well as high-resolution mtime and size before replacement.
+This is optimistic concurrency, not a transaction with external editors.
+
+`undo_edit` only selects backups from the exact path's directory under
+`backups/<path-sha256>/bk_<sequence>`. Old flat `bk_<epoch>_<pid>_<basename>` backups
+remain intact but require manual attribution/recovery; they cannot safely identify
+the original project. Moving a project or removing its parent directory likewise
+requires manual recovery. Dry-run, per-file PARTIAL reporting and re-index/verify
+remain part of the existing edit workflow.
