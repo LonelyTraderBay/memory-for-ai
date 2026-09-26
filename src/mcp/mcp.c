@@ -540,11 +540,16 @@ static const tool_def_t TOOLS[] = {
     {"trace_path", "Trace path",
      "Trace paths through the code graph. Modes: calls (callers/callees), data_flow (value "
      "propagation with args at each hop), cross_service (through HTTP/async Route nodes). "
-     "Use INSTEAD OF grep for callers, dependencies, impact analysis, or data flow tracing. "
+     "Use to explore relationships recorded in the indexed graph; this does not replace source "
+     "search for literals, callback registrations, dynamic references, or negative/exhaustive "
+     "claims. Check coverage and verify source when completeness matters: a missing graph edge "
+     "does not prove a source relationship is absent. "
      "RESPONSE: prefix-grouped tree rows — callees/callers grouped under their shared "
      "qn-prefix, `name hop` per row (full qn = group prefix + dot + name); exact "
-     "callees_total/callers_total on every page = ALL nodes reachable within depth (transitive, "
-     "not just direct; test files excluded unless include_tests). risk/args flags use a flat "
+     "callees_total/callers_total on every page count nodes reachable by recorded graph edges "
+     "within depth (transitive, not just direct); they are exact graph totals, not proof of all "
+     "source relationships. Test files are excluded unless include_tests. risk/args flags use a "
+     "flat "
      "table. "
      "`truncated: true` + `next` = more rows — pass next back as cursor. "
      "format=\"json\" returns the SAME tree model as structured JSON.",
@@ -552,8 +557,10 @@ static const tool_def_t TOOLS[] = {
      "\"type\":\"string\"},\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\","
      "\"both\"],\"default\":\"both\"},\"depth\":{\"type\":\"integer\",\"default\":3},"
      "\"limit\":{\"type\":\"integer\",\"default\":100,\"minimum\":1,\"maximum\":5000,"
-     "\"description\":\"Rows per page. callees_total/callers_total always carry the exact full "
-     "counts; when a page is truncated the response carries next — see cursor.\"},"
+     "\"description\":\"Rows per page. callees_total/callers_total are exact counts of nodes "
+     "reachable "
+     "in the stored graph within depth; graph coverage may omit source relationships. When a "
+     "page is truncated the response carries next — see cursor.\"},"
      "\"cursor\":{\"type\":\"string\",\"description\":\"Resume token from a previous response's "
      "'next' field. Pass it back with ALL other arguments identical to get the following page "
      "with no duplicates. Cursors outlive nothing: after a reindex you get a stale_cursor error "
@@ -591,10 +598,13 @@ static const tool_def_t TOOLS[] = {
      "\"type\":\"string\"},\"include_neighbors\":{"
      "\"type\":\"boolean\",\"default\":false}},\"required\":[\"qualified_name\",\"project\"]}"},
 
-    {"delete_symbol", "Delete symbol (safe)",
-     "Delete a symbol's source using its graph location, with a graph-based usage check: the "
-     "call is REFUSED while the symbol still has direct callers (CALLS/HTTP_CALLS/ASYNC_CALLS "
-     "edges) unless force=true — the refusal lists the callers. Deleting a symbol that "
+    {"delete_symbol", "Delete symbol (graph-guarded)",
+     "Delete a symbol's source using its graph location. The usage guard refuses when the current "
+     "index records direct callers (CALLS/HTTP_CALLS/ASYNC_CALLS edges), unless force=true, and "
+     "lists those modeled callers. This is not proof that no other source reference exists: "
+     "callbacks, dynamic references, unsupported constructs, or incomplete coverage may be absent "
+     "from the graph. Check index coverage and search source before applying a deletion. Deleting "
+     "a symbol that "
      "CONTAINS nested symbols (e.g. a class with methods) also requires force=true. SAFE BY "
      "DEFAULT: without dry_run=false the call returns a diff plan (what is removed, callers, "
      "orphan candidates — callees that become dead code) and writes nothing. Before writing, "
@@ -606,7 +616,7 @@ static const tool_def_t TOOLS[] = {
      "\"Full qualified_name from search_graph\"},\"project\":{\"type\":\"string\"},\"dry_run\":{"
      "\"type\":\"boolean\",\"default\":true,\"description\":\"true (default): return the delete "
      "plan only, write nothing. false: apply the delete.\"},\"force\":{\"type\":\"boolean\","
-     "\"default\":false,\"description\":\"Delete despite remaining callers and/or nested "
+     "\"default\":false,\"description\":\"Delete despite modeled direct callers and/or nested "
      "symbols (both are listed in the refusal/plan).\"},\"recursive_orphans\":{\"type\":"
      "\"boolean\",\"default\":false,\"description\":\"Also scan callees of orphan candidates "
      "recursively — a callee whose every inbound caller is the deleted symbol or an already-"
@@ -667,7 +677,8 @@ static const tool_def_t TOOLS[] = {
      "destination Module node (e.g. myproject.pkg.utils); for Go, pass the shared package "
      "qualified_name — the destination file must be supplied separately\"},"
      "\"destination_file\":{\"type\":\"string\",\"description\":\"Go only: existing "
-     "project-relative .go file in the same package as the source\"},\"position\":{\"type\":\"string\",\"enum\":[\"end\",\"after_imports\"],"
+     "project-relative .go file in the same package as the "
+     "source\"},\"position\":{\"type\":\"string\",\"enum\":[\"end\",\"after_imports\"],"
      "\"default\":\"end\"},\"dry_run\":{\"type\":\"boolean\",\"default\":true,\"description\":"
      "\"true (default): return the move plan only, write nothing. false: apply the move.\"},"
      "\"force\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Apply despite "
@@ -1491,8 +1502,9 @@ static char *cbm_mcp_prompt_get(const char *params_json, char **error_json) {
         "Use graph tools first: search_graph to find relevant symbols, get_code_snippet for "
         "exact source, and trace_path(direction=\"both\") for callers and callees. Use "
         "get_architecture for broad orientation and query_graph only for multi-hop patterns. "
-        "Check has_more and paginate. Fall back to search_code or grep only for literal or "
-        "non-code text, or where graph coverage is incomplete.";
+        "Check has_more and paginate. Use search_code or grep for literals and non-code text, "
+        "and verify source/coverage for callbacks, dynamic references, or negative/exhaustive "
+        "claims; a missing graph edge is not proof that a source relationship is absent.";
     static const char REVIEW_TEMPLATE[] =
         "Review change impact in project \"%s\" for: %s\n\n"
         "Use detect_changes with base_branch \"%s\", then trace_path(direction=\"both\", "
@@ -1533,10 +1545,13 @@ static const int SUPPORTED_VERSION_COUNT =
     (int)(sizeof(SUPPORTED_PROTOCOL_VERSIONS) / sizeof(SUPPORTED_PROTOCOL_VERSIONS[0]));
 
 static const char MCP_SERVER_INSTRUCTIONS[] =
-    "Use graph tools first for structural code discovery: search_graph to find symbols, "
+    "Use graph tools first to explore structural relationships recorded in the index: search_graph "
+    "to find symbols, "
     "trace_path for callers and callees, get_code_snippet for exact source, query_graph for "
     "complex multi-hop patterns, and get_architecture for orientation. Use search_code or "
-    "filesystem grep for literal or non-code text, or when graph coverage is insufficient. "
+    "filesystem grep for literals and non-code text; verify source and coverage for callback or "
+    "dynamic references and for negative/exhaustive claims. A missing graph edge does not prove "
+    "a source relationship is absent. "
     "Call list_projects before initial use and index_repository only when a repository is not "
     "indexed or to force immediate freshness after a large external update. Once indexed, "
     "watched projects auto-refresh in the background; use index_status for project health and "
@@ -1552,8 +1567,11 @@ static const char MCP_ANALYSIS_SERVER_INSTRUCTIONS[] =
     "analysis. Use get_runtime_traces only for explicit runtime aggregate observations; it never "
     "changes static graph search or trace_path results. Call check_index_coverage for every cited "
     "path and for scopes behind negative or "
-    "exhaustive claims; read flagged ranges or skipped files directly. Coverage is best-effort, "
-    "never proof of completeness. Check has_more or nextCursor and paginate when present. If the "
+    "exhaustive claims; read flagged ranges or skipped files directly, and verify source "
+    "references "
+    "that may not create graph edges (for example callbacks or dynamic dispatch). Coverage is "
+    "best-effort, never proof of completeness. Check has_more or nextCursor and paginate when "
+    "present. If the "
     "project is missing or stale, ask the parent agent to index or refresh it.";
 
 static const char MCP_SCOUT_SERVER_INSTRUCTIONS[] =
@@ -12001,8 +12019,7 @@ static bool move_same_dir(const char *a, const char *b) {
 }
 
 static bool move_ident_byte(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-           c == '_';
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
 /* Extract the `package <ident>` clause of a Go buffer. */
@@ -12946,8 +12963,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
             cbm_sb_append(&review_sb, msg);
             review_items++;
         }
-        if (internal_callers > 0 &&
-            (src_lang == MOVE_LANG_PY || src_lang == MOVE_LANG_TS)) {
+        if (internal_callers > 0 && (src_lang == MOVE_LANG_PY || src_lang == MOVE_LANG_TS)) {
             const char *eol = move_eol_of(source->new_data, source->new_len);
             char line[CBM_SZ_1K];
             if (src_lang == MOVE_LANG_PY) {
@@ -12966,8 +12982,7 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
                 }
                 snprintf(line, sizeof(line), "import {%s} from \"%s\";%s", name, spec, eol);
             }
-            size_t off =
-                move_import_insert_offset(source->new_data, source->new_len, src_lang);
+            size_t off = move_import_insert_offset(source->new_data, source->new_len, src_lang);
             char *merged = NULL;
             size_t merged_len = 0;
             if (move_splice_at(source->new_data, source->new_len, off, line, strlen(line), &merged,

@@ -113,15 +113,15 @@ edit_symbol: APPLIED  myproj.src.handlers.ProcessOrder  (Method)
 
 ## 5. Tool 2: `delete_symbol`
 
-Khác biệt then chốt so với safe-delete của LSP: usage check dùng **graph bắc cầu**, thấy cả caller qua Route/cross-service mà LSP không thấy.
+Usage check dùng các quan hệ caller được ghi nhận trong graph (có thể gồm Route/cross-service edges). Độ bao phủ phụ thuộc parser/index; đây không phải bằng chứng đầy đủ rằng không còn tham chiếu trong source.
 
 ### Luồng
 
 ```
 1. RESOLVE + GATE như edit_symbol
 2. USAGE CHECK  trace_path(qn, direction="inbound", depth=5, include_evidence=true)
-   → callers_total == 0  → safe, confidence HIGH
-   → callers chỉ trong test files → safe-with-note (đề xuất xóa test kèm theo)
+   → callers_total == 0  → không có caller nào được ghi nhận trong graph; CHƯA đủ để kết luận an toàn
+   → callers chỉ trong test files → chỉ có caller đã ghi nhận trong test; vẫn kiểm tra coverage/source
    → callers thật → danh sách callers (prefix-grouped, giới hạn 20 + total)
 3. Nếu có callers thật và force=false → TỪ CHỐI, trả caller list + gợi ý
    ("xóa/cập nhật N caller trước, hoặc force=true")

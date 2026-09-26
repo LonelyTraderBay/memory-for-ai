@@ -90,7 +90,7 @@ Language support is split between two layers:
 
 1. Check the language spec in `internal/cbm/lang_specs.c`
 2. Use regression tests to verify extraction: `tests/test_extraction.c`
-3. Check parity tests: `internal/cbm/regression_test.go` (legacy, being migrated)
+3. Add/extend the C regression case in `tests/test_extraction.c`; the former Go parity test file is not present in this C repository, so do not rely on it as a validation step.
 4. Add a test case in `tests/test_pipeline.c` for integration-level fixes
 5. Verify with a real open-source repo
 

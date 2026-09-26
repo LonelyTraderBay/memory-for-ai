@@ -1293,7 +1293,8 @@ static const char skill_content[] =
     "\n"
     "# Memory for AI — Knowledge Graph Tools\n"
     "\n"
-    "Graph tools return precise structural results in ~500 tokens vs ~80K for grep.\n"
+    "For structural questions, graph tools often return targeted evidence in hundreds of tokens "
+    "where broad text scans can return much more. For literals and config, search text directly.\n"
     "\n"
     "## Quick Decision Matrix\n"
     "\n"
@@ -1310,10 +1311,11 @@ static const char skill_content[] =
     "| Text search | `search_code` or Grep |\n"
     "\n"
     "## Exploration Workflow\n"
-    "1. `list_projects` — check if project is indexed\n"
-    "2. `get_graph_schema` — understand node/edge types\n"
-    "3. `search_graph(label=\"Function\", name_pattern=\".*Pattern.*\")` — find code\n"
-    "4. `get_code_snippet(qualified_name=\"project.path.FuncName\")` — read source\n"
+    "1. `list_projects` — identify the exact indexed project when needed\n"
+    "2. `search_graph(label=\"Function\", name_pattern=\".*Pattern.*\", limit=10)` — find code\n"
+    "3. `get_code_snippet(qualified_name=\"project.path.FuncName\")` — read source\n"
+    "Call `get_graph_schema` only before writing Cypher; call `get_architecture` only for an "
+    "architecture question.\n"
     "\n"
     "## Tracing Workflow\n"
     "1. `search_graph(name_pattern=\".*FuncName.*\")` — discover exact name\n"
@@ -1359,7 +1361,7 @@ static const char skill_content[] =
     "- High fan-in: `search_graph(min_degree=10, relationship=\"CALLS\", "
     "direction=\"inbound\")`\n"
     "\n"
-    "## 18 MCP Tools\n"
+    "## Common MCP Tools (selected)\n"
     "`index_repository`, `index_status`, `list_projects`, `delete_project`,\n"
     "`search_graph`, `search_code`, `trace_path`, `detect_changes`,\n"
     "`query_graph`, `get_graph_schema`, `get_code_snippet`, `get_architecture`,\n"
@@ -1402,7 +1404,12 @@ static const char codex_instructions_content[] =
     "- `query_graph` — run Cypher queries for complex patterns\n"
     "- `get_architecture` — high-level project summary\n"
     "\n"
-    "Always prefer graph tools over grep for code discovery.\n";
+    "Use graph tools for structural discovery: symbols, callers/callees, and impact. Use grep or "
+    "search_code for literal strings, error messages, configuration values, and non-code files; "
+    "those are not graph questions. Start focused searches with `limit=10` and paginate only when "
+    "the answer requires more results. Check `list_projects` and `index_status` when confirming "
+    "the project or freshness; index when missing or stale. Use `check_index_coverage` for files "
+    "you cite or change, and scope coverage before negative or exhaustive claims.\n";
 
 /* Old skill names — cleaned up during install to remove stale directories. */
 static const char *old_skill_names[] = {
@@ -2910,7 +2917,14 @@ static const char agent_instructions_content[] =
     "## Codebase Knowledge Graph (memory-for-ai)\n"
     "\n"
     "This project uses memory-for-ai to maintain a knowledge graph of the codebase.\n"
-    "ALWAYS prefer MCP graph tools over grep/glob/file-search for code discovery.\n"
+    "For structural questions, graph tools often return targeted evidence in hundreds of tokens "
+    "where broad text scans can return much more. Use MCP graph tools for structural discovery "
+    "(symbols, callers/callees, and impact). Use "
+    "grep or search_code for literal strings, error messages, configuration values, and non-code "
+    "files; those are not graph questions.\n"
+    "Start focused searches with `limit=10`; paginate only when the answer requires more results. "
+    "Call get_graph_schema only before writing Cypher, and get_architecture only for an "
+    "architecture question.\n"
     "\n"
     "### Priority Order\n"
     "1. `search_graph` — find functions, classes, routes, variables by pattern\n"
@@ -3333,12 +3347,16 @@ static const char aider_instructions_content[] =
     "\n"
     "This project uses memory-for-ai to maintain a knowledge graph of the codebase.\n"
     "Aider has no MCP support, so invoke the graph through the CLI (e.g. via /run).\n"
-    "ALWAYS prefer these commands over grep/glob/file-search for code discovery.\n"
+    "Use graph CLI commands for structural discovery (symbols, callers/callees, and impact). Use "
+    "grep for literal strings, error messages, configuration values, and non-code files; those "
+    "are not graph questions.\n"
+    "Start focused searches with limit=10 and paginate only when the answer requires more results. "
+    "Do not fetch schema or architecture unless the task needs it.\n"
     "\n"
     "## Priority Order (CLI form)\n"
     "1. Find functions/classes/routes:\n"
     "   memory-for-ai cli search_graph "
-    "'{\"project\":\"<name>\",\"name_pattern\":\".*Foo.*\"}'\n"
+    "'{\"project\":\"<name>\",\"name_pattern\":\".*Foo.*\",\"limit\":10}'\n"
     "2. Who calls X / what does X call:\n"
     "   memory-for-ai cli trace_path "
     "'{\"project\":\"<name>\",\"function_name\":\"Foo\",\"direction\":\"both\"}'\n"
@@ -3350,9 +3368,12 @@ static const char aider_instructions_content[] =
     "5. Project overview:\n"
     "   memory-for-ai cli get_architecture '{\"project\":\"<name>\"}'\n"
     "\n"
-    "First use in a repo: memory-for-ai cli index_repository '{\"repo_path\":\"<abs "
-    "path>\"}'\n"
     "List indexed projects (for <name>): memory-for-ai cli list_projects '{}'\n"
+    "Check current project freshness with index_status. If missing or stale, run: memory-for-ai "
+    "cli index_repository '{\"repo_path\":\"<abs path>\"}'\n"
+    "Run "
+    "check_index_coverage for files you cite or change, and scope coverage before negative or "
+    "exhaustive claims.\n"
     "\n"
     "## When to fall back to grep/glob\n"
     "- Searching for string literals, error messages, config values\n"
@@ -5716,11 +5737,12 @@ int cbm_remove_claude_subagent_hooks(const char *settings_path) {
 /* Matcher excludes read_file for consistency with the Claude fix: the hook
  * is an advisory reminder, not a gate over the agent's file reads. */
 #define GEMINI_HOOK_MATCHER "google_web_search|grep_search"
-#define GEMINI_HOOK_COMMAND                                                      \
-    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"        \
-    "hookEventName:'BeforeTool',additionalContext:'Code discovery: prefer "      \
-    "memory-for-ai search_graph, trace_path, and get_code_snippet over grep or " \
-    "file search.'}}))\""
+#define GEMINI_HOOK_COMMAND                                                                  \
+    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"                    \
+    "hookEventName:'BeforeTool',additionalContext:'Code discovery: use "                     \
+    "memory-for-ai search_graph/trace_path for indexed relationships; grep literals. "       \
+    "Verify source and coverage for callbacks, dynamic references, and negative/exhaustive " \
+    "claims.'}}))\""
 static const char *const cmm_gemini_released_hook_commands[] = {
     "echo 'Reminder: prefer memory-for-ai search_graph/trace_path/get_code_snippet over "
     "grep/file search for code discovery.' >&2",
@@ -5788,11 +5810,12 @@ static int cbm_remove_gemini_coverage_hook(const char *settings_path, const char
 
 /* Gemini CLI SessionStart reminder. settings.json uses the same
  * hooks.<Event>[].hooks[] JSON shape as Claude, so it reuses upsert_hooks_json. */
-#define GEMINI_SESSION_COMMAND                                                    \
-    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"         \
-    "hookEventName:'SessionStart',additionalContext:'Code discovery: prefer "     \
-    "memory-for-ai search_graph, trace_path, get_code_snippet, query_graph, and " \
-    "search_code; run index_repository first when needed.'}}))\""
+#define GEMINI_SESSION_COMMAND                                                                \
+    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"                     \
+    "hookEventName:'SessionStart',additionalContext:'Code discovery: use "                    \
+    "memory-for-ai search_graph/trace_path for indexed relationships; grep literals. Verify " \
+    "callbacks, dynamic references, coverage, and negative/exhaustive claims in source; "     \
+    "run index_repository first when needed.'}}))\""
 static const char *const cmm_gemini_released_session_commands[] = {
     "echo \"Code discovery: prefer memory-for-ai (search_graph, trace_path, "
     "get_code_snippet, query_graph, search_code) over grep/file-read; run index_repository "

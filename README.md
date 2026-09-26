@@ -66,14 +66,14 @@ What it does: installs/refreshes the shared binary, writes a project-local `.mcp
 You: "what calls ProcessOrder?"
 
 Agent calls: trace_path(function_name="ProcessOrder", direction="inbound")
-             → complete caller tree, one call, ~250 tokens
+             → caller tree for indexed CALLS edges, one call, ~250 tokens
 
-File-by-file alternative: grep 38 files, read ~33,000 tokens, still miss indirect callers.
+In the maintainer's measured C example: grep 38 files, read ~33,000 tokens, and still miss indirect callers. This is a task-specific result, not a completeness guarantee for every repository.
 ```
 
 There is **no built-in LLM**: your MCP client is the intelligence layer; this tool is the structural memory. Typical wins:
 
-- **Callers / callees / blast radius** — `trace_path`, `detect_changes` answer in one call what grep cannot answer at any cost (transitive chains live in no single file).
+- **Callers / callees / blast radius** — `trace_path`, `detect_changes` follow indexed relationships across files. The counts are exact for stored edges, but event callbacks (such as JSX props) or partially parsed code may not be represented; verify coverage and source before relying on an empty trace.
 - **Architecture in one call** — `get_architecture`: languages, packages, entry points, routes, hotspots, layers, community-detection clusters.
 - **Dead code, complexity hotspots, dependency graph, security-evidence graph** — via `query_graph` (read-only Cypher subset).
 - **Memory across sessions** — the graph persists; `manage_adr` persists architecture decisions beside it.
