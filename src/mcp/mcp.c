@@ -5367,15 +5367,15 @@ static void coverage_add_ranges(yyjson_mut_doc *doc, yyjson_mut_val *row, const 
             break;
         }
         char *endptr = NULL;
-        long start = strtol(p, &endptr, 10);
+        long long start = strtoll(p, &endptr, CBM_DECIMAL_BASE);
         if (endptr == p || start <= 0 || start > INT32_MAX) {
             break;
         }
         p = endptr;
-        long end = start;
+        long long end = start;
         if (*p == '-') {
             p++;
-            long parsed = strtol(p, &endptr, 10);
+            long long parsed = strtoll(p, &endptr, CBM_DECIMAL_BASE);
             if (endptr == p || parsed < start || parsed > INT32_MAX) {
                 break;
             }
@@ -12022,6 +12022,15 @@ static bool move_ident_byte(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
+/* Bounded scan: a line view is not necessarily NUL-terminated. */
+static size_t move_indent_size(const char *data, size_t len) {
+    size_t n = 0;
+    while (n < len && (data[n] == ' ' || data[n] == '\t')) {
+        n++;
+    }
+    return n;
+}
+
 /* Extract the `package <ident>` clause of a Go buffer. */
 static bool move_go_package_clause(const char *data, size_t len, char *out, size_t out_sz) {
     size_t pos = 0;
@@ -12035,10 +12044,7 @@ static bool move_go_package_clause(const char *data, size_t len, char *out, size
         if (tlen > 0 && data[pos + tlen - 1] == '\r') {
             tlen--;
         }
-        size_t s = 0;
-        while (s < tlen && (data[pos + s] == ' ' || data[pos + s] == '\t')) {
-            s++;
-        }
+        size_t s = move_indent_size(data + pos, tlen);
         const char *l = data + pos + s;
         size_t rem = tlen - s;
         if (rem == 0 || (rem >= 2 && l[0] == '/' && l[1] == '/')) {
@@ -12132,10 +12138,7 @@ static size_t move_import_insert_offset(const char *data, size_t len, move_lang_
         if (tlen > 0 && data[pos + tlen - 1] == '\r') {
             tlen--;
         }
-        size_t s = 0;
-        while (s < tlen && (data[pos + s] == ' ' || data[pos + s] == '\t')) {
-            s++;
-        }
+        size_t s = move_indent_size(data + pos, tlen);
         const char *l = data + pos + s;
         size_t rem = tlen - s;
         size_t next = (eol < len) ? eol + 1 : len;
@@ -12853,12 +12856,12 @@ static char *handle_move_symbol(cbm_mcp_server_t *srv, const char *args) {
     int rc;
     if (after_imports) {
         const char *eol = move_eol_of(dest->data, dest->len);
-        size_t elen = strlen(eol);
         size_t norm_len = 0;
         char *norm = move_normalize_eol(def_text, def_len, eol, &norm_len);
         if (!norm) {
             rc = CBM_EDIT_ERR_OOM;
         } else {
+            size_t elen = strlen(eol);
             size_t extra = elen; /* one blank separator line after the definition */
             if (norm_len == 0 || norm[norm_len - 1] != '\n') {
                 extra += elen;
@@ -13651,20 +13654,12 @@ static char *handle_undo_edit(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("file path too long", true);
     }
 
-    /* Basename — backup files are named bk_<epoch>_<pid>_<basename>. */
-    const char *base = abs_path;
-    for (const char *p = abs_path; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-            base = p + 1;
-        }
-    }
-
     char backup_dir[CBM_SZ_4K];
     const char *ws_cache = cbm_workspace_cache_dir();
     snprintf(backup_dir, sizeof(backup_dir), "%s/backups", ws_cache ? ws_cache : ".");
 
     char backup_path[CBM_SZ_4K] = {0};
-    int brc = cbm_edit_latest_backup(backup_dir, base, backup_path, sizeof(backup_path));
+    int brc = cbm_edit_latest_backup(backup_dir, abs_path, backup_path, sizeof(backup_path));
     if (brc == CBM_EDIT_ERR_RANGE) {
         char msg[CBM_SZ_1K];
         snprintf(msg, sizeof(msg),
@@ -17438,7 +17433,7 @@ static bool runtime_trace_cursor_decode(const char *token, runtime_trace_cursor_
     }
     errno = 0;
     char *end = NULL;
-    long parsed_offset = strtol(parts[1], &end, 10);
+    long long parsed_offset = strtoll(parts[SKIP_ONE], &end, CBM_DECIMAL_BASE);
     if (errno == ERANGE || end == parts[1] || *end != '\0' || parsed_offset < 0 ||
         parsed_offset > INT_MAX) {
         return false;

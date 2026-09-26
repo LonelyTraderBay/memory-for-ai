@@ -729,6 +729,11 @@ int cbm_store_find_edges_by_target_type(cbm_store_t *s, int64_t target_id, const
                                         cbm_edge_t **out, int *count);
 
 /* Find all edges of a type in project. */
+/* All edge types induced by node_ids, with duplicates ignored. Reads only the
+ * selected sources and returns edges ordered by type/id; no persistent state.
+ * On any error out/count are empty (never a partial graph). */
+int cbm_store_find_edges_among(cbm_store_t *s, const char *project, const int64_t *node_ids,
+                               int node_count, cbm_edge_t **out, int *count);
 int cbm_store_find_edges_by_type(cbm_store_t *s, const char *project, const char *type,
                                  cbm_edge_t **out, int *count);
 

@@ -17,4 +17,6 @@ echo "pre-commit: security audit (source-level)..."
 scripts/security-audit.sh
 
 echo "pre-commit: building and running tests..."
-make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc) -f Makefile.cbm test
+# The parallel harness proves that every registered suite ran exactly once and
+# prepares Windows build-directory ACLs before the native processes start.
+make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc) -f Makefile.cbm test-par

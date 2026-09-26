@@ -193,13 +193,19 @@ if [ -n "$SUITES" ]; then
     echo "=== test.sh: ITERATION mode — suites: $SUITES (incremental build) ==="
     make -j"$NPROC" -f Makefile.cbm "$BUILD_DIR/test-runner" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"}
     # shellcheck disable=SC2086  # suite list is deliberately word-split
-    "$BUILD_DIR/test-runner" $SUITES
+    RUNNER="$BUILD_DIR/test-runner"
+    [ "$OS" = "windows" ] && RUNNER="$RUNNER.exe"
+    "$RUNNER" $SUITES
     exit "$?"
 fi
 
 # Step 0: fast build/security harness regressions run before the compiler-heavy
 # suite. The Windows package surface is static here; native launcher behavior is
 # exercised by scripts/test-windows.ps1.
+echo "=== Benchmark failure contracts ==="
+python3 "$ROOT/tests/test_benchmark_contract.py"
+python3 "$ROOT/tests/test_incremental_build.py" --cc "${CC:-cc}"
+
 echo "=== Step 0a: build directory safety contract ==="
 bash "$ROOT/tests/test_build_dir_safety.sh"
 
@@ -323,6 +329,9 @@ CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_worker_watchdog.sh"
 # preserve that response instead of misreporting exit_nonzero as a file crash.
 echo "=== Step 5c: worker error-response transport regression ==="
 CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_worker_error_response.sh"
+
+echo "=== Fixed source-grounded retrieval smoke ==="
+python3 "$ROOT/scripts/evaluate-retrieval.py" "$WATCHDOG_BINARY" --output "$ROOT/$BUILD_DIR/retrieval-evaluation.json"
 
 # Step 5d (#1388) is DELIBERATELY NOT GATING HERE — see
 # tests/test_hook_conflict_notice.sh for the full what-was-tried record.

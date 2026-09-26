@@ -252,9 +252,11 @@ int cbm_edit_move_ts_relative_spec(const char *importer_rel, const char *module_
 typedef struct {
     int64_t mtime_ns;
     int64_t size;
+    unsigned char content_hash[32]; /* SHA-256 of the observed bytes */
 } cbm_edit_file_state_t;
 
-/* stat() a file into a comparable state token. CBM_EDIT_OK or CBM_EDIT_ERR_IO. */
+/* Read high-resolution metadata and hash into a comparable state token.
+ * Returns IO or MTIME on failed/unstable reads; never a partial token. */
 int cbm_edit_file_stat(const char *abs_path, cbm_edit_file_state_t *out);
 
 /* Read an entire file. *out_data is malloc'd (caller frees), NUL-terminated
@@ -262,7 +264,7 @@ int cbm_edit_file_stat(const char *abs_path, cbm_edit_file_state_t *out);
 int cbm_edit_read_file(const char *abs_path, char **out_data, size_t *out_len);
 
 /* Atomically replace a file's contents:
- *   1. when `expected` is non-NULL, the file's current mtime/size must match
+ *   1. when `expected` is non-NULL, the file's current content hash/mtime/size must match
  *      it exactly, else CBM_EDIT_ERR_MTIME (nothing is written);
  *   2. the original file is copied to `backup_dir` (created when missing)
  *      before anything is replaced; the backup path is written to
@@ -274,11 +276,11 @@ int cbm_edit_write_atomic(const char *abs_path, const char *data, size_t len,
                           const cbm_edit_file_state_t *expected, const char *backup_dir,
                           char *backup_path_out, size_t backup_path_sz);
 
-/* Find the most recent backup of `basename` in `backup_dir` (backup names
- * follow bk_<epoch>_<pid>_<basename>, written by cbm_edit_write_atomic).
- * On CBM_EDIT_OK the full path is written to `out`; CBM_EDIT_ERR_RANGE when
- * no backup matches; CBM_EDIT_ERR_IO when the directory cannot be read. */
-int cbm_edit_latest_backup(const char *backup_dir, const char *basename, char *out, size_t out_sz);
+/* Find the most recent complete backup for the exact source path. Its parent
+ * must exist; the file itself may be missing. Legacy basename-only records are
+ * retained for manual recovery and are never selected. ERR_RANGE means no
+ * scoped backup exists; ERR_IO means lookup failed. */
+int cbm_edit_latest_backup(const char *backup_dir, const char *abs_path, char *out, size_t out_sz);
 
 #if defined(CBM_EDIT_TEST_API) && CBM_EDIT_TEST_API
 /* One-shot fault injection for the write path (test builds only — the

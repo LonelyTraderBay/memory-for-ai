@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:browser": "playwright test",
+    "test:browser:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.0",
@@ -27,6 +29,7 @@
     "three-stdlib": "^2.36.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.2.1",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.1.0",
@@ -34,6 +37,7 @@
     "@types/react-dom": "^19.0.0",
     "@types/three": "~0.183.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "jsdom": "^25.0.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.7.0",

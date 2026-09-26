@@ -2865,6 +2865,35 @@ TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges) {
     PASS();
 }
 
+TEST(tool_check_index_coverage_rejects_overflow_ranges) {
+    char tmp[256];
+    cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *st = cbm_mcp_server_store(srv);
+    ASSERT_EQ(cbm_store_upsert_file_hash(st, "test-project", "main.go", "", 0, 0), CBM_STORE_OK);
+    const char *details[] = {"2147483647", "2147483648", "2-2147483648",
+                             "999999999999999999999999", "0", "4-3"};
+    for (size_t i = 0; i < sizeof(details) / sizeof(details[0]); i++) {
+        cbm_coverage_row_t row = {
+            .rel_path = "main.go", .kind = "parse_partial", .detail = details[i]};
+        ASSERT_EQ(cbm_store_coverage_replace(st, "test-project", &row, 1), CBM_STORE_OK);
+        char *response = cbm_mcp_handle_tool(srv, "check_index_coverage",
+                                             "{\"project\":\"test-project\",\"paths\":[\"main.go\"]}");
+        ASSERT_NOT_NULL(response);
+        char *inner = extract_text_content(response);
+        ASSERT_NOT_NULL(inner);
+        bool has_ranges = strstr(inner, "\"ranges\"") != NULL;
+        bool has_maximum = strstr(inner, "\"start\":2147483647") != NULL;
+        free(inner);
+        free(response);
+        ASSERT_EQ(has_ranges, i == 0);
+        ASSERT_EQ(has_maximum, i == 0);
+    }
+    cbm_mcp_server_free(srv);
+    cleanup_snippet_dir(tmp);
+    PASS();
+}
+
 TEST(tool_check_index_coverage_preserves_multiple_scope_labels) {
     char tmp[256];
     cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
@@ -14325,6 +14354,7 @@ SUITE(mcp) {
     RUN_TEST(tool_index_status_no_project);
     RUN_TEST(tool_check_index_coverage_finds_path_beyond_status_cap);
     RUN_TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges);
+    RUN_TEST(tool_check_index_coverage_rejects_overflow_ranges);
     RUN_TEST(tool_check_index_coverage_preserves_multiple_scope_labels);
     RUN_TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_issue1613);
     RUN_TEST(tool_check_index_coverage_matches_utf8_file_metadata);

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
+import { usePollingJson } from "../hooks/usePollingJson";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ProcessInfo } from "../lib/types";
 import { useUiMessages } from "../lib/i18n";
@@ -77,20 +78,8 @@ function ProcessCard({ proc, selected, onSelect }: {
 
 function LogViewer() {
   const t = useUiMessages();
-  const [lines, setLines] = useState<string[]>([]);
-
-  useEffect(() => {
-    const poll = setInterval(async () => {
-      try {
-        const res = await fetch("/api/logs?lines=200");
-        const data = await res.json();
-        setLines(data.lines ?? []);
-      } catch { /* ignore */ }
-    }, 2000);
-    /* Initial fetch */
-    fetch("/api/logs?lines=200").then(r => r.json()).then(d => setLines(d.lines ?? [])).catch(() => {});
-    return () => clearInterval(poll);
-  }, []);
+  const { data, error } = usePollingJson<{ lines?: string[] }>("/api/logs?lines=200", 2000);
+  const lines = data?.lines ?? [];
 
   return (
     <div className="rounded-xl border border-border/30 bg-black/30 overflow-hidden">
@@ -98,6 +87,7 @@ function LogViewer() {
         <span className="text-[11px] font-medium text-foreground/40">{t.control.processLogs}</span>
         <span className="text-[10px] text-foreground/15 ml-2">{lines.length} lines</span>
       </div>
+      {error && <p role="alert" className="px-4 py-2 text-xs text-red-400">{t.control.refreshFailed} ({error})</p>}
       <ScrollArea className="h-[400px]">
         <div className="p-3 font-mono text-[10px] leading-relaxed">
           {lines.length === 0 ? (
@@ -128,28 +118,13 @@ function LogViewer() {
 
 export function ControlTab() {
   const t = useUiMessages();
-  const [processes, setProcesses] = useState<ProcessInfo[]>([]);
-  const [selfMetrics, setSelfMetrics] = useState({ rss_mb: 0, user_cpu: 0, sys_cpu: 0 });
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
-
-  const fetchProcesses = useCallback(async () => {
-    try {
-      const res = await fetch("/api/processes");
-      const data = await res.json();
-      setProcesses(data.processes ?? []);
-      setSelfMetrics({
-        rss_mb: data.self_rss_mb ?? 0,
-        user_cpu: data.self_user_cpu_s ?? 0,
-        sys_cpu: data.self_sys_cpu_s ?? 0,
-      });
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    fetchProcesses();
-    const interval = setInterval(fetchProcesses, 3000);
-    return () => clearInterval(interval);
-  }, [fetchProcesses]);
+  const { data, error, refresh: fetchProcesses } = usePollingJson<{
+    processes?: ProcessInfo[];
+    self_rss_mb?: number;
+  }>("/api/processes", 3000);
+  const processes = data?.processes ?? [];
+  const selfMetrics = { rss_mb: data?.self_rss_mb ?? 0 };
 
   /* Aggregates */
   const totalCpu = processes.reduce((s, p) => s + p.cpu, 0);
@@ -159,6 +134,8 @@ export function ControlTab() {
     <ScrollArea className="h-full">
       <div className="p-8 max-w-4xl mx-auto">
         <h2 className="text-[15px] font-semibold text-foreground/80 mb-6">{t.control.panel}</h2>
+
+        {error && <p role="alert" className="mb-4 text-xs text-red-400">{t.control.refreshFailed} ({error})</p>}
 
         {/* Aggregate gauges */}
         <div className="flex gap-4 mb-8">

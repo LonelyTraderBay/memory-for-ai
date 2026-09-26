@@ -52,7 +52,7 @@ mutex của caller, rồi thử xóa tối đa 40 lần cách nhau 250 ms; nếu
 helper/đăng ký cleanup, không bảo đảm file đã bị xóa. Guard sản phẩm kiểm tra
 backup thực sự biến mất sau uninstall trong đường dẫn dài, Unicode và dấu nháy.
 
-## Giới hạn kiểm chứng
+## Giới hạn kiểm chứng của năm commit ban đầu
 
 - Native Windows dùng Clang, `SANITIZE=`, giữ `-Wall -Wextra -Werror`.
   Không suy ra ASan/UBSan/TSan hoặc tính đúng của nhánh POSIX từ kết quả này.
@@ -66,7 +66,7 @@ backup thực sự biến mất sau uninstall trong đường dẫn dài, Unicod
   `AB-RESULTS.md` là các lần đo lịch sử với raw artifact cục bộ, không phải kết
   quả đo lại hiệu quả của nhánh này.
 
-## Kết quả đã chạy
+## Kết quả đã chạy trước khi tích hợp
 
 - `python scripts/check-product-metadata.py`: qua (23 MCP tools, 162 languages).
 - `npm.cmd ci`: audit 329 package, không báo lỗ hổng; có cảnh báo package
@@ -105,3 +105,48 @@ daemon_ipc 34, CLI 272, MCP 250 (9 skip), edit_integration 17. Full/incremental
 publication, lỗi descendant quá dài giữ generation cũ và freshness Unicode đều
 qua trên native lane. Suite `incremental` riêng không có test trong cấu hình
 Windows này; kết quả không chứng nhận các nhánh POSIX/sanitizer.
+
+
+## Tích hợp hai nhánh trước khi đồng bộ main
+
+Giữ lịch sử chín commit của `codex/priority-hardening` và
+`codex/pending-hardening`; tái tạo lockfile từ package.json đã kết hợp.
+Các sửa bổ sung được giới hạn ở lỗi build, lint và kiểm thử quan sát được:
+
+- P0: đọc giới hạn số nguyên bằng kiểu đủ rộng trước khi kiểm tra INT_MAX;
+  coverage không được biến dòng vượt INT32_MAX thành dòng hợp lệ trên Windows.
+  Test kiểm tra giá trị biên, overflow, số âm, số không và chuỗi không hợp lệ.
+- P1: recipe POSIX tạo stamp/response file bằng printf để chạy với Make hệ thống
+  macOS; blob chỉ đọc dùng chung không phụ thuộc cấu hình test. Kiểm thử incremental
+  chạy các target test/test-foundation, kiểm tra no-op, source, header và flags.
+  Recipe Windows gọi đích .exe được đặt trong dấu nháy, dùng được cả cmd và MSYS2.
+- P1: full flush và incremental merge dùng chung phần ghi node/edge, giữ transaction
+  tại caller và giải phóng map ID ở một nơi. Fault injection chỉ tồn tại trong test;
+  các test rollback cho cả hai đường vẫn bắt buộc.
+- P1: tách bước publish backup và đọc edge thành hàm cục bộ với ownership rõ ràng;
+  giữ kiểm tra drift, backup không ghi đè, cleanup và lỗi SQLite. Không thêm trạng thái,
+  retry, dependency runtime, public API hay schema database.
+- P2: đưa guard lựa chọn binary vào entry point Windows chuẩn, provision Chromium
+  qua npm script và dùng full parallel harness trong pre-commit. Không giảm gate,
+  ngưỡng cảnh báo hay số suite để làm kiểm tra xanh.
+
+Toolchain lint cục bộ nay có cppcheck 2.21 và clang-tidy/clang-format 22. CI vẫn
+chạy các phiên bản đã pin trong workflow. Kết quả CI phải được kiểm tra trên đúng
+head SHA của PR trước khi merge, đặc biệt macOS, Windows, Linux và sanitizer.
+Kết quả native `SANITIZE=` không thay thế các lane đó. Cảnh báo chunk Three.js và
+CRT vendored nêu trên vẫn cần được phân biệt với lỗi kiểm thử.
+
+
+Ở lượt tích hợp, clang-tidy theo staged diff, cppcheck, clang-format, metadata và
+security audit đều qua trong pre-commit. Native đã có một lượt 7.643 qua, 0 lỗi,
+65 platform skip / 144 suite trước sửa cleanup I/O cuối cùng. Khi hook rebuild
+binary cuối, Windows Application Control chặn chạy với WinError 4551 (đã xác nhận
+bằng subprocess trực tiếp); không được coi lượt native trước đó là kiểm chứng
+binary mới. Không thay đổi chính sách Windows hoặc sửa binary để né kiểm soát.
+
+Commit tích hợp dùng ngoại lệ `git commit --no-verify -s` mô tả trong
+CONTRIBUTING.md để đưa mã lên PR kiểm chứng trên CI. Pre-push DCO vẫn chạy;
+chỉ được merge main khi `dco` và `ci-ok` cùng toàn bộ job bắt buộc xanh trên đúng
+head SHA. UI hiện qua 59 test, build và 1 browser smoke; coverage dòng 52,99%.
+Regression Make đã qua cả cmd/PowerShell và MSYS2; mutation riêng của bộ đọc
+coverage qua với mã hiện tại và thất bại khi đổi về kiểu long hẹp trên Windows.

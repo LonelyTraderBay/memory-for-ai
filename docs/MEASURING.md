@@ -136,3 +136,24 @@ Publish: raw paired counts, per-pair quality scores, run count, aggregation meth
 A full worked example of this protocol — frozen setup, freshness incident, per-question table, limitations — lives in [AB-RESULTS.md](AB-RESULTS.md).
 
 Treat these as calibration points for your own measurement, not as expectations: your repo, language mix, question mix, and session shape move the numbers in both directions.
+
+## Repeatable retrieval smoke and benchmark failure handling
+
+```sh
+python3 scripts/evaluate-retrieval.py build/c/memory-for-ai --output build/retrieval-evaluation.json
+```
+
+The evaluation creates an isolated Python fixture/cache and grades three fixed
+definition queries against the source AST, including a negative query. It saves
+source/hash, expected and actual names, raw responses, index status and the real
+`tools/list` manifest. It reports UTF-8 bytes/4 estimates with the manifest counted
+once per session, separately from indexing/setup. These are retrieval smoke
+results, not model token usage, answer-quality certification, or a broad-language
+benchmark. Use the paired-session protocol above for adoption claims.
+
+Index/search benchmark scripts reject nonzero exits, JSON-RPC errors, MCP
+`isError`, malformed JSON and missing/invalid counts. Successful empty results
+remain valid. Index reruns invalidate previous success metrics before starting,
+so a failed run cannot inherit an earlier timing. Search requests use the CLI
+tool entrypoint; latency includes process/daemon admission and is not a pure
+query-engine microbenchmark.

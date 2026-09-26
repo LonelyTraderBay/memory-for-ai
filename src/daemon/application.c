@@ -2,6 +2,7 @@
  * application.c — Daemon-owned CBM application sessions and thin-client wire.
  */
 #include "daemon/application.h"
+#include "foundation/constants.h"
 #include "daemon/application_internal.h"
 
 #include "cli/cli.h"
@@ -825,7 +826,7 @@ static int application_max_restarts(void) {
         return APPLICATION_DEFAULT_MAX_RESTARTS;
     }
     char *end = NULL;
-    long parsed = strtol(value, &end, 10);
+    long long parsed = strtoll(value, &end, CBM_DECIMAL_BASE);
     return end && *end == '\0' && parsed > 0 && parsed <= INT_MAX
                ? (int)parsed
                : APPLICATION_DEFAULT_MAX_RESTARTS;

@@ -198,6 +198,15 @@ static void ac_shrink_tables(CBMAutomaton *ac, int num_states, int max_states) {
 //   alpha_size  — alphabet size (256 if alpha_map is NULL)
 //
 // Returns a heap-allocated automaton. Caller must call cbm_ac_free().
+static bool ac_valid_alphabet(const uint8_t *alpha_map, int alpha_size) {
+    for (int i = 0; i < CBM_AC_BYTE_RANGE; i++) {
+        if ((int)alpha_map[i] >= alpha_size) {
+            return false;
+        }
+    }
+    return true;
+}
+
 CBMAutomaton *cbm_ac_build(const char **patterns, const int *lengths, int count,
                            const uint8_t *alpha_map, int alpha_size) {
     if (!patterns || !lengths || count <= 0) {
@@ -210,11 +219,8 @@ CBMAutomaton *cbm_ac_build(const char **patterns, const int *lengths, int count,
         return NULL;
     if (!alpha_map && alpha_size != CBM_AC_BYTE_RANGE)
         return NULL;
-    if (alpha_map) {
-        for (int i = 0; i < CBM_AC_BYTE_RANGE; i++) {
-            if ((int)alpha_map[i] >= alpha_size)
-                return NULL;
-        }
+    if (alpha_map && !ac_valid_alphabet(alpha_map, alpha_size)) {
+        return NULL;
     }
 
     int max_states = CBM_AC_ROOT_STATES;
@@ -245,8 +251,7 @@ CBMAutomaton *cbm_ac_build(const char **patterns, const int *lengths, int count,
     ac->output_list = (int *)malloc((size_t)max_states * sizeof(int));
     ac->output_next = (int *)malloc((size_t)max_states * sizeof(int));
     ac->pattern_next = (int *)malloc((size_t)count * sizeof(int));
-    if (!ac->go_table || !ac->output || !ac->output_list || !ac->output_next ||
-        !ac->pattern_next) {
+    if (!ac->go_table || !ac->output || !ac->output_list || !ac->output_next || !ac->pattern_next) {
         cbm_ac_free(ac);
         return NULL;
     }

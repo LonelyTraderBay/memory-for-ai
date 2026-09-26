@@ -3,7 +3,7 @@
     Run the native-Windows product-surface test suite for memory-for-ai.
 
 .DESCRIPTION
-    Builds the product binary if it is not already present, stages it under its
+    Incrementally builds the product binary unless -Binary is supplied, stages it under its
     release name, then runs the deterministic Windows integration tests under
     tests/windows/ against it (real stdio / CLI / HTTP UI, real SQLite DB).
     Windows ships ONE binary, exactly like Linux and macOS.
@@ -79,6 +79,9 @@ if (-not $python) { $python = (Get-Command py -ErrorAction SilentlyContinue) }
 if (-not $python) { throw "Python 3 is required to run the Windows tests." }
 $py = $python.Source
 
+# Build-selection contract is part of the canonical Windows test entry.
+& "$repoRoot/tests/windows/test_guard_build_selection.ps1"
+
 # A writable Windows temp dir that GNU make forwards to the native gcc. MSYS2
 # strips TMP/TEMP from the environment it hands native children, so pass them as
 # make command-line variables (make exports those to recipe processes).
@@ -89,7 +92,6 @@ function Resolve-Binary {
     param([string]$Explicit)
     if ($Explicit) { return (Resolve-Path $Explicit).Path }
     $built = Join-Path $repoRoot "build\c\memory-for-ai.exe"
-    if (Test-Path $built) { return $built }
     Write-Host "Building $Target via Makefile.cbm ..." -ForegroundColor Cyan
     & $Make "-j" "-f" "Makefile.cbm" $Target "SANITIZE=" "TMP=$tmp" "TEMP=$tmp" "TMPDIR=$tmp" | Out-Host
     $buildExit = $LASTEXITCODE
