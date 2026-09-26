@@ -328,6 +328,9 @@ CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_worker_watchdog.sh"
 echo "=== Step 5c: worker error-response transport regression ==="
 CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_worker_error_response.sh"
 
+echo "=== Fixed source-grounded retrieval smoke ==="
+python3 "$ROOT/scripts/evaluate-retrieval.py" "$WATCHDOG_BINARY" --output "$ROOT/$BUILD_DIR/retrieval-evaluation.json"
+
 # Step 5d (#1388) is DELIBERATELY NOT GATING HERE — see
 # tests/test_hook_conflict_notice.sh for the full what-was-tried record.
 # Summary: the test forces a client/daemon build mismatch via the

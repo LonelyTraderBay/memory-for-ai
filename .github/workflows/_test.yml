@@ -228,7 +228,9 @@ jobs:
         run: |
           npm ci
           npm run build
-          npm test
+          npm run test:coverage
+          npx playwright install --with-deps chromium
+          npm run test:browser
 
   # ThreadSanitizer data-race gate. The threaded production surfaces (watcher,
   # subprocess, httpd, pipeline, mcp, worker pool, diagnostics, the runnable

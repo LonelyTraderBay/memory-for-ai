@@ -5672,6 +5672,96 @@ int cbm_store_find_edges_by_target_type(cbm_store_t *s, int64_t target_id, const
                               bind_id_and_type, &b, out, count);
 }
 
+/* A read-only CTE avoids a temporary table and SQLite's bind-count ceiling.
+ * CROSS JOIN keeps the selected source set outside the edge index lookups;
+ * unrelated project edges are never materialized in the client. */
+int cbm_store_find_edges_among(cbm_store_t *s, const char *project, const int64_t *node_ids,
+                               int node_count, cbm_edge_t **out, int *count) {
+    if (out)
+        *out = NULL;
+    if (count)
+        *count = 0;
+    if (!s || !s->db || !project || !out || !count || node_count < 0 ||
+        (node_count > 0 && !node_ids))
+        return CBM_STORE_ERR;
+    if (node_count == 0)
+        return CBM_STORE_OK;
+    if ((size_t)node_count > (SIZE_MAX - 3) / 22)
+        return CBM_STORE_ERR;
+    size_t cap = (size_t)node_count * 22 + 3;
+    char *json = malloc(cap);
+    if (!json)
+        return CBM_STORE_ERR;
+    size_t used = 1;
+    json[0] = '[';
+    for (int i = 0; i < node_count; i++) {
+        int n = snprintf(json + used, cap - used, "%s%lld", i ? "," : "", (long long)node_ids[i]);
+        if (n < 0 || (size_t)n >= cap - used) {
+            free(json);
+            return CBM_STORE_ERR;
+        }
+        used += (size_t)n;
+    }
+    json[used++] = ']';
+    json[used] = '\0';
+    const char *sql = "WITH selected(id) AS MATERIALIZED (SELECT DISTINCT CAST(value AS INTEGER) "
+                      "FROM json_each(?2)) "
+                      "SELECT e.id,e.project,e.source_id,e.target_id,e.type,e.properties "
+                      "FROM selected AS n CROSS JOIN edges AS e "
+                      "ON e.project=?1 AND e.source_id=n.id "
+                      "WHERE e.target_id IN (SELECT id FROM selected) ORDER BY e.type,e.id;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(s->db, sql, -1, &stmt, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(stmt, 1, project, -1, SQLITE_TRANSIENT);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(stmt, 2, json, -1, SQLITE_TRANSIENT);
+    free(json);
+    cbm_edge_t *edges = NULL;
+    int length = 0, capacity = 0;
+    if (rc == SQLITE_OK) {
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            if (length == capacity) {
+                if (capacity > INT_MAX / 2) {
+                    rc = SQLITE_TOOBIG;
+                    break;
+                }
+                int next = capacity ? capacity * 2 : 16;
+                if ((size_t)next > SIZE_MAX / sizeof(*edges)) {
+                    rc = SQLITE_TOOBIG;
+                    break;
+                }
+                cbm_edge_t *grown = realloc(edges, (size_t)next * sizeof(*edges));
+                if (!grown) {
+                    rc = SQLITE_NOMEM;
+                    break;
+                }
+                edges = grown;
+                capacity = next;
+            }
+            scan_edge(stmt, &edges[length]);
+            bool copied =
+                edges[length].project && edges[length].type &&
+                (sqlite3_column_type(stmt, 5) == SQLITE_NULL || edges[length].properties_json);
+            length++;
+            if (!copied) {
+                rc = SQLITE_NOMEM;
+                break;
+            }
+        }
+    }
+    if (rc != SQLITE_DONE)
+        store_set_error_sqlite(s, "selected edge query failed");
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        cbm_store_free_edges(edges, length);
+        return CBM_STORE_ERR;
+    }
+    *out = edges;
+    *count = length;
+    return CBM_STORE_OK;
+}
+
 int cbm_store_find_edges_by_type(cbm_store_t *s, const char *project, const char *type,
                                  cbm_edge_t **out, int *count) {
     bind_proj_type_t b = {project, type};
