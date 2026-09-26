@@ -1401,9 +1401,10 @@ test-lsan:
 # Non-gating: triage findings against the code (this lane's first run produced
 # 9 real fixes and 6 recorded false positives — see the analyzer batch commit).
 LINT_MEM_CHECKS = -*,clang-analyzer-unix.Malloc,clang-analyzer-unix.MallocSizeof,clang-analyzer-core.NullDereference,clang-analyzer-core.CallAndMessage,clang-analyzer-core.UndefinedBinaryOperatorResult,clang-analyzer-core.uninitialized.*,clang-analyzer-cplusplus.NewDelete,clang-analyzer-cplusplus.NewDeleteLeaks
+LINT_MEM_EXTRA_ARGS = $(foreach flag,$(CFLAGS_COMMON) $(SYSROOT_FLAG),--extra-arg=$(flag))
 lint-mem:
 	@echo "=== clang-analyzer memory lane (non-gating; triage, don't suppress) ==="
-	@printf '%s\n' $(LINT_SRCS) | xargs -P 10 -I{} -- sh -c '"$(CLANG_TIDY)" --quiet --checks="$(LINT_MEM_CHECKS)" --warnings-as-errors="" "$$1" -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null' _ {}; true
+	@printf '%s\n' $(LINT_SRCS) | xargs -P 10 -I{} -- $(CLANG_TIDY) --quiet --checks='$(LINT_MEM_CHECKS)' --warnings-as-errors='' $(LINT_MEM_EXTRA_ARGS) {} 2>/dev/null; true
 
 # Gating variant: identical run, but vendored-tree diagnostics are excluded
 # (analyzer diagnostics bypass --header-filter by design; this mirrors the
@@ -1423,7 +1424,7 @@ lint-mem:
 # gate do not make xargs fail; all other clang-tidy warnings remain errors.
 lint-mem-ci:
 	@echo "=== clang-analyzer memory gate ==="
-	@set -o pipefail; printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} -- sh -c '"$(CLANG_TIDY)" --quiet --checks="$(LINT_MEM_CHECKS)" --warnings-as-errors="-clang-analyzer-*" "$$1" -- $(CFLAGS_COMMON) $(SYSROOT_FLAG)' _ {} \
+	@set -o pipefail; printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} -- $(CLANG_TIDY) --quiet --checks='$(LINT_MEM_CHECKS)' --warnings-as-errors='-clang-analyzer-*' $(LINT_MEM_EXTRA_ARGS) {} \
 		| python3 scripts/lint-mem-gate.py
 
 # ── Security audit (6 layers) ────────────────────────────────────
