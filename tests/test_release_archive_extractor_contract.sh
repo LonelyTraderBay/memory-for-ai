@@ -200,11 +200,15 @@ else:
             fail(f"staged object does not match its recorded hash: {row['scan_path']}")
 
 # ── 2. Fail-closed cases — each must be REFUSED, not silently scanned ───────
-for label, kwargs, expect in (
-    ("an unexpected extra member", {"extra": "surprise.txt"}, "unexpected archive member"),
-    ("a missing required member", {"drop": "LICENSE"}, "member namespace mismatch"),
+for label, slug, kwargs, expect in (
+    ("an unexpected extra member", "x1", {"extra": "surprise.txt"},
+     "unexpected archive member"),
+    ("a missing required member", "x2", {"drop": "LICENSE"},
+     "member namespace mismatch"),
 ):
-    case = fixtures / label.replace(" ", "_")
+    # Keep Windows MAX_PATH headroom for the staged scan-object path, which
+    # includes both the fixture root and a 64-character content digest.
+    case = fixtures / slug
     bad = build_matrix(case / "archives", **kwargs)
     result = run_extractor(bad, case / "scan")
     if result.returncode == 0:

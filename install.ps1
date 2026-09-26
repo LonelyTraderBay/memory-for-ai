@@ -362,7 +362,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Install succeeded — the rollback copy is no longer needed. A retired image
+# Install succeeded - the rollback copy is no longer needed. A retired image
 # stays locked until its last process exits; delete it when we can and leave
 # it for the next run when we cannot. Never fail here.
 if ($retired) { Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue }
