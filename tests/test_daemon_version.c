@@ -9,6 +9,7 @@
 #include "test_framework.h"
 
 #include "daemon/daemon.h"
+#include "daemon/ipc.h"
 #include "daemon/service.h"
 #include "daemon/service_internal.h"
 #include "foundation/compat.h"
@@ -338,7 +339,12 @@ TEST(daemon_conflict_log_is_durable_private_and_rotates) {
 
     ASSERT_EQ(version_test_compare(&active, &first_requested, &first_conflict),
               CBM_DAEMON_HELLO_VERSION_CONFLICT);
-    ASSERT_TRUE(cbm_daemon_conflict_log_append(path, &first_conflict, 4096));
+    if (!cbm_daemon_conflict_log_append(path, &first_conflict, 4096)) {
+        char detail[512];
+        (void)snprintf(detail, sizeof(detail), "conflict log append failed: %s",
+                       cbm_daemon_ipc_validation_detail());
+        FAIL(detail);
+    }
     long first_size = version_test_file_size(path);
     ASSERT_GT(first_size, 0);
 

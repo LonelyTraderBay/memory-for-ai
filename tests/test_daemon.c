@@ -5,6 +5,7 @@
 
 #include "daemon/daemon.h"
 #include "daemon/host_internal.h"
+#include "daemon/ipc.h"
 #include "foundation/log.h"
 #include "mcp/mcp.h"
 
@@ -494,11 +495,21 @@ TEST(daemon_host_log_sink_close_and_reopen_lifecycle) {
     /* The sink must survive close (no write to the torn-down file, no use of a
      * destroyed mutex) and a later re-open must reuse the process-lifetime
      * mutex without re-init. */
-    ASSERT_TRUE(cbm_daemon_host_log_open_for_test());
+    if (!cbm_daemon_host_log_open_for_test()) {
+        char detail[512];
+        (void)snprintf(detail, sizeof(detail), "host log open failed: %s",
+                       cbm_daemon_ipc_validation_detail());
+        FAIL(detail);
+    }
     cbm_log_info("daemon.test", "phase", "one");
     cbm_daemon_host_log_close_for_test();
     cbm_log_info("daemon.test", "phase", "two");
-    ASSERT_TRUE(cbm_daemon_host_log_open_for_test());
+    if (!cbm_daemon_host_log_open_for_test()) {
+        char detail[512];
+        (void)snprintf(detail, sizeof(detail), "host log reopen failed: %s",
+                       cbm_daemon_ipc_validation_detail());
+        FAIL(detail);
+    }
     cbm_log_info("daemon.test", "phase", "three");
     cbm_daemon_host_log_close_for_test();
     PASS();
