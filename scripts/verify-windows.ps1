@@ -76,8 +76,12 @@ try {
     Invoke-Check 'Metadata' 'python3 scripts/check-product-metadata.py'
     if ($Suites) { $Phase = 'Native' }
     if ($Phase -in @('All','Native')) {
+        $nativeTemp = (& $bash -c 'cygpath -m "$CBM_CI_TEMP_ROOT"').Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $nativeTemp) { throw 'Could not resolve the protected native temp root.' }
+        $tempShell = "'" + $nativeTemp.Replace("'", "'\''") + "'"
+        $tmpdirShell = "'" + $env:TMPDIR.Replace("'", "'\''") + "'"
         $nativeCommandParts = @(
-            'export TEMP="$(cygpath -m "$CBM_CI_TEMP_ROOT")" TMP="$(cygpath -m "$CBM_CI_TEMP_ROOT")" TMPDIR="$(cygpath -u "$CBM_CI_TEMP_ROOT")"; printf "Native test temp root: TEMP=%s TMP=%s TMPDIR=%s\n" "$TEMP" "$TMP" "$TMPDIR";',
+            "export TEMP=$tempShell TMP=$tempShell TMPDIR=$tmpdirShell;",
             'scripts/test.sh','CC=clang','CXX=clang++'
         )
         if ($NoSanitizer) { $nativeCommandParts += 'SANITIZE=' }
