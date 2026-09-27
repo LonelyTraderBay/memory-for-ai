@@ -107,10 +107,7 @@ SURFACES=(
     "pkg/go/cmd/memory-for-ai/main.go|release"
     "pkg/chocolatey/memory-for-ai.nuspec|release"
     "pkg/chocolatey/tools/chocolateyInstall.ps1|release"
-    "pkg/homebrew/Formula/memory-for-ai.rb|release"
     "pkg/scoop/memory-for-ai.json|release"
-    "pkg/aur/PKGBUILD|release"
-    "pkg/aur/.SRCINFO|release"
 )
 
 # Why each pinned surface is frozen, and what clearing it costs. To bring one

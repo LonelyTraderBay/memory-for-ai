@@ -16,45 +16,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
 #include <windows.h>
 #include "win_utf8.h" /* cbm_utf8_to_wide — spawn the worker with a wide command line so a
                        * non-ASCII repo path survives CreateProcess (#423/#20) */
 #include <stdlib.h>   /* free */
-#else
-#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
-#ifdef __APPLE__
-#include <spawn.h>
-extern char **environ;
-#endif
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 /* NTSTATUS severity ERROR (top two bits set) covers the Windows crash exception
  * exit codes: 0xC0000005 (access violation), 0xC00000FD (stack overflow),
  * 0xC000001D (illegal instruction), 0xC0000094 (integer divide by zero), … */
 #define CBM_WIN_CRASH_CODE_MIN 0xC0000000u
 #define CBM_WIN_CONTROL_C_EXIT 0xC000013Au
-
-#ifndef _WIN32
-static bool cbm_is_fault_signal(int sig) {
-    switch (sig) {
-    case SIGSEGV:
-    case SIGBUS:
-    case SIGILL:
-    case SIGFPE:
-    case SIGABRT:
-    case SIGSYS:
-        return true;
-    default:
-        return false;
-    }
-}
-#endif
 
 cbm_proc_outcome_t cbm_proc_classify(bool exited_normally, int exit_code, int term_signal,
                                      bool timed_out) {
@@ -63,13 +34,7 @@ cbm_proc_outcome_t cbm_proc_classify(bool exited_normally, int exit_code, int te
     }
     if (!exited_normally) {
         /* POSIX signal death. */
-#ifndef _WIN32
-        if (cbm_is_fault_signal(term_signal)) {
-            return CBM_PROC_CRASH;
-        }
-#else
         (void)term_signal;
-#endif
         return CBM_PROC_KILLED;
     }
     /* Exited with a code. A Windows NTSTATUS exception code is a crash; on POSIX
@@ -121,31 +86,8 @@ static cbm_tail_result_t cbm_tail_log(const char *log_file, long *tail_pos, cbm_
     if (!log_file || !tail_pos) {
         return result;
     }
-#ifdef _WIN32
     FILE *lf = cbm_fopen(log_file, "r");
-#else
-    int open_flags = O_RDONLY | O_NONBLOCK;
-#ifdef O_CLOEXEC
-    open_flags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-    open_flags |= O_NOFOLLOW;
-#endif
-    int log_fd = open(log_file, open_flags);
-    if (log_fd < 0) {
-        return result;
-    }
-    struct stat log_status;
-    if (fstat(log_fd, &log_status) != 0 || !S_ISREG(log_status.st_mode)) {
-        (void)close(log_fd);
-        return result;
-    }
-    FILE *lf = fdopen(log_fd, "r");
-#endif
     if (!lf) {
-#ifndef _WIN32
-        (void)close(log_fd);
-#endif
         return result;
     }
     if (fseek(lf, *tail_pos, SEEK_SET) == 0) {
@@ -425,15 +367,10 @@ struct cbm_subprocess {
     bool containment_failed;
     cbm_proc_result_t result;
 
-#ifdef _WIN32
     HANDLE process;
     HANDLE job;
     DWORD process_id;
     bool root_forced;
-#else
-    pid_t pid;
-    pid_t pgid;
-#endif
 };
 
 static void cbm_subprocess_result_init(cbm_proc_result_t *result) {
@@ -466,16 +403,10 @@ static cbm_subprocess_t *cbm_subprocess_copy_opts(const cbm_proc_opts_t *opts) {
     if (!opts || !opts->bin || !opts->bin[0]) {
         return NULL;
     }
-#ifdef _WIN32
     if (opts->windows_cmd_payload &&
         (!opts->windows_cmd_payload[0] || opts->argv || !cbm_win_cmd_path_is_absolute(opts->bin))) {
         return NULL;
     }
-#else
-    if (opts->windows_cmd_payload) {
-        return NULL;
-    }
-#endif
 
     size_t argc = 1;
     if (opts->argv) {
@@ -549,15 +480,11 @@ static void cbm_subprocess_delete_log(cbm_subprocess_t *process) {
     if (!process->log_file || !process->delete_log_on_exit) {
         return;
     }
-#ifdef _WIN32
     wchar_t *path = cbm_path_to_wide(process->log_file);
     if (path) {
         (void)DeleteFileW(path);
         free(path);
     }
-#else
-    (void)unlink(process->log_file);
-#endif
 }
 
 static bool cbm_subprocess_begin_terminal_transition(cbm_subprocess_t *process) {
@@ -618,8 +545,6 @@ static cbm_proc_poll_t cbm_subprocess_finish_failed(cbm_subprocess_t *process,
     process->containment_failed = true;
     return cbm_subprocess_publish_terminal(process, out, false);
 }
-
-#ifdef _WIN32
 
 static void cbm_win_close_spawn_handles(HANDLE nul, HANDLE log, LPPROC_THREAD_ATTRIBUTE_LIST attrs,
                                         bool attrs_init) {
@@ -881,486 +806,6 @@ static cbm_proc_poll_t cbm_subprocess_poll_win(cbm_subprocess_t *process, cbm_pr
     return CBM_PROC_POLL_RUNNING;
 }
 
-#else /* POSIX */
-
-/* Transient spawn-failure retry (see the EAGAIN note in cbm_posix_spawn_apple):
- * long enough to ride out a burst of process creation, short enough that a
- * genuinely exhausted system still fails fast. The budget below is the single
- * source of truth for both — see cbm_spawn_backoff for the resulting waits.
- *
- * A sanitized build needs a wider window than an ordinary one, and only a
- * sanitized one does.
- *
- * The exponential backoff (10/20/40/80/160/320ms, ~0.6s) fixed the ordinary
- * case. `subprocess_run_spawn_failure` then kept failing on `test-tsan` — twice
- * on one SHA, on a PR whose diff was a shell contract and a line in test.sh, so
- * causation was impossible. ThreadSanitizer runs several times slower and holds
- * far more process state, so the pressure window it creates is simply longer
- * than 0.6s.
- *
- * Raising the budget for everyone would be the wrong fix: an unsanitized
- * machine that is genuinely out of capacity should still fail fast rather than
- * hang for seconds. So the extra patience is scoped to the builds that need it,
- * the same way the daemon announce backstop is (test_daemon_frontend.c). Three
- * more doublings take the sanitized ceiling to roughly 5s. */
-#if CBM_SANITIZED
-enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 9 };
-#else
-enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 6 };
-#endif
-
-/* Exponential backoff, doubling from 10ms: 10, 20, 40, 80, 160, 320 — ~630ms of
- * total patience on an ordinary build, and three further doublings (640, 1280,
- * 2560) to roughly 5s on a sanitized one. The waits follow from
- * CBM_SPAWN_RETRY_ATTEMPTS above and from the per-wait ceiling at
- * cbm_spawn_backoff, rather than being listed separately here, so changing the
- * budget cannot leave this description behind.
- *
- * The first version waited a flat 3 x 10ms, which was enough for a momentary
- * dip and NOT enough for the real thing: a CI runner building and testing in
- * parallel stays process-starved for hundreds of milliseconds at a stretch, and
- * `subprocess_run_spawn_failure` kept failing with the retry shipped (macos-15-
- * intel on a release matrix, macos-14 under ThreadSanitizer, which is itself
- * slow enough to create the pressure). A fixed short delay samples the same
- * congested instant repeatedly; doubling walks out of it.
- *
- * The ceiling is deliberate. ~0.6s is invisible next to spawning a process that
- * does real work, and a machine still refusing after that is genuinely out of
- * capacity — at which point failing IS the correct answer, and failing fast
- * beats hanging. The sanitized ceiling is ~5s for the same reason in reverse:
- * under instrumentation the starved window really does last that long, and only
- * a build that already accepts a large slowdown pays for the extra wait. */
-#ifdef CBM_ENABLE_TEST_SEAMS
-/* Deterministic EAGAIN injection: see the header. Counts DOWN, so a test asks
- * for N simulated refusals and the (N+1)th attempt proceeds for real. */
-static int g_force_spawn_eagain = 0;
-void cbm_subprocess_force_spawn_eagain_for_testing(int attempts) {
-    g_force_spawn_eagain = attempts > 0 ? attempts : 0;
-}
-int cbm_subprocess_pending_spawn_eagain_for_testing(void) {
-    return g_force_spawn_eagain;
-}
-static bool cbm_spawn_eagain_injected(void) {
-    if (g_force_spawn_eagain > 0) {
-        g_force_spawn_eagain--;
-        return true;
-    }
-    return false;
-}
-#endif
-
-/* The bound is on a single WAIT, and 2560ms (10ms << 8) is the largest wait
- * either budget produces today: 10..320 on an ordinary build, 10..2560 on a
- * sanitized one. So this changes nothing now — it changes what happens next.
- *
- * The clamp it replaces bounded `attempt` by CBM_SPAWN_RETRY_ATTEMPTS, which no
- * caller can reach: both retry loops return before passing the budget, so the
- * clamp never fired and the comment claiming "the budget is the only bound
- * needed" described a bound that did not exist. Doubling with nothing to stop
- * it is the actual risk, and it grows fast — a budget of 12 would make the last
- * wait ~20s and the total ~41s, which is precisely the "hang instead of fail
- * fast" the retry was written to avoid. Flattening at the ceiling keeps a
- * budget increase linear.
- *
- * Spelled as a shift so the value cannot overflow `long` on the way to being
- * clamped. */
-enum { CBM_SPAWN_BACKOFF_BASE_MS = 10, CBM_SPAWN_BACKOFF_MAX_SHIFT = 8 };
-
-static void cbm_spawn_backoff(int attempt) {
-    int shift = attempt < CBM_SPAWN_BACKOFF_MAX_SHIFT ? attempt : CBM_SPAWN_BACKOFF_MAX_SHIFT;
-    long ms = (long)CBM_SPAWN_BACKOFF_BASE_MS << shift;
-    struct timespec delay = {ms / 1000L, (ms % 1000L) * 1000L * 1000L};
-    (void)cbm_nanosleep(&delay, NULL);
-}
-
-/* fork() fails with EAGAIN under the same pressure posix_spawn does, and the
- * fallback path must not be less robust than the primary one. */
-static pid_t cbm_fork_with_retry(void) {
-    /* CBM_SPAWN_RETRY_ATTEMPTS backoffs means ATTEMPTS+1 tries. Every try goes
-     * through the same branch — including the last — so the injection seam
-     * models production exactly rather than leaving a final unguarded fork() the
-     * tests could never reach. */
-    for (int attempt = 0;; attempt++) {
-#ifdef CBM_ENABLE_TEST_SEAMS
-        if (cbm_spawn_eagain_injected()) {
-            if (attempt >= CBM_SPAWN_RETRY_ATTEMPTS) {
-                errno = EAGAIN;
-                return -1;
-            }
-            cbm_spawn_backoff(attempt);
-            continue;
-        }
-#endif
-        pid_t pid = fork();
-        if (pid >= 0 || (errno != EAGAIN && errno != ENOMEM)) {
-            return pid;
-        }
-        if (attempt >= CBM_SPAWN_RETRY_ATTEMPTS) {
-            errno = EAGAIN;
-            return -1;
-        }
-        cbm_spawn_backoff(attempt);
-    }
-}
-
-/* Used by the fork+exec child. posix_spawn performs the same reset
- * declaratively via SETSIGDEF + SETSIGMASK, but Apple still forks for the
- * exec-failure fallback below, so this stays compiled everywhere. */
-static void cbm_posix_reset_child_signals(void) {
-    struct sigaction action = {0};
-    action.sa_handler = SIG_DFL;
-    (void)sigemptyset(&action.sa_mask);
-    for (int sig = 1; sig < NSIG; sig++) {
-        if (sig != SIGKILL && sig != SIGSTOP) {
-            (void)sigaction(sig, &action, NULL);
-        }
-    }
-    sigset_t empty;
-    (void)sigemptyset(&empty);
-    (void)sigprocmask(SIG_SETMASK, &empty, NULL);
-}
-
-/* fork+exec child setup. On Apple this runs ONLY for the exec-failure
- * fallback (see cbm_posix_spawn_apple), which preserves the documented
- * "bogus binary => child exits 127" contract across platforms. */
-static void cbm_posix_child_exec(cbm_subprocess_t *process, int input, int output, long max_fd) {
-    if (setpgid(0, 0) < 0) {
-        _exit(127);
-    }
-    cbm_posix_reset_child_signals();
-
-    /* Never let a worker consume the MCP transport inherited as stdin. Only
-     * async-signal-safe calls are used between fork and exec. */
-    if (input < 0 || output < 0 || dup2(input, STDIN_FILENO) < 0 ||
-        dup2(output, STDOUT_FILENO) < 0 || dup2(output, STDERR_FILENO) < 0) {
-        _exit(127);
-    }
-    if (input > STDERR_FILENO) {
-        (void)close(input);
-    }
-    if (output > STDERR_FILENO) {
-        (void)close(output);
-    }
-    for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) {
-        (void)close(fd);
-    }
-    /* A fixed literal tool name (for example "git" or "curl") uses the
-     * caller's normal PATH without introducing a shell. An explicit path
-     * still has execvp's exact-path semantics because it contains '/'. */
-    execvp(process->bin, process->argv);
-    _exit(127);
-}
-
-static int cbm_posix_fd_at_least_three(int fd) {
-    if (fd < 0 || fd > STDERR_FILENO) {
-        return fd;
-    }
-#ifdef F_DUPFD_CLOEXEC
-    int duplicate = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-#else
-    int duplicate = fcntl(fd, F_DUPFD, STDERR_FILENO + 1);
-    if (duplicate >= 0) {
-        (void)fcntl(duplicate, F_SETFD, FD_CLOEXEC);
-    }
-#endif
-    (void)close(fd);
-    return duplicate;
-}
-
-#ifdef __APPLE__
-/* macOS: spawn instead of fork+exec.
- *
- * fork() duplicates the parent's whole address space bookkeeping, and an
- * ASan-instrumented parent carries an enormous shadow mapping. Past a
- * footprint threshold the child is killed (jetsam) BEFORE exec replaces the
- * image, so the call fails with the child already gone (ESRCH on reap) — a
- * spawn failure that looks like the launched tool crashing. The test suite hit
- * exactly this: `git init` inside a fixture failed once enough suites had run
- * ahead of it, and the symptom was an unrelated-looking assertion. The same
- * hazard is already documented in tests/test_daemon_runtime.c, which switched
- * to posix_spawn for the same reason.
- *
- * posix_spawn never copies the parent address space, so the footprint is
- * irrelevant. Every guarantee of the fork path is preserved:
- *   - own process group (SETPGROUP + setpgroup(0)) — the kill-tree contract
- *   - default signal dispositions and an empty mask (SETSIGDEF/SETSIGMASK)
- *   - stdin/stdout/stderr wired to the caller's fds (adddup2)
- *   - every OTHER descriptor closed: CLOEXEC_DEFAULT is Apple's equivalent of
- *     the child's close-everything loop, and the three dup2'd fds stay open
- *     because dup2 clears close-on-exec.
- * posix_spawnp keeps execvp's PATH semantics for a bare tool name. */
-static int cbm_posix_spawn_apple(cbm_subprocess_t *process, int input, int output, pid_t *pid_out) {
-    /* posix_spawn is the PRIMARY path on macOS; fork+exec is only the
-     * exec-class fallback. Injection therefore has to live here too, or a test
-     * on macOS exercises nothing. */
-#ifdef CBM_ENABLE_TEST_SEAMS
-    if (cbm_spawn_eagain_injected()) {
-        return CBM_SPAWN_RETRY;
-    }
-#endif
-    posix_spawn_file_actions_t actions;
-    posix_spawnattr_t attr;
-    if (posix_spawn_file_actions_init(&actions) != 0) {
-        return -1;
-    }
-    if (posix_spawnattr_init(&attr) != 0) {
-        (void)posix_spawn_file_actions_destroy(&actions);
-        return -1;
-    }
-    sigset_t empty_mask;
-    sigset_t all_signals;
-    sigemptyset(&empty_mask);
-    sigfillset(&all_signals);
-    short flags = (short)(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK |
-                          POSIX_SPAWN_CLOEXEC_DEFAULT);
-    bool configured = posix_spawnattr_setflags(&attr, flags) == 0 &&
-                      posix_spawnattr_setpgroup(&attr, 0) == 0 &&
-                      posix_spawnattr_setsigmask(&attr, &empty_mask) == 0 &&
-                      posix_spawnattr_setsigdefault(&attr, &all_signals) == 0 &&
-                      posix_spawn_file_actions_adddup2(&actions, input, STDIN_FILENO) == 0 &&
-                      posix_spawn_file_actions_adddup2(&actions, output, STDOUT_FILENO) == 0 &&
-                      posix_spawn_file_actions_adddup2(&actions, output, STDERR_FILENO) == 0;
-    pid_t pid = -1;
-    int rc =
-        configured ? posix_spawnp(&pid, process->bin, &actions, &attr, process->argv, environ) : -1;
-    (void)posix_spawn_file_actions_destroy(&actions);
-    (void)posix_spawnattr_destroy(&attr);
-    if (configured && rc == 0 && pid > 0) {
-        *pid_out = pid;
-        return 0;
-    }
-    /* posix_spawn reports an unusable binary itself, where fork+exec instead
-     * produces a child that exits 127. Callers (and tests) rely on the latter:
-     * "spawn_failed" means the SPAWN mechanism failed, not that the tool was
-     * missing. Fall back to fork+exec for exec-class errors so macOS and Linux
-     * classify a bogus binary identically; the ASan-fork hazard does not apply
-     * here, since this child exits immediately. */
-    if (configured && (rc == ENOENT || rc == EACCES || rc == ENOEXEC || rc == EISDIR ||
-                       rc == ELOOP || rc == ENAMETOOLONG || rc == ENOTDIR)) {
-        return 1;
-    }
-    /* EAGAIN/ENOMEM are the kernel saying "not right now", not "never": the
-     * process table or a per-user limit is momentarily full. Reporting
-     * spawn_failed for that turns transient load into a user-visible error —
-     * a git or LSP probe failing on a busy laptop for no reason the user can
-     * see or act on. Retry briefly. Everything else stays a hard failure. */
-    if (configured && (rc == EAGAIN || rc == ENOMEM)) {
-        return CBM_SPAWN_RETRY;
-    }
-    return -1;
-}
-#endif
-
-static int cbm_subprocess_spawn_posix(cbm_subprocess_t *process) {
-    int input_flags = O_RDONLY;
-#ifdef O_CLOEXEC
-    input_flags |= O_CLOEXEC;
-#endif
-    int input = cbm_posix_fd_at_least_three(open("/dev/null", input_flags));
-    const char *target = process->log_file ? process->log_file : "/dev/null";
-    int output_flags = O_WRONLY | O_CREAT | O_TRUNC;
-#ifdef O_CLOEXEC
-    output_flags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-    output_flags |= O_NOFOLLOW;
-#endif
-    int output = cbm_posix_fd_at_least_three(open(target, output_flags, 0600));
-    if (input < 0 || output < 0) {
-        if (input >= 0) {
-            (void)close(input);
-        }
-        if (output >= 0) {
-            (void)close(output);
-        }
-        return -1;
-    }
-    struct stat output_status;
-    if (fstat(output, &output_status) != 0 ||
-        (process->log_file && !S_ISREG(output_status.st_mode))) {
-        (void)close(input);
-        (void)close(output);
-        return -1;
-    }
-    if (process->log_file && fchmod(output, 0600) != 0) {
-        (void)close(input);
-        (void)close(output);
-        return -1;
-    }
-
-    long max_fd = sysconf(_SC_OPEN_MAX);
-    if (max_fd < 0 || max_fd > 1048576L) {
-        max_fd = 65536L;
-    }
-
-    pid_t pid = -1;
-#ifdef __APPLE__
-    int spawn_rc = cbm_posix_spawn_apple(process, input, output, &pid);
-    for (int attempt = 0; spawn_rc == CBM_SPAWN_RETRY && attempt < CBM_SPAWN_RETRY_ATTEMPTS;
-         attempt++) {
-        cbm_spawn_backoff(attempt);
-        spawn_rc = cbm_posix_spawn_apple(process, input, output, &pid);
-    }
-    if (spawn_rc == CBM_SPAWN_RETRY) {
-        spawn_rc = -1; /* still exhausted after backoff: a real failure */
-    }
-    if (spawn_rc < 0) {
-        (void)close(input);
-        (void)close(output);
-        return -1;
-    }
-    if (spawn_rc > 0) { /* exec-class failure: reproduce the fork+exec 127 */
-        pid = cbm_fork_with_retry();
-        if (pid < 0) {
-            (void)close(input);
-            (void)close(output);
-            return -1;
-        }
-        if (pid == 0) {
-            cbm_posix_child_exec(process, input, output, max_fd);
-        }
-    }
-#else
-    pid = cbm_fork_with_retry();
-    if (pid < 0) {
-        (void)close(input);
-        (void)close(output);
-        return -1;
-    }
-    if (pid == 0) {
-        cbm_posix_child_exec(process, input, output, max_fd);
-    }
-#endif
-    (void)close(input);
-    (void)close(output);
-
-    /* Parent and child both establish the group, removing scheduler-order races.
-     * If the child won and already execed, EACCES is accepted only after proving
-     * that its process group is the expected isolated one. */
-    bool contained = setpgid(pid, pid) == 0;
-    if (!contained && (errno == EACCES || errno == EPERM || errno == ESRCH)) {
-        contained = getpgid(pid) == pid;
-    }
-    if (!contained) {
-        (void)kill(pid, SIGKILL);
-        int status = 0;
-        for (int attempt = 0; attempt < 4; attempt++) {
-            if (waitpid(pid, &status, 0) >= 0 || errno != EINTR) {
-                break;
-            }
-        }
-        return -1;
-    }
-
-    process->pid = pid;
-    process->pgid = pid;
-    return 0;
-}
-
-static bool cbm_posix_group_active(cbm_subprocess_t *process) {
-    if (kill(-process->pgid, 0) == 0) {
-        return true;
-    }
-    return errno != ESRCH; /* EPERM/other errors fail closed as still active */
-}
-
-static void cbm_posix_begin_termination(cbm_subprocess_t *process, uint64_t now) {
-    if (process->termination_started) {
-        return;
-    }
-    process->termination_started = true;
-    process->termination_started_ms = now;
-    (void)kill(-process->pgid, SIGTERM);
-}
-
-static void cbm_posix_force_tree(cbm_subprocess_t *process, uint64_t now) {
-    if (process->force_sent) {
-        return;
-    }
-    if (process->force_started_ms == 0) {
-        process->force_started_ms = now;
-    }
-    if (kill(-process->pgid, SIGKILL) == 0) {
-        process->result.forced = true;
-        process->force_sent = true;
-    } else if (errno == ESRCH) {
-        process->force_sent = true;
-    } else {
-        process->containment_failed = true;
-    }
-}
-
-static void cbm_posix_capture_root(cbm_subprocess_t *process, int status) {
-    process->root_reaped = true;
-    if (WIFEXITED(status)) {
-        process->result.exit_code = WEXITSTATUS(status);
-        process->result.term_signal = 0;
-        process->result.outcome =
-            cbm_proc_classify(true, process->result.exit_code, 0, process->timed_out);
-    } else if (WIFSIGNALED(status)) {
-        process->result.exit_code = -1;
-        process->result.term_signal = WTERMSIG(status);
-        process->result.outcome =
-            cbm_proc_classify(false, -1, process->result.term_signal, process->timed_out);
-    } else {
-        process->result.exit_code = -1;
-        process->result.term_signal = 0;
-        process->result.outcome = process->timed_out ? CBM_PROC_HANG : CBM_PROC_KILLED;
-    }
-}
-
-static cbm_proc_poll_t cbm_subprocess_poll_posix(cbm_subprocess_t *process,
-                                                 cbm_proc_result_t *out) {
-    uint64_t now = cbm_now_ms();
-
-    if (!process->root_reaped) {
-        int status = 0;
-        pid_t waited = waitpid(process->pid, &status, WNOHANG);
-        if (waited == process->pid) {
-            cbm_posix_capture_root(process, status);
-        } else if (waited < 0 && errno != EINTR) {
-            /* ECHILD means another reaper consumed the status. Other permanent
-             * wait failures are treated the same: retain containment, stop the
-             * tree, and never spin forever on the failed wait operation. */
-            process->root_reaped = true;
-            process->result.outcome = process->timed_out ? CBM_PROC_HANG : CBM_PROC_KILLED;
-            process->result.exit_code = -1;
-            process->result.term_signal = 0;
-            cbm_posix_begin_termination(process, now);
-        }
-    }
-
-    bool group_active = cbm_posix_group_active(process);
-    if (!process->termination_started) {
-        if (cbm_subprocess_cancellation_requested(process)) {
-            cbm_posix_begin_termination(process, now);
-        } else if (!process->root_reaped && process->quiet_timeout_ms > 0 &&
-                   now - process->last_activity_ms >= (uint64_t)process->quiet_timeout_ms) {
-            process->timed_out = true;
-            cbm_posix_begin_termination(process, now);
-        } else if (process->root_reaped && group_active) {
-            /* A root that daemonizes children is not terminal. Preserve its exit
-             * classification, but drain the descendants through the same path. */
-            cbm_posix_begin_termination(process, now);
-        }
-    }
-    if (process->termination_started && group_active && !process->force_sent &&
-        now - process->termination_started_ms >= (uint64_t)process->cancel_grace_ms) {
-        cbm_posix_force_tree(process, now);
-    }
-    group_active = cbm_posix_group_active(process);
-    if (process->force_started_ms != 0 && group_active &&
-        now - process->force_started_ms >= CBM_SUBPROCESS_FORCE_SETTLE_MS) {
-        return cbm_subprocess_finish_failed(process, out);
-    }
-    if (process->root_reaped && !group_active) {
-        return cbm_subprocess_finish(process, out);
-    }
-    return CBM_PROC_POLL_RUNNING;
-}
-
-#endif /* _WIN32 */
-
 int cbm_subprocess_spawn(const cbm_proc_opts_t *opts, cbm_subprocess_t **out) {
     if (!out) {
         return -1;
@@ -1370,11 +815,7 @@ int cbm_subprocess_spawn(const cbm_proc_opts_t *opts, cbm_subprocess_t **out) {
     if (!process) {
         return -1;
     }
-#ifdef _WIN32
     int spawn_rc = cbm_subprocess_spawn_win(process);
-#else
-    int spawn_rc = cbm_subprocess_spawn_posix(process);
-#endif
     if (spawn_rc != 0) {
         cbm_subprocess_free_config(process);
         return -1;
@@ -1409,11 +850,7 @@ cbm_proc_poll_t cbm_subprocess_poll(cbm_subprocess_t *process, cbm_proc_result_t
     /* The one owner-thread tail batch for this public poll. Platform-specific
      * reap paths never tail again, preserving the exact per-poll work cap. */
     (void)cbm_subprocess_poll_log(process, false);
-#ifdef _WIN32
     return cbm_subprocess_poll_win(process, out);
-#else
-    return cbm_subprocess_poll_posix(process, out);
-#endif
 }
 
 bool cbm_subprocess_request_cancel(cbm_subprocess_t *process) {
@@ -1441,10 +878,8 @@ void cbm_subprocess_destroy(cbm_subprocess_t *process) {
                         CBM_SUBPROCESS_TERMINAL) {
         return;
     }
-#ifdef _WIN32
     CloseHandle(process->process);
     CloseHandle(process->job);
-#endif
     cbm_subprocess_free_config(process);
 }
 

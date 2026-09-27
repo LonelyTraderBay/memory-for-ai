@@ -60,6 +60,8 @@ SURFACES=(
 # product's registry size. Each entry states what its number actually counts,
 # so an unexplained exemption cannot hide here.
 EXEMPT=(
+    'docs/PRIORITY-HARDENING.md'              # metadata observed on 2026-09-26, not a live product claim
+    'docs/RA-SOAT-THAY-DOI-2026-09-26.md'     # frozen pre-integration validation results from 2026-09-26
     'scripts/clone-bench-repos.sh'             # bench repo tiers (44 + 22)
     'tests/repro/repro_invariant_breadth.c'    # breadth of one invariant (27/27)
     'tests/repro/repro_grammar_scripting.c'    # scripting-grammar probe scope (12)

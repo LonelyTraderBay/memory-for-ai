@@ -82,12 +82,9 @@ package() { # goos goarch out-subdir [VERSION value]
     fi
 }
 
-echo "--- packaging the four target families from one stub build tree"
-package darwin arm64 darwin v0.0.0-contract >/dev/null
+echo "--- packaging Windows x64, with versioned and unversioned manifests"
 package windows amd64 windows v0.0.0-contract >/dev/null
-package linux amd64-portable portable v0.0.0-contract >/dev/null
-package linux amd64 plainlinux v0.0.0-contract >/dev/null
-package darwin arm64 unversioned >/dev/null
+package windows amd64 unversioned >/dev/null
 
 if [ -e "$FORBIDDEN_TOOL_LOG" ]; then
     echo "package-release invoked a forbidden mutation tool:" >&2
@@ -97,7 +94,7 @@ fi
 
 echo "--- hash mismatch fails before publishing any container"
 mkdir -p "$FIX/hash-mismatch"
-if bash "$ROOT/scripts/package-release.sh" linux arm64 \
+if bash "$ROOT/scripts/package-release.sh" windows amd64 \
     --selected-binary "$SELECTED" \
     --expected-sha256 0000000000000000000000000000000000000000000000000000000000000000 \
     --third-party-notices "$FIX/THIRD_PARTY_NOTICES.md" \
@@ -111,7 +108,7 @@ if find "$FIX/hash-mismatch" -type f -name 'memory-for-ai-*' | grep -q .; then
 fi
 
 echo "--- existing release containers are never overwritten"
-PLAIN_ARCHIVE="$FIX/plainlinux/memory-for-ai-linux-amd64.tar.gz"
+PLAIN_ARCHIVE="$FIX/windows/memory-for-ai-windows-amd64.zip"
 BEFORE_ARCHIVE_SHA="$(python3 - "$PLAIN_ARCHIVE" <<'PY'
 import hashlib
 import pathlib
@@ -119,7 +116,7 @@ import sys
 print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
 PY
 )"
-if package linux amd64 plainlinux v0.0.0-contract >"$FIX/no-clobber.out" 2>&1; then
+if package windows amd64 windows v0.0.0-contract >"$FIX/no-clobber.out" 2>&1; then
     echo "package-release overwrote an existing release container" >&2
     exit 1
 fi
@@ -188,29 +185,15 @@ def check_bundle(path, *, binary, platform, version):
         fail(f"{path.name}: compatibility.platforms {platforms!r} != {[platform]!r}")
 
 
-check_bundle(fix / "darwin" / "memory-for-ai-darwin-arm64.mcpb",
-             binary="server/memory-for-ai", platform="darwin",
-             version="0.0.0-contract")
 check_bundle(fix / "windows" / "memory-for-ai-windows-amd64.mcpb",
              binary="server/memory-for-ai.exe", platform="win32",
              version="0.0.0-contract")
-check_bundle(fix / "portable" / "memory-for-ai-linux-amd64-portable.mcpb",
-             binary="server/memory-for-ai", platform="linux",
-             version="0.0.0-contract")
 
 # Without VERSION the manifest must say so loudly, not invent a release.
-check_bundle(fix / "unversioned" / "memory-for-ai-darwin-arm64.mcpb",
-             binary="server/memory-for-ai", platform="darwin",
+check_bundle(fix / "unversioned" / "memory-for-ai-windows-amd64.mcpb",
+             binary="server/memory-for-ai.exe", platform="win32",
              version="0.0.0-dev")
 
-# Eligibility is a fence, not a default: the glibc-dynamic linux build gets
-# an archive but NO bundle.
-plain = fix / "plainlinux"
-if not (plain / "memory-for-ai-linux-amd64.tar.gz").is_file():
-    fail("plain linux target must still produce its tar.gz")
-mcpbs = list(plain.glob("*.mcpb"))
-if mcpbs:
-    fail(f"glibc-dynamic linux target must not produce a bundle: {[p.name for p in mcpbs]}")
 
 
 def check_archive(path, binary):
@@ -230,14 +213,8 @@ def check_archive(path, binary):
         fail(f"{path.name}: archive did not preserve the supplied notices file")
 
 
-check_archive(fix / "darwin" / "memory-for-ai-darwin-arm64.tar.gz",
-              "memory-for-ai")
 check_archive(fix / "windows" / "memory-for-ai-windows-amd64.zip",
               "memory-for-ai.exe")
-check_archive(fix / "portable" / "memory-for-ai-linux-amd64-portable.tar.gz",
-              "memory-for-ai")
-check_archive(fix / "plainlinux" / "memory-for-ai-linux-amd64.tar.gz",
-              "memory-for-ai")
 
 if pathlib.Path(sys.argv[2]).read_bytes() != selected:
     fail("package-release mutated the caller-owned selected binary")
@@ -250,5 +227,5 @@ if failures:
 
 print("mcpb bundle contract OK (selected bytes hash-bound and immutable, "
       "archive/MCPB members byte-identical, mutation tools unused, no-clobber, "
-      "darwin/windows/static-linux eligibility exact)")
+      "Windows x64 archive and MCPB exact)")
 PY

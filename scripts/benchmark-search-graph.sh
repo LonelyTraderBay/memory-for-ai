@@ -9,6 +9,7 @@
 #   scripts/benchmark-search-graph.sh ./build/c/memory-for-ai my-project
 
 set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 BINARY="${1:?Usage: $0 <binary-path> <project-name>}"
 PROJECT="${2:?Usage: $0 <binary-path> <project-name>}"
@@ -22,22 +23,13 @@ run_case() {
     local request="$2"
     local start end elapsed_ms result
 
-    start=$(date +%s%3N)
-    result=$(echo "$request" | "$BINARY" 2>/dev/null || true)
-    end=$(date +%s%3N)
+    start=$(python3 -c "import time; print(time.perf_counter_ns() // 1000000)")
+    result=$("$BINARY" cli search_graph "$request")
+    end=$(python3 -c "import time; print(time.perf_counter_ns() // 1000000)")
     elapsed_ms=$(( end - start ))
 
     local count
-    count=$(echo "$result" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    content = d.get('result', {}).get('content', [{}])[0].get('text', '{}')
-    obj = json.loads(content)
-    print(obj.get('total', obj.get('count', '?')))
-except Exception:
-    print('?')
-" 2>/dev/null || echo "?")
+    count=$(printf '%s\n' "$result" | python3 "$SCRIPT_DIR/benchmark-response.py" search)
 
     printf "  %-55s %5dms  (total=%s)\n" "$label" "$elapsed_ms" "$count"
 }
@@ -45,8 +37,10 @@ except Exception:
 sg() {
     local project="$1"
     local args="$2"
-    printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_graph","arguments":{"project":"%s",%s}}}' \
-        "$project" "$args"
+    python3 -c 'import json,sys
+args=json.loads("{"+sys.argv[2]+"}")
+args.update(project=sys.argv[1],format="json")
+print(json.dumps(args))' "$project" "$args"
 }
 
 echo "=== search_graph name_pattern= benchmarks ==="

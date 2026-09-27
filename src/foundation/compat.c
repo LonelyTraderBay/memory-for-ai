@@ -11,15 +11,12 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
 #include <io.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#endif
 
 /* ── strndup (Windows lacks it) ───────────────────────────────── */
 
-#ifdef _WIN32
 char *cbm_strndup(const char *s, size_t n) {
     if (!s) {
         return NULL;
@@ -35,11 +32,9 @@ char *cbm_strndup(const char *s, size_t n) {
     }
     return d;
 }
-#endif
 
 /* ── strcasestr (Windows lacks it) ────────────────────────────── */
 
-#ifdef _WIN32
 char *cbm_strcasestr(const char *haystack, const char *needle) {
     if (!needle[0])
         return (char *)haystack;
@@ -50,11 +45,9 @@ char *cbm_strcasestr(const char *haystack, const char *needle) {
     }
     return NULL;
 }
-#endif
 
 /* ── mkdtemp (Windows lacks it) ───────────────────────────────── */
 
-#ifdef _WIN32
 #include <direct.h>
 #include <aclapi.h>
 #include "foundation/win_utf8.h"
@@ -202,13 +195,11 @@ char *cbm_mkdtemp(char *tmpl) {
     strcpy(tmpl, buf);
     return tmpl;
 }
-#endif
 
 bool cbm_path_for_file_api(const char *path, char *out, size_t out_size) {
     if (!path || !out || out_size == 0) {
         return false;
     }
-#ifdef _WIN32
     wchar_t *wide = cbm_path_to_wide(path);
     char *narrow = wide ? cbm_wide_to_utf8(wide) : NULL;
     free(wide);
@@ -222,19 +213,10 @@ bool cbm_path_for_file_api(const char *path, char *out, size_t out_size) {
     }
     free(narrow);
     return fits;
-#else
-    size_t needed = strlen(path);
-    if (needed >= out_size) {
-        return false;
-    }
-    memcpy(out, path, needed + 1U);
-    return true;
-#endif
 }
 
 /* ── mkstemp (Windows lacks it) ───────────────────────────────── */
 
-#ifdef _WIN32
 int cbm_mkstemp(char *tmpl) {
     /* Rewrite /tmp/ to %TEMP%\ like cbm_mkdtemp */
     /* Per-call storage: daemon project workers can create staging files
@@ -286,11 +268,9 @@ int cbm_mkstemp(char *tmpl) {
     free(wide_template);
     return fd;
 }
-#endif
 
 /* ── clock_gettime (Windows lacks it) ─────────────────────────── */
 
-#ifdef _WIN32
 int cbm_clock_gettime(int clk_id, struct timespec *tp) {
     (void)clk_id;
     LARGE_INTEGER freq, count;
@@ -300,11 +280,9 @@ int cbm_clock_gettime(int clk_id, struct timespec *tp) {
     tp->tv_nsec = (long)((count.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart);
     return 0;
 }
-#endif
 
 /* ── getline (Windows lacks it) ───────────────────────────────── */
 
-#ifdef _WIN32
 ssize_t cbm_getline(char **lineptr, size_t *n, FILE *stream) {
     if (!lineptr || !n || !stream) {
         return CBM_NOT_FOUND;
@@ -339,4 +317,3 @@ ssize_t cbm_getline(char **lineptr, size_t *n, FILE *stream) {
     (*lineptr)[pos] = '\0';
     return (ssize_t)pos;
 }
-#endif

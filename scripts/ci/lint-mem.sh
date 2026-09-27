@@ -14,6 +14,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+source scripts/env.sh
 
 CLANG_TIDY_BIN="${1:-${CLANG_TIDY:-clang-tidy}}"
 

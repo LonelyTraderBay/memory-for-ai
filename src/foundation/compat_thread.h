@@ -11,8 +11,6 @@
 
 /* ── Thread ───────────────────────────────────────────────────── */
 
-#ifdef _WIN32
-
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -21,16 +19,6 @@
 typedef struct {
     HANDLE handle;
 } cbm_thread_t;
-
-#else /* POSIX */
-
-#include <pthread.h>
-
-typedef struct {
-    pthread_t handle;
-} cbm_thread_t;
-
-#endif
 
 /* Create a thread with the given stack size (0 = OS default).
  * fn receives arg. Returns 0 on success. */
@@ -44,19 +32,9 @@ int cbm_thread_detach(cbm_thread_t *t);
 
 /* ── Mutex ────────────────────────────────────────────────────── */
 
-#ifdef _WIN32
-
 typedef struct {
     CRITICAL_SECTION cs;
 } cbm_mutex_t;
-
-#else
-
-typedef struct {
-    pthread_mutex_t mtx;
-} cbm_mutex_t;
-
-#endif
 
 void cbm_mutex_init(cbm_mutex_t *m);
 void cbm_mutex_lock(cbm_mutex_t *m);

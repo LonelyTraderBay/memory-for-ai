@@ -14,7 +14,6 @@
 #include "foundation/compat_thread.h"
 #include "foundation/constants.h"
 #include "foundation/log.h"
-#include "foundation/macos_acl.h"
 #include "foundation/mem.h"
 #include "foundation/platform.h"
 #include "foundation/private_file_lock.h"
@@ -27,7 +26,6 @@
 #include <string.h>
 #include <time.h>
 
-#ifdef _WIN32
 #include "foundation/win_utf8.h"
 #include <fcntl.h> /* _O_* for the exclusive stats-file create */
 #include <io.h>    /* _wopen / _close */
@@ -35,14 +33,6 @@
 #include <sys/stat.h> /* _S_IREAD / _S_IWRITE */
 #include <windows.h>
 #define getpid _getpid
-#else
-#include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
-#endif
 
 enum {
     DIAG_INTERVAL_MS = 5000,
@@ -66,9 +56,6 @@ static bool g_diag_started = false;
 static bool g_diag_abandoned = false;
 static time_t g_start_time = 0;
 static cbm_private_lock_directory_t *g_diag_directory = NULL;
-#ifndef _WIN32
-static int g_diag_directory_fd = -1;
-#endif
 static char g_diag_directory_path[CBM_PATH_MAX] = "";
 static char g_diag_path[CBM_PATH_MAX] = "";
 static char g_diag_ndjson_path[CBM_PATH_MAX] = "";
@@ -98,31 +85,7 @@ void cbm_diag_record_query(long long duration_us, bool is_error) {
 /* ── FD count (platform-specific) ──────────────────────────────────────── */
 
 static int count_open_fds(void) {
-#ifdef __linux__
-    struct dirent **entries = NULL;
-    int n = scandir("/proc/self/fd", &entries, NULL, NULL);
-    if (n < 0) {
-        return CBM_NOT_FOUND;
-    }
-    for (int i = 0; i < n; i++) {
-        free(entries[i]);
-    }
-    free(entries);
-    return n - PAIR_LEN;
-#elif defined(__APPLE__)
-    struct dirent **entries = NULL;
-    int n = scandir("/dev/fd", &entries, NULL, NULL);
-    if (n < 0) {
-        return CBM_NOT_FOUND;
-    }
-    for (int i = 0; i < n; i++) {
-        free(entries[i]);
-    }
-    free(entries);
-    return n - PAIR_LEN;
-#else
     return CBM_NOT_FOUND;
-#endif
 }
 
 /* ── Private output directory ────────────────────────────────────────────── */
@@ -150,7 +113,6 @@ static void diag_stats_write(const char *text, void *arg) {
  * snapshot describes this process's heap layout, so it is owner-only. */
 static FILE *diag_open_private_stats_file(const char *path) {
     (void)cbm_unlink(path);
-#ifdef _WIN32
     /* _wopen mirrors cbm_mkstemp's Windows contract — the ANSI CRT interprets
      * the UTF-8 bytes of a non-ASCII %TEMP% in the local codepage and fails. */
     wchar_t *wide = cbm_path_to_wide(path);
@@ -168,21 +130,6 @@ static FILE *diag_open_private_stats_file(const char *path) {
         (void)_close(descriptor);
     }
     return sink;
-#else
-    int flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC;
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    int descriptor = open(path, flags, 0600);
-    if (descriptor < 0) {
-        return NULL;
-    }
-    FILE *sink = fdopen(descriptor, "wb");
-    if (!sink) {
-        (void)close(descriptor);
-    }
-    return sink;
-#endif
 }
 
 static void diag_write_allocator_stats(void) {
@@ -230,12 +177,6 @@ static bool diag_set_output_paths(void) {
 }
 
 static void diag_directory_close(bool remove_directory) {
-#ifndef _WIN32
-    if (g_diag_directory_fd >= 0) {
-        (void)close(g_diag_directory_fd);
-        g_diag_directory_fd = -1;
-    }
-#endif
     cbm_private_lock_directory_close(g_diag_directory);
     g_diag_directory = NULL;
     if (remove_directory && g_diag_directory_path[0] != '\0') {
@@ -247,17 +188,9 @@ static void diag_directory_close(bool remove_directory) {
  * fallback) without touching cbm_tmpdir(), whose many other callers keep
  * their established behavior. Windows already resolves the real user temp. */
 static const char *diag_tmp_base(char *buffer, size_t size) {
-#ifdef _WIN32
     (void)buffer;
     (void)size;
     return cbm_tmpdir();
-#else
-    cbm_safe_getenv("TMPDIR", buffer, size, NULL);
-    if (buffer[0] != '\0') {
-        return buffer;
-    }
-    return "/tmp";
-#endif
 }
 
 static bool diag_directory_prepare(void) {
@@ -277,7 +210,6 @@ static bool diag_directory_prepare(void) {
         return false;
     }
 
-#ifdef _WIN32
     wchar_t *wide_directory = cbm_path_to_wide(g_diag_directory_path);
     HANDLE handle =
         wide_directory
@@ -295,33 +227,6 @@ static bool diag_directory_prepare(void) {
             (void)CloseHandle(handle);
         }
     }
-#else
-    int flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW;
-    int validation_fd = open(g_diag_directory_path, flags);
-    int output_fd = open(g_diag_directory_path, flags);
-    struct stat validation_state;
-    struct stat output_state;
-    bool same_directory =
-        validation_fd >= 0 && output_fd >= 0 && fstat(validation_fd, &validation_state) == 0 &&
-        fstat(output_fd, &output_state) == 0 && validation_state.st_dev == output_state.st_dev &&
-        validation_state.st_ino == output_state.st_ino;
-    cbm_private_file_lock_status_t status = CBM_PRIVATE_FILE_LOCK_IO;
-    if (same_directory) {
-        status = cbm_private_lock_directory_adopt_posix(validation_fd, g_diag_directory_path,
-                                                        &g_diag_directory);
-        if (status == CBM_PRIVATE_FILE_LOCK_OK) {
-            validation_fd = -1;
-            g_diag_directory_fd = output_fd;
-            output_fd = -1;
-        }
-    }
-    if (validation_fd >= 0) {
-        (void)close(validation_fd);
-    }
-    if (output_fd >= 0) {
-        (void)close(output_fd);
-    }
-#endif
 
     if (status != CBM_PRIVATE_FILE_LOCK_OK || !diag_set_output_paths()) {
         diag_directory_close(true);
@@ -329,8 +234,6 @@ static bool diag_directory_prepare(void) {
     }
     return true;
 }
-
-#ifdef _WIN32
 
 static bool diag_full_path(const char *base_name, char *path, size_t path_size) {
     int written = snprintf(path, path_size, "%s/%s", g_diag_directory_path, base_name);
@@ -400,59 +303,6 @@ static void diag_native_unlink(const char *base_name) {
         (void)cbm_unlink(path);
     }
 }
-
-#else
-
-static bool diag_posix_file_valid(int descriptor) {
-    struct stat state;
-    return descriptor >= 0 && fstat(descriptor, &state) == 0 && S_ISREG(state.st_mode) &&
-           state.st_uid == geteuid() && state.st_nlink == 1 && (state.st_mode & 07777) == 0600 &&
-           cbm_macos_extended_acl_fd_is_empty(descriptor);
-}
-
-static bool diag_write_file(const char *base_name, const char *data, size_t length, bool append) {
-    int flags = O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
-    flags |= append ? O_APPEND : O_TRUNC;
-    int descriptor = openat(g_diag_directory_fd, base_name, flags | O_CREAT | O_EXCL, 0600);
-    bool created = descriptor >= 0;
-    if (descriptor < 0 && errno == EEXIST) {
-        descriptor = openat(g_diag_directory_fd, base_name, flags);
-    }
-    if (created && fchmod(descriptor, 0600) != 0) {
-        (void)close(descriptor);
-        return false;
-    }
-    if (!diag_posix_file_valid(descriptor)) {
-        if (descriptor >= 0) {
-            (void)close(descriptor);
-        }
-        return false;
-    }
-    bool ok = true;
-    size_t offset = 0;
-    while (offset < length) {
-        ssize_t bytes_written = write(descriptor, data + offset, length - offset);
-        if (bytes_written > 0) {
-            offset += (size_t)bytes_written;
-        } else if (bytes_written < 0 && errno == EINTR) {
-            continue;
-        } else {
-            ok = false;
-            break;
-        }
-    }
-    return close(descriptor) == 0 && ok;
-}
-
-static bool diag_native_rename(const char *source_name, const char *destination_name) {
-    return renameat(g_diag_directory_fd, source_name, g_diag_directory_fd, destination_name) == 0;
-}
-
-static void diag_native_unlink(const char *base_name) {
-    (void)unlinkat(g_diag_directory_fd, base_name, 0);
-}
-
-#endif
 
 /* ── Writer ─────────────────────────────────────────────────────────────────────── */
 

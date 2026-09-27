@@ -359,8 +359,12 @@ def section_cold_storm(binary, work):
     results = _parallel_one_shots(binary, cache, 6)
     for index, result in enumerate(results):
         if result is None or result.returncode != 0:
-            print("RED: cold-storm client %d failed (racing daemon spawn):\n%s"
-                  % (index, out_text(result)[:300] if result else "(no result)"))
+            print("RED: cold-storm client %d failed (racing daemon spawn, rc=%s):\n"
+                  "stdout=%r\nstderr=%r"
+                  % (index,
+                     result.returncode if result else "none",
+                     (result.stdout or b"")[-1200:] if result else b"",
+                     (result.stderr or b"")[-1600:] if result else b""))
             return False
     if not wait_status_not_running(binary, cache, 90):
         print("RED: the ephemeral daemon shared by the cold storm never retired")

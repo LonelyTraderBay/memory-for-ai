@@ -692,7 +692,7 @@ static void fill_interior_page(uint8_t *page, const PageRef *children, int child
 }
 
 static uint32_t pb_build_interior(PageBuilder *pb, bool is_index) {
-    if (!pb->leaves) {
+    if (!pb || !pb->leaves || pb->leaf_count <= 0) {
         return 0;
     }
     if (pb->leaf_count <= SKIP_ONE) {

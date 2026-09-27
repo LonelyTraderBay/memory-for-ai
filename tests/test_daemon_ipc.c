@@ -411,8 +411,8 @@ typedef struct {
 } ipc_test_win_startup_call_t;
 
 typedef struct {
-    atomic_bool acquired;
-    atomic_bool may_proceed;
+    HANDLE acquired_event;
+    HANDLE proceed_event;
 } ipc_test_startup_gate_t;
 
 /* Runs on the startup thread INSIDE cbm_daemon_ipc_startup_lock_try_acquire,
@@ -422,22 +422,45 @@ typedef struct {
  * lock being busy, which is unobservable whenever the handoff does not block. */
 static void ipc_test_startup_gate(void *context) {
     ipc_test_startup_gate_t *gate = context;
-    atomic_store(&gate->acquired, true);
-    while (!atomic_load(&gate->may_proceed)) {
-        cbm_usleep(200);
+    if (SetEvent(gate->acquired_event)) {
+        (void)WaitForSingleObject(gate->proceed_event, INFINITE);
     }
 }
 
-static bool ipc_test_startup_gate_wait_acquired(ipc_test_startup_gate_t *gate) {
-    /* `acquired` never clears, so this wait cannot miss the event; the bound
-     * only catches a thread that never started at all. */
-    for (size_t attempt = 0; attempt < 50000U; attempt++) {
-        if (atomic_load(&gate->acquired)) {
-            return true;
-        }
-        cbm_usleep(200);
+static bool ipc_test_startup_gate_init(ipc_test_startup_gate_t *gate) {
+    gate->acquired_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    gate->proceed_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (gate->acquired_event && gate->proceed_event) {
+        return true;
+    }
+    if (gate->acquired_event) {
+        (void)CloseHandle(gate->acquired_event);
+        gate->acquired_event = NULL;
+    }
+    if (gate->proceed_event) {
+        (void)CloseHandle(gate->proceed_event);
+        gate->proceed_event = NULL;
     }
     return false;
+}
+
+static bool ipc_test_startup_gate_wait_acquired(ipc_test_startup_gate_t *gate) {
+    return WaitForSingleObject(gate->acquired_event, 10000) == WAIT_OBJECT_0;
+}
+
+static void ipc_test_startup_gate_proceed(ipc_test_startup_gate_t *gate) {
+    (void)SetEvent(gate->proceed_event);
+}
+
+static void ipc_test_startup_gate_close(ipc_test_startup_gate_t *gate) {
+    if (gate->acquired_event) {
+        (void)CloseHandle(gate->acquired_event);
+        gate->acquired_event = NULL;
+    }
+    if (gate->proceed_event) {
+        (void)CloseHandle(gate->proceed_event);
+        gate->proceed_event = NULL;
+    }
 }
 
 static void *ipc_test_win_startup_call(void *opaque) {
@@ -1165,10 +1188,11 @@ TEST(daemon_ipc_windows_startup_retries_transient_rendezvous_reader) {
     bool startup_observed = false;
     int join_status = -1;
     ipc_test_win_startup_call_t call = {.result = -1};
-    ipc_test_startup_gate_t gate;
-    atomic_init(&gate.acquired, false);
-    atomic_init(&gate.may_proceed, false);
-    cbm_daemon_ipc_startup_gate_set_for_test(ipc_test_startup_gate, &gate);
+    ipc_test_startup_gate_t gate = {0};
+    bool gate_ready = ipc_test_startup_gate_init(&gate);
+    if (gate_ready) {
+        cbm_daemon_ipc_startup_gate_set_for_test(ipc_test_startup_gate, &gate);
+    }
 
     bool parent_ok = ipc_test_parent_new(parent, "win-record-reader");
     if (parent_ok) {
@@ -1186,14 +1210,16 @@ TEST(daemon_ipc_windows_startup_retries_transient_rendezvous_reader) {
             ? cbm_private_file_lock_try_acquire(directory, CBM_DAEMON_IPC_WINDOWS_RENDEZVOUS_FILE,
                                                 CBM_PRIVATE_FILE_LOCK_SH, &record_reader)
             : CBM_PRIVATE_FILE_LOCK_IO;
-    if (record_status == CBM_PRIVATE_FILE_LOCK_OK) {
+    if (record_status == CBM_PRIVATE_FILE_LOCK_OK && gate_ready) {
         thread_started = cbm_thread_create(&thread, 0, ipc_test_win_startup_call, &call) == 0;
     }
     if (thread_started) {
         startup_observed = ipc_test_startup_gate_wait_acquired(&gate);
     }
     ipc_test_win_lock_release(&record_reader);
-    atomic_store(&gate.may_proceed, true);
+    if (gate_ready) {
+        ipc_test_startup_gate_proceed(&gate);
+    }
     if (thread_started) {
         join_status = cbm_thread_join(&thread);
     }
@@ -1202,6 +1228,7 @@ TEST(daemon_ipc_windows_startup_retries_transient_rendezvous_reader) {
     }
 
     cbm_daemon_ipc_startup_gate_set_for_test(NULL, NULL);
+    ipc_test_startup_gate_close(&gate);
     ipc_test_win_lock_release(&record_reader);
     cbm_private_lock_directory_close(directory);
     cbm_daemon_ipc_endpoint_free(endpoint);
@@ -1254,10 +1281,11 @@ TEST(daemon_ipc_windows_rendezvous_bridges_concurrent_lifetime_owner) {
     cbm_daemon_ipc_startup_lock_release(&initial_startup);
     initial_startup = NULL;
 
-    ipc_test_startup_gate_t gate;
-    atomic_init(&gate.acquired, false);
-    atomic_init(&gate.may_proceed, false);
-    cbm_daemon_ipc_startup_gate_set_for_test(ipc_test_startup_gate, &gate);
+    ipc_test_startup_gate_t gate = {0};
+    bool gate_ready = ipc_test_startup_gate_init(&gate);
+    if (gate_ready) {
+        cbm_daemon_ipc_startup_gate_set_for_test(ipc_test_startup_gate, &gate);
+    }
 
     cbm_private_file_lock_status_t directory_status =
         endpoint ? cbm_daemon_ipc_private_lock_directory_new(endpoint, &directory)
@@ -1267,7 +1295,7 @@ TEST(daemon_ipc_windows_rendezvous_bridges_concurrent_lifetime_owner) {
             ? cbm_private_file_lock_try_acquire(directory, CBM_DAEMON_IPC_WINDOWS_RENDEZVOUS_FILE,
                                                 CBM_PRIVATE_FILE_LOCK_SH, &record_reader)
             : CBM_PRIVATE_FILE_LOCK_IO;
-    if (record_status == CBM_PRIVATE_FILE_LOCK_OK) {
+    if (record_status == CBM_PRIVATE_FILE_LOCK_OK && gate_ready) {
         thread_started = cbm_thread_create(&thread, 0, ipc_test_win_startup_call, &call) == 0;
     }
     if (thread_started) {
@@ -1281,7 +1309,9 @@ TEST(daemon_ipc_windows_rendezvous_bridges_concurrent_lifetime_owner) {
                                                 CBM_PRIVATE_FILE_LOCK_EX, &lifetime_owner)
             : CBM_PRIVATE_FILE_LOCK_IO;
     ipc_test_win_lock_release(&record_reader);
-    atomic_store(&gate.may_proceed, true);
+    if (gate_ready) {
+        ipc_test_startup_gate_proceed(&gate);
+    }
     if (thread_started) {
         join_status = cbm_thread_join(&thread);
     }
@@ -1291,6 +1321,7 @@ TEST(daemon_ipc_windows_rendezvous_bridges_concurrent_lifetime_owner) {
     ipc_test_win_lock_release(&lifetime_owner);
 
     cbm_daemon_ipc_startup_gate_set_for_test(NULL, NULL);
+    ipc_test_startup_gate_close(&gate);
     ipc_test_win_lock_release(&record_reader);
     ipc_test_win_lock_release(&lifetime_owner);
     cbm_private_lock_directory_close(directory);
@@ -4166,10 +4197,10 @@ TEST(daemon_ipc_macos_rejects_allow_acl_on_ancestor_without_mutation) {
     struct stat after = {0};
 
     bool parent_ok = ipc_test_parent_new(parent, "mac-acl-ancestor-allow");
-    int runtime_written = parent_ok
-                              ? snprintf(runtime_dir, sizeof(runtime_dir), "%s/memory-for-ai-daemon-%lu",
-                                         parent, (unsigned long)geteuid())
-                              : -1;
+    int runtime_written =
+        parent_ok ? snprintf(runtime_dir, sizeof(runtime_dir), "%s/memory-for-ai-daemon-%lu",
+                             parent, (unsigned long)geteuid())
+                  : -1;
     int acl_fixture = parent_ok ? ipc_test_macos_set_mutating_acl(parent, false) : -1;
     if (acl_fixture == 0) {
         ipc_test_remove_flat_dir(parent);

@@ -427,6 +427,19 @@ TEST(arena_strndup_zero_len) {
     PASS();
 }
 
+TEST(arena_alloc_rejects_size_overflow) {
+    CBMArena a;
+    cbm_arena_init(&a);
+    ASSERT_NULL(cbm_arena_alloc(&a, SIZE_MAX));
+    ASSERT_NULL(cbm_arena_alloc(&a, SIZE_MAX - 3));
+    /* Rejected requests must not mutate the allocator's accounting/state. */
+    ASSERT_EQ(a.nblocks, 1);
+    ASSERT_EQ(a.used, 0);
+    ASSERT_EQ(cbm_arena_total(&a), 0);
+    cbm_arena_destroy(&a);
+    PASS();
+}
+
 SUITE(arena) {
     RUN_TEST(arena_init_default);
     RUN_TEST(arena_init_sized);
@@ -460,4 +473,5 @@ SUITE(arena) {
     RUN_TEST(arena_total_through_reset);
     RUN_TEST(arena_reset_block_size_invariant);
     RUN_TEST(arena_strndup_zero_len);
+    RUN_TEST(arena_alloc_rejects_size_overflow);
 }

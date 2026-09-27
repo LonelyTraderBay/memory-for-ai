@@ -264,7 +264,7 @@ typedef struct {
     bool include_connected;
     const char *sort_by; /* "relevance" / "name" / "degree", NULL = relevance */
     bool case_sensitive;
-    const char **exclude_labels; /* NULL-terminated array, or NULL */
+    const char **exclude_labels; /* NULL-terminated; oversized filters make search return ERR */
 } cbm_search_params_t;
 
 typedef struct {
@@ -729,6 +729,11 @@ int cbm_store_find_edges_by_target_type(cbm_store_t *s, int64_t target_id, const
                                         cbm_edge_t **out, int *count);
 
 /* Find all edges of a type in project. */
+/* All edge types induced by node_ids, with duplicates ignored. Reads only the
+ * selected sources and returns edges ordered by type/id; no persistent state.
+ * On any error out/count are empty (never a partial graph). */
+int cbm_store_find_edges_among(cbm_store_t *s, const char *project, const int64_t *node_ids,
+                               int node_count, cbm_edge_t **out, int *count);
 int cbm_store_find_edges_by_type(cbm_store_t *s, const char *project, const char *type,
                                  cbm_edge_t **out, int *count);
 
@@ -839,6 +844,9 @@ void cbm_store_free_coverage(cbm_coverage_row_t *rows, int count);
 
 /* ── Search ─────────────────────────────────────────────────────── */
 
+/* Returns CBM_STORE_OK or CBM_STORE_ERR. On ERR, results remain empty; in
+ * particular, an exclude_labels filter that exceeds the bounded bind capacity
+ * is rejected rather than being silently applied only in part. */
 int cbm_store_search(cbm_store_t *s, const cbm_search_params_t *params, cbm_search_output_t *out);
 
 /* Free a search output's allocated memory. */

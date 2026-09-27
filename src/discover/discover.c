@@ -19,6 +19,7 @@
 #include "foundation/win_utf8.h"
 #endif
 #include <ctype.h>
+#include <errno.h>
 #include <stdint.h> // int64_t
 #include <stdio.h>
 #include <stdlib.h>
@@ -418,6 +419,7 @@ typedef struct {
     bool collect_excluded;
     bool limit_exceeded;
     bool failed;
+    bool path_too_long;
     /* Directories skipped during the walk (rel paths), so callers can surface
      * which subtrees were dropped (#411). strdup'd; freed by the caller via
      * cbm_discover_free_excluded or internally when not requested. */
@@ -443,6 +445,13 @@ static bool file_list_should_stop(file_list_t *fl) {
         fl->failed = true;
     }
     return fl->failed || fl->limit_exceeded;
+}
+
+static void file_list_fail_path_too_long(file_list_t *fl) {
+    if (fl) {
+        fl->failed = true;
+        fl->path_too_long = true;
+    }
 }
 
 static void file_list_add_excluded(file_list_t *fl, const char *rel_path) {
@@ -830,15 +839,24 @@ typedef struct {
 } walk_stack_t;
 /* Build abs/rel paths and process one directory entry. */
 /* Try to load a nested .gitignore from this directory. Returns owned pointer or NULL. */
-static cbm_gitignore_t *try_load_nested_gitignore(const walk_frame_t *frame) {
+static cbm_gitignore_t *try_load_nested_gitignore(const walk_frame_t *frame, file_list_t *out) {
     if (frame->local_gi || frame->prefix[0] == '\0') {
         return NULL;
     }
     char gi_path[CBM_SZ_4K];
-    snprintf(gi_path, sizeof(gi_path), "%s/.gitignore", frame->dir);
+    int path_length = snprintf(gi_path, sizeof(gi_path), "%s/.gitignore", frame->dir);
+    if (path_length <= 0 || (size_t)path_length >= sizeof(gi_path)) {
+        file_list_fail_path_too_long(out);
+        return NULL;
+    }
     struct stat gi_st;
-    if (wide_stat(gi_path, &gi_st) == 0 && S_ISREG(gi_st.st_mode)) {
+    errno = 0;
+    int stat_rc = wide_stat(gi_path, &gi_st);
+    if (stat_rc == 0 && S_ISREG(gi_st.st_mode)) {
         return cbm_gitignore_load(gi_path);
+    }
+    if (stat_rc != 0 && errno == ENAMETOOLONG) {
+        file_list_fail_path_too_long(out);
     }
     return NULL;
 }
@@ -863,14 +881,14 @@ static void walk_push_subdir(walk_stack_t *ws, const char *abs_path, const char 
     int prefix_length = snprintf(slot->prefix, CBM_SZ_4K, "%s", rel_path);
     if (directory_length <= 0 || directory_length >= CBM_SZ_4K || prefix_length < 0 ||
         prefix_length >= CBM_SZ_4K) {
-        out->failed = true;
+        file_list_fail_path_too_long(out);
         return;
     }
     slot->local_gi = parent->local_gi;
     int local_prefix_length =
         snprintf(slot->local_gi_prefix, CBM_SZ_4K, "%s", parent->local_gi_prefix);
     if (local_prefix_length < 0 || local_prefix_length >= CBM_SZ_4K) {
-        out->failed = true;
+        file_list_fail_path_too_long(out);
         return;
     }
     ws->top++;
@@ -893,13 +911,16 @@ static void walk_dir_process_entry(cbm_dirent_t *entry, const walk_frame_t *fram
     }
     if (absolute_length <= 0 || (size_t)absolute_length >= sizeof(abs_path) ||
         relative_length <= 0 || (size_t)relative_length >= sizeof(rel_path)) {
-        out->failed = true;
+        file_list_fail_path_too_long(out);
         return;
     }
 
     struct stat st;
+    errno = 0;
     if (safe_stat(abs_path, &st) != 0) {
-        if (out->count_only) {
+        if (errno == ENAMETOOLONG) {
+            file_list_fail_path_too_long(out);
+        } else if (out->count_only) {
             out->failed = true;
         }
         return;
@@ -960,7 +981,7 @@ static void walk_dir(const char *dir_path, const char *rel_prefix, const cbm_dis
     int initial_prefix_length = snprintf(ws.frames[0].prefix, CBM_SZ_4K, "%s", rel_prefix);
     if (initial_directory_length <= 0 || initial_directory_length >= CBM_SZ_4K ||
         initial_prefix_length < 0 || initial_prefix_length >= CBM_SZ_4K) {
-        out->failed = true;
+        file_list_fail_path_too_long(out);
         free(ws.frames);
         return;
     }
@@ -969,7 +990,11 @@ static void walk_dir(const char *dir_path, const char *rel_prefix, const cbm_dis
     while (ws.top > 0 && !file_list_should_stop(out)) {
         walk_frame_t frame = ws.frames[--ws.top];
 
-        cbm_gitignore_t *loaded = try_load_nested_gitignore(&frame);
+        cbm_gitignore_t *loaded = try_load_nested_gitignore(&frame, out);
+        if (file_list_should_stop(out)) {
+            cbm_gitignore_free(loaded);
+            break;
+        }
         if (loaded) {
             int local_prefix_length =
                 snprintf(frame.local_gi_prefix, sizeof(frame.local_gi_prefix), "%s", frame.prefix);
@@ -983,9 +1008,12 @@ static void walk_dir(const char *dir_path, const char *rel_prefix, const cbm_dis
             frame.local_gi = loaded;
         }
 
+        errno = 0;
         cbm_dir_t *d = cbm_opendir(frame.dir);
         if (!d) {
-            if (out->count_only) {
+            if (errno == ENAMETOOLONG) {
+                file_list_fail_path_too_long(out);
+            } else if (out->count_only) {
                 out->failed = true;
             }
             continue;
@@ -1147,9 +1175,17 @@ static cbm_discover_status_t discover_impl(const char *repo_path, const cbm_disc
     *out = NULL;
     *count = 0;
 
+    if (strlen(repo_path) >= CBM_SZ_4K) {
+        return CBM_DISCOVER_PATH_TOO_LONG;
+    }
+
     /* Verify directory exists */
     struct stat st;
-    if (wide_stat(repo_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    errno = 0;
+    if (wide_stat(repo_path, &st) != 0) {
+        return errno == ENAMETOOLONG ? CBM_DISCOVER_PATH_TOO_LONG : CBM_DISCOVER_ERROR;
+    }
+    if (!S_ISDIR(st.st_mode)) {
         return CBM_DISCOVER_ERROR;
     }
 
@@ -1232,7 +1268,7 @@ static cbm_discover_status_t discover_impl(const char *repo_path, const cbm_disc
         cbm_discover_free_ignored(fl.ignored, fl.ignored_count);
         *count = fl.count;
         if (fl.failed) {
-            return CBM_DISCOVER_ERROR;
+            return fl.path_too_long ? CBM_DISCOVER_PATH_TOO_LONG : CBM_DISCOVER_ERROR;
         }
         return fl.limit_exceeded ? CBM_DISCOVER_LIMIT_EXCEEDED : CBM_DISCOVER_OK;
     }
@@ -1240,7 +1276,7 @@ static cbm_discover_status_t discover_impl(const char *repo_path, const cbm_disc
         cbm_discover_free(fl.files, fl.count);
         cbm_discover_free_excluded(fl.excluded, fl.excluded_count);
         cbm_discover_free_ignored(fl.ignored, fl.ignored_count);
-        return CBM_DISCOVER_ERROR;
+        return fl.path_too_long ? CBM_DISCOVER_PATH_TOO_LONG : CBM_DISCOVER_ERROR;
     }
 
     *out = fl.files;
@@ -1293,7 +1329,7 @@ cbm_discover_status_t cbm_discover_count_bounded(const char *repo_path,
     cbm_discover_status_t status = discover_impl(repo_path, opts, &files, &count, NULL, NULL, NULL,
                                                  NULL, NULL, true, max_files, deadline_ms);
     cbm_discover_free(files, count);
-    *count_out = status == CBM_DISCOVER_ERROR ? -1 : count;
+    *count_out = status == CBM_DISCOVER_ERROR || status == CBM_DISCOVER_PATH_TOO_LONG ? -1 : count;
     return status;
 }
 

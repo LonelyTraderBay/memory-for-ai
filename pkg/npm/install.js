@@ -543,6 +543,9 @@ async function verifyChecksum(archivePath, archiveName) {
 }
 
 async function main() {
+  if (process.platform !== 'win32' || process.arch !== 'x64') {
+    throw new Error('memory-for-ai supports Windows x64 only');
+  }
   const platform = getPlatform();
   const arch = getArch();
   const ext = platform === 'windows' ? 'zip' : 'tar.gz';

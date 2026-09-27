@@ -9,7 +9,9 @@
 // memmem is unavailable under msys2-clang on Windows).
 void *cbm_memmem(const void *haystack, size_t haystack_len, const void *needle, size_t needle_len);
 
-// Extract text of a node from source. Returns arena-allocated string.
+// Extract text of a node from the same source bytes used to build its tree.
+// Source need not be NUL-terminated; the node's byte range must remain valid.
+// Returns arena-allocated, NUL-terminated text, or NULL for missing arena/source.
 char *cbm_node_text(CBMArena *a, TSNode node, const char *source);
 
 // Check if a string is a language keyword (should be skipped as callee/usage).

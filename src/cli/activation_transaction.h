@@ -15,9 +15,9 @@ typedef struct cbm_activation_transaction cbm_activation_transaction_t;
 
 typedef enum {
     CBM_ACTIVATION_TRANSACTION_OK = 0,
-    /* Windows could not unlink an inactive backup (normally because the old
-     * executable image is still mapped) but safely registered it for deletion
-     * at reboot.  The committed activation remains valid. */
+    /* Windows could not unlink the old image immediately, but safely started
+     * post-exit cleanup or registered deletion for reboot. The committed
+     * activation remains valid; deferred_path stays available until close(). */
     CBM_ACTIVATION_TRANSACTION_DEFERRED = 1,
     CBM_ACTIVATION_TRANSACTION_INVALID_ARGUMENT = -1,
     CBM_ACTIVATION_TRANSACTION_NO_MEMORY = -2,
@@ -70,9 +70,9 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
 cbm_activation_transaction_status_t cbm_activation_transaction_rollback(
     cbm_activation_transaction_t *transaction);
 
-/* Accept the committed state and delete the retained backup.  On Windows,
- * DEFERRED means deletion was safely registered for reboot; deferred_path
- * remains available for logging until close(). */
+/* Accept the committed state and delete the retained backup. On Windows,
+ * DEFERRED means post-exit cleanup or reboot deletion was safely scheduled;
+ * deferred_path remains available for logging until close(). */
 cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
     cbm_activation_transaction_t *transaction);
 

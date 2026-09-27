@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # package-release.sh — canonical, byte-preserving release packager.
 #
-# Candidate derivation (including strip and macOS signing) happens before this
+# Candidate derivation (including strip) happens before this
 # boundary. This script accepts one already-final executable plus its expected
 # SHA-256 and only copies that byte sequence into the release containers. A
 # hash mismatch at any boundary is fatal.
@@ -30,16 +30,12 @@ Environment:
   VERSION                      MCPB manifest version (v-prefix accepted;
                                default: 0.0.0-dev)
 
-Targets are the eight existing release products:
-  linux/{amd64,arm64,amd64-portable,arm64-portable}
-  darwin/{amd64,arm64}
-  windows/{amd64,arm64}
+Supported target: windows amd64 (native Windows x64).
 
-Archive contents — one executable, no sidecars:
-  unix:    memory-for-ai LICENSE install.sh THIRD_PARTY_NOTICES.md (.tar.gz)
+Archive contents — one executable plus license/install/notices files:
   windows: memory-for-ai.exe LICENSE install.ps1 THIRD_PARTY_NOTICES.md (.zip)
 
-MCPB bundle (.mcpb): every darwin/windows target and static linux target.
+MCPB bundle (.mcpb): Windows x64.
 The executable member in every produced container is verified against
 --expected-sha256 before anything is published.
 EOF
@@ -94,8 +90,7 @@ done
 }
 [ -n "$GOOS" ] && [ -n "$GOARCH" ] || { usage >&2; exit 2; }
 case "$GOOS/$GOARCH" in
-linux/amd64 | linux/arm64 | linux/amd64-portable | linux/arm64-portable | \
-darwin/amd64 | darwin/arm64 | windows/amd64 | windows/arm64) ;;
+windows/amd64) ;;
 *)
     echo "package-release: unsupported release target '$GOOS/$GOARCH'." >&2
     exit 2

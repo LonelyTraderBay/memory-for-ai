@@ -127,22 +127,6 @@ int cbm_daemon_ipc_endpoint_probe(const cbm_daemon_ipc_endpoint_t *endpoint, uin
  * then transfers a lifetime reservation through listener teardown. */
 int cbm_daemon_ipc_lifetime_reservation_probe(const cbm_daemon_ipc_endpoint_t *endpoint);
 
-#ifndef _WIN32
-/* Remove only a provably current-generation stale Unix socket identity. The
- * caller must first observe an absent lifetime reservation and retain the
- * matching startup lock for the complete call; the implementation rechecks
- * both conditions. Stable deletion requires a committed marker whose named
- * anchor and stable path are the same secure socket inode; pending alone may
- * only complete that commit when both paths independently corroborate it.
- * A differing stable replacement is preserved while owned anchor/records are
- * collected. Returns 1 when the stable endpoint is absent and all owned
- * artifacts are absent or were removed, 0 when cleanup is refused for a live,
- * legacy, unknown, or mismatched identity, and -1 for an invalid lock or
- * unsafe/I/O state. This operation never connects to the endpoint. */
-int cbm_daemon_ipc_stale_generation_cleanup(const cbm_daemon_ipc_endpoint_t *endpoint,
-                                            const cbm_daemon_ipc_startup_lock_t *startup_lock);
-#endif
-
 /* Migration-only observation of transport/startup primitives used by builds
  * that predate version-cohort coordination. This never connects to the old
  * endpoint and never claims a legacy primitive as ownership authority.

@@ -104,3 +104,8 @@ soak-results-query-leak/
 PHAN-TICH-DU-AN.md
 REVIEW-CBM.md
 REVIEW-CBM-report.md
+
+# Frontend test reports
+graph-ui/coverage/
+graph-ui/test-results/
+graph-ui/playwright-report/

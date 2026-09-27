@@ -5672,6 +5672,120 @@ int cbm_store_find_edges_by_target_type(cbm_store_t *s, int64_t target_id, const
                               bind_id_and_type, &b, out, count);
 }
 
+static char *selected_ids_json(const int64_t *node_ids, int node_count) {
+    if ((size_t)node_count > (SIZE_MAX - sizeof("[]")) / sizeof("-9223372036854775808,")) {
+        return NULL;
+    }
+    size_t cap = ((size_t)node_count * sizeof("-9223372036854775808,")) + sizeof("[]");
+    char *json = malloc(cap);
+    if (!json) {
+        return NULL;
+    }
+    size_t used = SKIP_ONE;
+    json[0] = '[';
+    for (int i = 0; i < node_count; i++) {
+        int n = snprintf(json + used, cap - used, "%s%lld", i ? "," : "", (long long)node_ids[i]);
+        if (n < 0 || (size_t)n >= cap - used) {
+            free(json);
+            return NULL;
+        }
+        used += (size_t)n;
+    }
+    json[used++] = ']';
+    json[used] = '\0';
+    return json;
+}
+
+static int scan_selected_edges(sqlite3_stmt *stmt, cbm_edge_t **out, int *count) {
+    cbm_edge_t *edges = NULL;
+    int length = 0;
+    int capacity = 0;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (length == capacity) {
+            if (capacity > INT_MAX / ST_GROWTH) {
+                rc = SQLITE_TOOBIG;
+                break;
+            }
+            int next = capacity ? capacity * ST_GROWTH : ST_INIT_CAP_16;
+            if ((size_t)next > SIZE_MAX / sizeof(*edges)) {
+                rc = SQLITE_TOOBIG;
+                break;
+            }
+            cbm_edge_t *grown = realloc(edges, (size_t)next * sizeof(*edges));
+            if (!grown) {
+                rc = SQLITE_NOMEM;
+                break;
+            }
+            edges = grown;
+            capacity = next;
+        }
+        scan_edge(stmt, &edges[length]);
+        bool copied =
+            edges[length].project && edges[length].type &&
+            (sqlite3_column_type(stmt, ST_COL_5) == SQLITE_NULL || edges[length].properties_json);
+        length++;
+        if (!copied) {
+            rc = SQLITE_NOMEM;
+            break;
+        }
+    }
+    if (rc != SQLITE_DONE) {
+        cbm_store_free_edges(edges, length);
+        return rc;
+    }
+    *out = edges;
+    *count = length;
+    return SQLITE_DONE;
+}
+
+/* A read-only CTE avoids a temporary table and SQLite's bind-count ceiling.
+ * CROSS JOIN keeps the selected source set outside the edge index lookups;
+ * unrelated project edges are never materialized in the client. */
+int cbm_store_find_edges_among(cbm_store_t *s, const char *project, const int64_t *node_ids,
+                               int node_count, cbm_edge_t **out, int *count) {
+    if (out) {
+        *out = NULL;
+    }
+    if (count) {
+        *count = 0;
+    }
+    if (!s || !s->db || !project || !out || !count || node_count < 0 ||
+        (node_count > 0 && !node_ids)) {
+        return CBM_STORE_ERR;
+    }
+    if (node_count == 0) {
+        return CBM_STORE_OK;
+    }
+    char *json = selected_ids_json(node_ids, node_count);
+    if (!json) {
+        return CBM_STORE_ERR;
+    }
+    const char *sql = "WITH selected(id) AS MATERIALIZED (SELECT DISTINCT CAST(value AS INTEGER) "
+                      "FROM json_each(?2)) "
+                      "SELECT e.id,e.project,e.source_id,e.target_id,e.type,e.properties "
+                      "FROM selected AS n CROSS JOIN edges AS e "
+                      "ON e.project=?1 AND e.source_id=n.id "
+                      "WHERE e.target_id IN (SELECT id FROM selected) ORDER BY e.type,e.id;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        rc = bind_text(stmt, ST_COL_1, project);
+    }
+    if (rc == SQLITE_OK) {
+        rc = bind_text(stmt, ST_COL_2, json);
+    }
+    free(json);
+    if (rc == SQLITE_OK) {
+        rc = scan_selected_edges(stmt, out, count);
+    }
+    if (rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "selected edge query failed");
+    }
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE ? CBM_STORE_OK : CBM_STORE_ERR;
+}
+
 int cbm_store_find_edges_by_type(cbm_store_t *s, const char *project, const char *type,
                                  cbm_edge_t **out, int *count) {
     bind_proj_type_t b = {project, type};
@@ -7647,12 +7761,11 @@ static int where_append(char *where, int where_sz, int wlen, int *nparams, const
 
 /* Bind a text parameter and increment the bind index. */
 static void where_bind_text(search_bind_t *binds, int *bind_idx, const char *val) {
-    /* Overflow guard: binds[] has ST_SEARCH_MAX_BINDS slots on the caller's
-     * stack. search_build_exclude_labels iterates a caller-supplied
-     * NULL-terminated array with no length cap, so past the limit we stop
-     * recording binds instead of overrunning the stack array. Placeholders
-     * already emitted beyond the limit stay unbound (SQLite treats them as
-     * NULL): the query under-matches but memory safety is preserved. */
+    /* Fixed filters stay below this bound; variable-length exclude_labels
+     * checks the
+     * remaining capacity and rejects the query before reaching it.
+     * Keep the local guard as
+     * defense against an out-of-bounds stack write. */
     if (*bind_idx >= ST_SEARCH_MAX_BINDS) {
         return;
     }
@@ -7661,23 +7774,33 @@ static void where_bind_text(search_bind_t *binds, int *bind_idx, const char *val
 }
 
 /* Build exclude-labels NOT IN clause with bind placeholders. */
-static void search_build_exclude_labels(const char **labels, search_bind_t *binds, int *bind_idx,
-                                        char *clause, int clause_sz) {
+static int search_build_exclude_labels(const char **labels, search_bind_t *binds, int *bind_idx,
+                                       char *clause, int clause_sz) {
     int elen = snprintf(clause, clause_sz, "n.label NOT IN (");
+    if (elen < 0 || elen >= clause_sz) {
+        return 0;
+    }
     for (int i = 0; labels[i]; i++) {
+        if (*bind_idx >= ST_SEARCH_MAX_BINDS) {
+            return 0;
+        }
+        int written;
         if (i > 0) {
-            elen += snprintf(clause + elen, clause_sz - elen, ",");
-            if (elen >= clause_sz) {
-                elen = clause_sz - SKIP_ONE;
+            written = snprintf(clause + elen, clause_sz - elen, ",");
+            if (written < 0 || written >= clause_sz - elen) {
+                return 0;
             }
+            elen += written;
         }
-        elen += snprintf(clause + elen, clause_sz - elen, "?%d", *bind_idx + SKIP_ONE);
-        if (elen >= clause_sz) {
-            elen = clause_sz - SKIP_ONE;
+        written = snprintf(clause + elen, clause_sz - elen, "?%d", *bind_idx + SKIP_ONE);
+        if (written < 0 || written >= clause_sz - elen) {
+            return 0;
         }
+        elen += written;
         where_bind_text(binds, bind_idx, labels[i]);
     }
-    snprintf(clause + elen, clause_sz - elen, ")");
+    int written = snprintf(clause + elen, clause_sz - elen, ")");
+    return written >= 0 && written < clause_sz - elen;
 }
 
 /* Append a regex WHERE clause for a column (case-sensitive or insensitive). */
@@ -7782,8 +7905,8 @@ static int search_where_basic(const cbm_search_params_t *params, char *where, in
 }
 
 /* Build advanced WHERE clauses: relationship, entry points, exclude labels. */
-static void search_where_advanced(const cbm_search_params_t *params, char *where, int where_sz,
-                                  int *wlen, int *nparams, search_bind_t *binds, int *bind_idx) {
+static int search_where_advanced(const cbm_search_params_t *params, char *where, int where_sz,
+                                 int *wlen, int *nparams, search_bind_t *binds, int *bind_idx) {
     if (params->relationship) {
         char rel_clause[CBM_SZ_256];
         snprintf(rel_clause, sizeof(rel_clause),
@@ -7804,10 +7927,13 @@ static void search_where_advanced(const cbm_search_params_t *params, char *where
     }
     if (params->exclude_labels) {
         char excl_clause[CBM_SZ_512];
-        search_build_exclude_labels(params->exclude_labels, binds, bind_idx, excl_clause,
-                                    (int)sizeof(excl_clause));
-        (void)where_append(where, where_sz, *wlen, nparams, excl_clause);
+        if (!search_build_exclude_labels(params->exclude_labels, binds, bind_idx, excl_clause,
+                                         (int)sizeof(excl_clause))) {
+            return 0;
+        }
+        *wlen = where_append(where, where_sz, *wlen, nparams, excl_clause);
     }
+    return 1;
 }
 
 static int search_build_where(const cbm_search_params_t *params, char *where, int where_sz,
@@ -7816,7 +7942,9 @@ static int search_build_where(const cbm_search_params_t *params, char *where, in
     int nparams = 0;
 
     search_where_basic(params, where, where_sz, &wlen, &nparams, binds, bind_idx, pool);
-    search_where_advanced(params, where, where_sz, &wlen, &nparams, binds, bind_idx);
+    if (!search_where_advanced(params, where, where_sz, &wlen, &nparams, binds, bind_idx)) {
+        return -1;
+    }
 
     return nparams;
 }
@@ -7846,6 +7974,10 @@ int cbm_store_search(cbm_store_t *s, const cbm_search_params_t *params, cbm_sear
 
     int nparams =
         search_build_where(params, where, (int)sizeof(where), binds, &bind_idx, &like_pool);
+    if (nparams < 0) {
+        like_pool_free(&like_pool);
+        return CBM_STORE_ERR;
+    }
 
     /* Build full SQL */
     if (nparams > 0) {

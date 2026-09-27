@@ -6,6 +6,7 @@
 #include "test_framework.h"
 #include "test_helpers.h"
 #include "discover/discover.h"
+#include "foundation/constants.h"
 #include "foundation/platform.h"
 
 typedef struct {
@@ -431,6 +432,122 @@ TEST(discover_bounded_count_fails_closed_after_deadline) {
     th_cleanup(base);
     ASSERT_EQ(status, CBM_DISCOVER_ERROR);
     ASSERT_EQ(count, -1);
+    PASS();
+}
+
+TEST(discover_path_argument_over_limit_is_specific_and_empty) {
+    char oversized[CBM_SZ_4K + 1];
+    memset(oversized, 'x', sizeof(oversized) - 1U);
+    oversized[0] = '/';
+    oversized[sizeof(oversized) - 1U] = '\0';
+
+    cbm_file_info_t *files = NULL;
+    int count = 7;
+    cbm_discover_opts_t opts = {.mode = CBM_MODE_FULL};
+    ASSERT_EQ(cbm_discover(oversized, &opts, &files, &count), CBM_DISCOVER_PATH_TOO_LONG);
+    ASSERT_NULL(files);
+    ASSERT_EQ(count, 0);
+
+    count = 7;
+    ASSERT_EQ(cbm_discover_count_bounded(oversized, &opts, 100, 0, &count),
+              CBM_DISCOVER_PATH_TOO_LONG);
+    ASSERT_EQ(count, -1);
+    PASS();
+}
+
+TEST(discover_handles_paths_within_native_limit) {
+    char *base = th_mktempdir("cbm_disc_long_supported");
+    ASSERT(base != NULL);
+
+    char absolute_dir[CBM_SZ_4K];
+    char relative_dir[CBM_SZ_4K] = "";
+    int base_length = snprintf(absolute_dir, sizeof(absolute_dir), "%s", base);
+    ASSERT(base_length > 0);
+    ASSERT_LT(base_length, (int)sizeof(absolute_dir));
+
+    char segment[181];
+    memset(segment, 'd', sizeof(segment) - 1U);
+    segment[sizeof(segment) - 1U] = '\0';
+    size_t target_length = 1100U;
+#ifndef _WIN32
+    /* macOS can reject an absolute path before the walker's 4 KiB buffer is
+     * full. Leave room for the last segment and filename; Windows/Linux still
+     * exercise paths beyond the old 1024-byte enumeration buffer. */
+    long native_limit = pathconf(base, _PC_PATH_MAX);
+    if (native_limit > 0 && (size_t)native_limit < target_length + sizeof(segment) + 64U) {
+        ASSERT_GT((size_t)native_limit, sizeof(segment) + 64U);
+        target_length = (size_t)native_limit - sizeof(segment) - 64U;
+    }
+#endif
+    while (strlen(absolute_dir) <= target_length) {
+        size_t absolute_length = strlen(absolute_dir);
+        size_t relative_length = strlen(relative_dir);
+        int absolute_added = snprintf(absolute_dir + absolute_length,
+                                      sizeof(absolute_dir) - absolute_length, "/%s", segment);
+        int relative_added =
+            snprintf(relative_dir + relative_length, sizeof(relative_dir) - relative_length, "%s%s",
+                     relative_length == 0U ? "" : "/", segment);
+        ASSERT_GT(absolute_added, 0);
+        ASSERT_LT((size_t)absolute_added, sizeof(absolute_dir) - absolute_length);
+        ASSERT_GT(relative_added, 0);
+        ASSERT_LT((size_t)relative_added, sizeof(relative_dir) - relative_length);
+    }
+    ASSERT_GT(strlen(absolute_dir), target_length);
+    ASSERT_LT(strlen(absolute_dir), CBM_SZ_4K - 64U);
+    ASSERT(th_mkdir_p(absolute_dir) == 0);
+
+    char source_path[CBM_SZ_4K];
+    char source_rel_path[CBM_SZ_4K];
+    int source_length = snprintf(source_path, sizeof(source_path), "%s/path_probe.c", absolute_dir);
+    int source_rel_length =
+        snprintf(source_rel_path, sizeof(source_rel_path), "%s/path_probe.c", relative_dir);
+    ASSERT_GT(source_length, 0);
+    ASSERT_LT(source_length, (int)sizeof(source_path));
+    ASSERT_GT(source_rel_length, 0);
+    ASSERT_LT(source_rel_length, (int)sizeof(source_rel_path));
+    FILE *source = cbm_fopen(source_path, "wb");
+    ASSERT_NOT_NULL(source);
+    fputs("int path_probe(void) { return 1; }\n", source);
+    ASSERT_EQ(fclose(source), 0);
+
+    cbm_discover_opts_t opts = {.mode = CBM_MODE_FULL};
+    cbm_file_info_t *files = NULL;
+    int count = 0;
+    int rc = cbm_discover(base, &opts, &files, &count);
+    bool found = rc == CBM_DISCOVER_OK && discover_has_rel_path(files, count, source_rel_path);
+
+    cbm_discover_free(files, count);
+    th_cleanup(base);
+    ASSERT_EQ(rc, CBM_DISCOVER_OK);
+    ASSERT_TRUE(found);
+    PASS();
+}
+
+TEST(discover_descendant_path_limit_is_specific_and_empty) {
+    char *base = th_mktempdir("cbm_disc_native_limit");
+    ASSERT_NOT_NULL(base);
+    size_t components = 0;
+    size_t final_length = 0;
+    ASSERT_EQ(th_make_path_limit_tree(base, &components, &final_length), 0);
+
+    cbm_discover_opts_t opts = {.mode = CBM_MODE_FULL};
+    cbm_file_info_t *files = NULL;
+    int count = 7;
+    int rc = cbm_discover(base, &opts, &files, &count);
+    bool empty = files == NULL && count == 0;
+    cbm_discover_free(files, count);
+    int bounded_count = 7;
+    cbm_discover_status_t bounded =
+        cbm_discover_count_bounded(base, &opts, 100, 0, &bounded_count);
+    int cleanup = th_remove_path_limit_tree(base, components);
+    th_cleanup(base);
+
+    ASSERT_GT(final_length, CBM_SZ_4K - 1U);
+    ASSERT_EQ(rc, CBM_DISCOVER_PATH_TOO_LONG);
+    ASSERT_TRUE(empty);
+    ASSERT_EQ(bounded, CBM_DISCOVER_PATH_TOO_LONG);
+    ASSERT_EQ(bounded_count, -1);
+    ASSERT_EQ(cleanup, 0);
     PASS();
 }
 
@@ -1766,6 +1883,9 @@ SUITE(discover) {
     RUN_TEST(discover_wide_sibling_fanout_exceeds_initial_walk_stack);
     RUN_TEST(discover_bounded_count_is_allocation_free_and_limit_exact);
     RUN_TEST(discover_bounded_count_fails_closed_after_deadline);
+    RUN_TEST(discover_path_argument_over_limit_is_specific_and_empty);
+    RUN_TEST(discover_handles_paths_within_native_limit);
+    RUN_TEST(discover_descendant_path_limit_is_specific_and_empty);
     RUN_TEST(discover_bounded_count_matches_shebang_discovery);
     RUN_TEST(discover_skips_git_dir);
     RUN_TEST(discover_with_gitignore);

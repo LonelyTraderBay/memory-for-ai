@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sqlite3.h>
 
 /* Helper: create a store with project + N nodes (A, B, C, ...) */
 static cbm_store_t *setup_store_with_nodes(int n, int64_t *ids) {
@@ -634,7 +635,73 @@ TEST(store_edge_find_source_type_nonexistent) {
     PASS();
 }
 
+static int selected_edge_profile(unsigned kind, void *context, void *statement, void *elapsed) {
+    (void)kind;
+    (void)elapsed;
+    sqlite3_stmt *stmt = statement;
+    const char *sql = sqlite3_sql(stmt);
+    if (sql && strstr(sql, "WITH selected(id)"))
+        *(int *)context = sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_VM_STEP, 0);
+    return 0;
+}
+
+TEST(store_edges_among_matches_induced_graph_without_unrelated_scan) {
+    int64_t ids[4];
+    cbm_store_t *s = setup_store_with_nodes(4, ids);
+    ASSERT_NOT_NULL(s);
+    cbm_edge_t e = {.project = "test", .source_id = ids[0], .target_id = ids[1], .type = "CALLS"};
+    ASSERT_GT(cbm_store_insert_edge(s, &e), 0);
+    e.source_id = ids[1];
+    e.target_id = ids[0];
+    e.type = "USAGE";
+    ASSERT_GT(cbm_store_insert_edge(s, &e), 0);
+    e.source_id = ids[0];
+    e.type = "CALLS";
+    ASSERT_GT(cbm_store_insert_edge(s, &e), 0); /* self-loop retained */
+    e.target_id = ids[2];
+    ASSERT_GT(cbm_store_insert_edge(s, &e), 0); /* out-of-set target excluded */
+    e.source_id = ids[2];
+    e.target_id = ids[0];
+    ASSERT_GT(cbm_store_insert_edge(s, &e), 0); /* out-of-set source excluded */
+    e.source_id = ids[2];
+    e.target_id = ids[3];
+    char type[32];
+    for (int i = 0; i < 4000; i++) {
+        snprintf(type, sizeof(type), "UNRELATED_%d", i);
+        e.type = type;
+        ASSERT_GT(cbm_store_insert_edge(s, &e), 0);
+    }
+    int total_before = cbm_store_count_edges(s, "test");
+    int64_t selected[] = {ids[1], ids[0], ids[0]}; /* duplicates and reversed order */
+    cbm_edge_t *edges = NULL;
+    int count = -1, steps = 0;
+    sqlite3 *db = cbm_store_get_db(s);
+    ASSERT_EQ(sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL), SQLITE_OK);
+    sqlite3_trace_v2(db, SQLITE_TRACE_PROFILE, selected_edge_profile, &steps);
+    ASSERT_EQ(cbm_store_find_edges_among(s, "test", selected, 3, &edges, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 3);
+    for (int i = 0; i < count; i++) {
+        ASSERT_TRUE(edges[i].source_id == ids[0] || edges[i].source_id == ids[1]);
+        ASSERT_TRUE(edges[i].target_id == ids[0] || edges[i].target_id == ids[1]);
+    }
+    ASSERT_GT(steps, 0);
+    ASSERT_LT(steps, 1000); /* >4000 irrelevant edges must not be scanned */
+    printf(" [selected_edges_vm_steps=%d unrelated_edges=4000] ", steps);
+    cbm_store_free_edges(edges, count);
+    ASSERT_EQ(cbm_store_find_edges_among(s, "test", NULL, 0, &edges, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 0);
+    ASSERT_NULL(edges);
+    ASSERT_EQ(cbm_store_find_edges_among(s, "other", selected, 3, &edges, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 0);
+    cbm_store_free_edges(edges, count);
+    ASSERT_EQ(cbm_store_count_edges(s, "test"), total_before);
+    sqlite3_trace_v2(db, 0, NULL, NULL);
+    cbm_store_close(s);
+    PASS();
+}
+
 SUITE(store_edges) {
+    RUN_TEST(store_edges_among_matches_induced_graph_without_unrelated_scan);
     RUN_TEST(store_edge_insert_find);
     RUN_TEST(store_edge_dedup);
     RUN_TEST(store_imports_edge_local_name_coexist);

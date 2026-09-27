@@ -333,8 +333,8 @@ require(
     "the canonical soak entry must completion-guard every leg on the soak summary",
 )
 require(
-    pr_workflow.count("scripts/smoke-local.sh") >= 2,
-    "PR Ubuntu and macOS smoke steps must run smoke-local.sh",
+    "smoke-unix:" not in pr_workflow and "macos-" not in pr_workflow,
+    "PR smoke must not restore unsupported Unix targets",
 )
 require(
     "SMOKE_ARCH=amd64" in pr_workflow

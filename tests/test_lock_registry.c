@@ -1092,12 +1092,17 @@ TEST(lock_registry_absolute_deadline_survives_repeated_wakes) {
         lock_registry_test_yield();
     }
     bool tail_ready = tail_started && atomic_load_explicit(&tail.ready, memory_order_acquire);
+    /* Keep the same deadline/wake ratios, but allow a loaded macOS sanitizer
+     * runner to schedule and observe the queued thread. A 100 ms observation
+     * window can miss the entire 200 ms wait even when the deadline is correct.
+     * Rebased deadlines still fail while broadcasts continue for 3x the budget. */
+    const uint64_t timeout_ms = 2000;
     uint64_t deadline_start = cbm_now_ms();
-    tail.deadline_ms = deadline_start + 200;
+    tail.deadline_ms = deadline_start + timeout_ms;
     atomic_store_explicit(&tail.go, true, memory_order_release);
 
     bool tail_queued = false;
-    uint64_t queue_deadline = deadline_start + 100;
+    uint64_t queue_deadline = deadline_start + timeout_ms / 2;
     while (tail_ready && cbm_now_ms() < queue_deadline) {
         tail_queued = cbm_lock_registry_waiter_count(fixture.registry) == 2 &&
                       cbm_lock_registry_attempting_waiter_count_for_test(fixture.registry) == 1;
@@ -1110,7 +1115,7 @@ TEST(lock_registry_absolute_deadline_survives_repeated_wakes) {
     cbm_lock_cancel_token_t unrelated_token;
     atomic_init(&unrelated_token, false);
     bool broadcasts_ok = true;
-    uint64_t observe_deadline = deadline_start + 600;
+    uint64_t observe_deadline = deadline_start + 3 * timeout_ms;
     while (tail_ready && !atomic_load_explicit(&tail.finished, memory_order_acquire) &&
            cbm_now_ms() < observe_deadline) {
         broadcasts_ok = cbm_lock_registry_request_cancel(fixture.registry, &unrelated_token) ==
@@ -1153,8 +1158,8 @@ TEST(lock_registry_absolute_deadline_survives_repeated_wakes) {
     ASSERT_TRUE(tail_queued);
     ASSERT_TRUE(broadcasts_ok);
     ASSERT_TRUE(returned_at_deadline);
-    ASSERT_GTE(elapsed_ms, 150);
-    ASSERT_TRUE(elapsed_ms < 350);
+    ASSERT_GTE(elapsed_ms, 3 * timeout_ms / 4);
+    ASSERT_TRUE(elapsed_ms < 7 * timeout_ms / 4);
     ASSERT_EQ(tail.status, CBM_PRIVATE_FILE_LOCK_BUSY);
     ASSERT_NULL(tail.lease);
     ASSERT_EQ(head.status, CBM_PRIVATE_FILE_LOCK_BUSY);

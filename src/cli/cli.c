@@ -1176,7 +1176,7 @@ static int cli_activation_transaction_finalize_close(
                      deferred ? deferred : "unknown");
         (void)fprintf(stderr,
                       "warning: old executable cleanup was deferred until "
-                      "reboot: %s\n",
+                      "process exit or reboot: %s\n",
                       deferred ? deferred : "unknown path");
     }
     return cli_activation_transaction_abort(transaction_io);
@@ -1202,7 +1202,7 @@ static void cli_activation_transaction_finalize_committed_or_fail_stop(
                      deferred ? deferred : "unknown");
         (void)fprintf(stderr,
                       "warning: old executable cleanup was deferred until "
-                      "reboot: %s\n",
+                      "process exit or reboot: %s\n",
                       deferred ? deferred : "unknown path");
     }
     cli_activation_transaction_abort_or_fail_stop(transaction_io, component);
@@ -1293,7 +1293,8 @@ static const char skill_content[] =
     "\n"
     "# Memory for AI — Knowledge Graph Tools\n"
     "\n"
-    "Graph tools return precise structural results in ~500 tokens vs ~80K for grep.\n"
+    "For structural questions, graph tools often return targeted evidence in hundreds of tokens "
+    "where broad text scans can return much more. For literals and config, search text directly.\n"
     "\n"
     "## Quick Decision Matrix\n"
     "\n"
@@ -1310,10 +1311,11 @@ static const char skill_content[] =
     "| Text search | `search_code` or Grep |\n"
     "\n"
     "## Exploration Workflow\n"
-    "1. `list_projects` — check if project is indexed\n"
-    "2. `get_graph_schema` — understand node/edge types\n"
-    "3. `search_graph(label=\"Function\", name_pattern=\".*Pattern.*\")` — find code\n"
-    "4. `get_code_snippet(qualified_name=\"project.path.FuncName\")` — read source\n"
+    "1. `list_projects` — identify the exact indexed project when needed\n"
+    "2. `search_graph(label=\"Function\", name_pattern=\".*Pattern.*\", limit=10)` — find code\n"
+    "3. `get_code_snippet(qualified_name=\"project.path.FuncName\")` — read source\n"
+    "Call `get_graph_schema` only before writing Cypher; call `get_architecture` only for an "
+    "architecture question.\n"
     "\n"
     "## Tracing Workflow\n"
     "1. `search_graph(name_pattern=\".*FuncName.*\")` — discover exact name\n"
@@ -1359,7 +1361,7 @@ static const char skill_content[] =
     "- High fan-in: `search_graph(min_degree=10, relationship=\"CALLS\", "
     "direction=\"inbound\")`\n"
     "\n"
-    "## 18 MCP Tools\n"
+    "## Common MCP Tools (selected)\n"
     "`index_repository`, `index_status`, `list_projects`, `delete_project`,\n"
     "`search_graph`, `search_code`, `trace_path`, `detect_changes`,\n"
     "`query_graph`, `get_graph_schema`, `get_code_snippet`, `get_architecture`,\n"
@@ -1402,7 +1404,12 @@ static const char codex_instructions_content[] =
     "- `query_graph` — run Cypher queries for complex patterns\n"
     "- `get_architecture` — high-level project summary\n"
     "\n"
-    "Always prefer graph tools over grep for code discovery.\n";
+    "Use graph tools for structural discovery: symbols, callers/callees, and impact. Use grep or "
+    "search_code for literal strings, error messages, configuration values, and non-code files; "
+    "those are not graph questions. Start focused searches with `limit=10` and paginate only when "
+    "the answer requires more results. Check `list_projects` and `index_status` when confirming "
+    "the project or freshness; index when missing or stale. Use `check_index_coverage` for files "
+    "you cite or change, and scope coverage before negative or exhaustive claims.\n";
 
 /* Old skill names — cleaned up during install to remove stale directories. */
 static const char *old_skill_names[] = {
@@ -1436,6 +1443,9 @@ static int mkdirp(const char *path, int mode) {
  * directory symlink; on Windows cbm_rmdir removes only an empty directory or
  * the directory link itself and never traverses its target. */
 static bool cbm_remove_empty_directory(const char *path, bool dry_run) {
+    if (!path) {
+        return false;
+    }
     struct stat state;
 #ifndef _WIN32
     if (lstat(path, &state) != 0 || !S_ISDIR(state.st_mode)) {
@@ -1986,7 +1996,7 @@ static cbm_json_mcp_command_availability_t cbm_json_mcp_probe_command_path(const
  * result. Bare/relative/templated commands and filesystem errors remain
  * fail-closed. POSIX never enters this classifier. */
 static cbm_json_mcp_command_availability_t cbm_json_mcp_command_availability(const char *command) {
-    if (!cbm_json_mcp_command_path_probe_safe(command) || strchr(command, '$') ||
+    if (!command || !cbm_json_mcp_command_path_probe_safe(command) || strchr(command, '$') ||
         strchr(command, '%')) {
         return CBM_JSON_MCP_COMMAND_UNKNOWN;
     }
@@ -2910,7 +2920,14 @@ static const char agent_instructions_content[] =
     "## Codebase Knowledge Graph (memory-for-ai)\n"
     "\n"
     "This project uses memory-for-ai to maintain a knowledge graph of the codebase.\n"
-    "ALWAYS prefer MCP graph tools over grep/glob/file-search for code discovery.\n"
+    "For structural questions, graph tools often return targeted evidence in hundreds of tokens "
+    "where broad text scans can return much more. Use MCP graph tools for structural discovery "
+    "(symbols, callers/callees, and impact). Use "
+    "grep or search_code for literal strings, error messages, configuration values, and non-code "
+    "files; those are not graph questions.\n"
+    "Start focused searches with `limit=10`; paginate only when the answer requires more results. "
+    "Call get_graph_schema only before writing Cypher, and get_architecture only for an "
+    "architecture question.\n"
     "\n"
     "### Priority Order\n"
     "1. `search_graph` — find functions, classes, routes, variables by pattern\n"
@@ -3333,12 +3350,16 @@ static const char aider_instructions_content[] =
     "\n"
     "This project uses memory-for-ai to maintain a knowledge graph of the codebase.\n"
     "Aider has no MCP support, so invoke the graph through the CLI (e.g. via /run).\n"
-    "ALWAYS prefer these commands over grep/glob/file-search for code discovery.\n"
+    "Use graph CLI commands for structural discovery (symbols, callers/callees, and impact). Use "
+    "grep for literal strings, error messages, configuration values, and non-code files; those "
+    "are not graph questions.\n"
+    "Start focused searches with limit=10 and paginate only when the answer requires more results. "
+    "Do not fetch schema or architecture unless the task needs it.\n"
     "\n"
     "## Priority Order (CLI form)\n"
     "1. Find functions/classes/routes:\n"
     "   memory-for-ai cli search_graph "
-    "'{\"project\":\"<name>\",\"name_pattern\":\".*Foo.*\"}'\n"
+    "'{\"project\":\"<name>\",\"name_pattern\":\".*Foo.*\",\"limit\":10}'\n"
     "2. Who calls X / what does X call:\n"
     "   memory-for-ai cli trace_path "
     "'{\"project\":\"<name>\",\"function_name\":\"Foo\",\"direction\":\"both\"}'\n"
@@ -3350,9 +3371,12 @@ static const char aider_instructions_content[] =
     "5. Project overview:\n"
     "   memory-for-ai cli get_architecture '{\"project\":\"<name>\"}'\n"
     "\n"
-    "First use in a repo: memory-for-ai cli index_repository '{\"repo_path\":\"<abs "
-    "path>\"}'\n"
     "List indexed projects (for <name>): memory-for-ai cli list_projects '{}'\n"
+    "Check current project freshness with index_status. If missing or stale, run: memory-for-ai "
+    "cli index_repository '{\"repo_path\":\"<abs path>\"}'\n"
+    "Run "
+    "check_index_coverage for files you cite or change, and scope coverage before negative or "
+    "exhaustive claims.\n"
     "\n"
     "## When to fall back to grep/glob\n"
     "- Searching for string literals, error messages, config values\n"
@@ -5716,11 +5740,12 @@ int cbm_remove_claude_subagent_hooks(const char *settings_path) {
 /* Matcher excludes read_file for consistency with the Claude fix: the hook
  * is an advisory reminder, not a gate over the agent's file reads. */
 #define GEMINI_HOOK_MATCHER "google_web_search|grep_search"
-#define GEMINI_HOOK_COMMAND                                                      \
-    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"        \
-    "hookEventName:'BeforeTool',additionalContext:'Code discovery: prefer "      \
-    "memory-for-ai search_graph, trace_path, and get_code_snippet over grep or " \
-    "file search.'}}))\""
+#define GEMINI_HOOK_COMMAND                                                                  \
+    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"                    \
+    "hookEventName:'BeforeTool',additionalContext:'Code discovery: use "                     \
+    "memory-for-ai search_graph/trace_path for indexed relationships; grep literals. "       \
+    "Verify source and coverage for callbacks, dynamic references, and negative/exhaustive " \
+    "claims.'}}))\""
 static const char *const cmm_gemini_released_hook_commands[] = {
     "echo 'Reminder: prefer memory-for-ai search_graph/trace_path/get_code_snippet over "
     "grep/file search for code discovery.' >&2",
@@ -5788,11 +5813,12 @@ static int cbm_remove_gemini_coverage_hook(const char *settings_path, const char
 
 /* Gemini CLI SessionStart reminder. settings.json uses the same
  * hooks.<Event>[].hooks[] JSON shape as Claude, so it reuses upsert_hooks_json. */
-#define GEMINI_SESSION_COMMAND                                                    \
-    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"         \
-    "hookEventName:'SessionStart',additionalContext:'Code discovery: prefer "     \
-    "memory-for-ai search_graph, trace_path, get_code_snippet, query_graph, and " \
-    "search_code; run index_repository first when needed.'}}))\""
+#define GEMINI_SESSION_COMMAND                                                                \
+    "node -e \"process.stdout.write(JSON.stringify({hookSpecificOutput:{"                     \
+    "hookEventName:'SessionStart',additionalContext:'Code discovery: use "                    \
+    "memory-for-ai search_graph/trace_path for indexed relationships; grep literals. Verify " \
+    "callbacks, dynamic references, coverage, and negative/exhaustive claims in source; "     \
+    "run index_repository first when needed.'}}))\""
 static const char *const cmm_gemini_released_session_commands[] = {
     "echo \"Code discovery: prefer memory-for-ai (search_graph, trace_path, "
     "get_code_snippet, query_graph, search_code) over grep/file-read; run index_repository "
@@ -11982,19 +12008,14 @@ static int cli_uninstall_activate(void *opaque) {
     return CLI_OK;
 }
 
-int cbm_cmd_uninstall(int argc, char **argv) {
-    /* `uninstall --help` used to UNINSTALL.
-     *
-     * The top-level dispatcher matches the subcommand at argv[1] and hands the
-     * rest here, so its own --help check never sees argv[2]. Nothing downstream
-     * looked either, and --help is the one flag a person types precisely
-     * BECAUSE they are not sure what a command does. It removed the binary and
-     * every agent configuration (#1038).
-     *
-     * Checked before parse_auto_answer so a `-y` sitting elsewhere on the line
-     * cannot auto-confirm the destruction we are trying to prevent. */
+typedef struct {
+    bool dry_run;
+    const char *requested_bin_dir;
+} cli_uninstall_options_t;
+
+static bool cli_uninstall_print_help_if_requested(int argc, char **argv) {
     for (int i = 0; i < argc; i++) {
-        if (argv && argv[i] && (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
+        if (argv[i] && (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
             printf("Usage: memory-for-ai uninstall [options]\n\n"
                    "Removes the memory-for-ai binary, its agent configurations and,\n"
                    "with confirmation, its indexes. THIS IS DESTRUCTIVE.\n\n"
@@ -12004,55 +12025,44 @@ int cbm_cmd_uninstall(int argc, char **argv) {
                    "  -y, --yes        Do not prompt for confirmation\n"
                    "  -h, --help       Show this help and exit\n\n"
                    "Run with --dry-run first if you are unsure.\n");
-            return CLI_OK;
+            return true;
         }
     }
-    parse_auto_answer(argc, argv);
-    bool dry_run = false;
-    /* An install into a custom --dir must be removable from that same dir:
-     * without this, anyone who installed outside ~/.local/bin has no supported
-     * uninstall path at all. Mirrors cbm_cmd_install's parsing. */
-    const char *requested_bin_dir = NULL;
+    return false;
+}
+
+static bool cli_uninstall_parse_options(int argc, char **argv, cli_uninstall_options_t *options) {
     for (int i = 0; i < argc; i++) {
         /* The public command dispatcher passes option-only argv, while the
-         * long-standing direct API/tests include the subcommand at argv[0]. */
+         * long-standing
+         * direct API/tests include the subcommand at argv[0]. */
         if (i == 0 && strcmp(argv[i], "uninstall") == 0) {
             continue;
         }
         if (strcmp(argv[i], "--dry-run") == 0) {
-            dry_run = true;
+            options->dry_run = true;
         } else if (strncmp(argv[i], "--dir=", SLEN("--dir=")) == 0) {
-            requested_bin_dir = argv[i] + SLEN("--dir=");
-            if (!requested_bin_dir[0]) {
+            options->requested_bin_dir = argv[i] + SLEN("--dir=");
+            if (!options->requested_bin_dir[0]) {
                 (void)fprintf(stderr, "error: --dir requires a non-empty path\n");
-                return CLI_TRUE;
+                return false;
             }
         } else if (strcmp(argv[i], "--dir") == 0) {
             if (i + 1 >= argc || !argv[i + 1] || !argv[i + 1][0] || argv[i + 1][0] == '-') {
                 (void)fprintf(stderr, "error: --dir requires a non-empty path\n");
-                return CLI_TRUE;
+                return false;
             }
-            requested_bin_dir = argv[++i];
+            options->requested_bin_dir = argv[++i];
         } else if (strcmp(argv[i], "-y") != 0 && strcmp(argv[i], "--yes") != 0 &&
                    strcmp(argv[i], "-n") != 0 && strcmp(argv[i], "--no") != 0) {
             (void)fprintf(stderr, "error: unknown uninstall option: %s\n", argv[i]);
-            return CLI_TRUE;
+            return false;
         }
     }
+    return true;
+}
 
-    const char *home = cbm_get_home_dir();
-    if (!home) {
-        (void)fprintf(stderr, "error: HOME not set (use USERPROFILE on Windows)\n");
-        return CLI_TRUE;
-    }
-
-    printf("memory-for-ai uninstall\n\n");
-
-    g_agent_uninstall_errors = 0;
-    cbm_detected_agents_t agents = cbm_detect_agents(home);
-
-    /* Confirm index removal outside the startup lock, but defer the mutation
-     * until the final guarded activation. Dry-run never removes indexes. */
+static bool cli_uninstall_choose_index_removal(const char *home, bool dry_run) {
     bool delete_indexes = false;
     int index_count = count_db_indexes(home);
     if (index_count > 0) {
@@ -12068,6 +12078,47 @@ int cbm_cmd_uninstall(int argc, char **argv) {
             printf("Indexes kept.\n");
         }
     }
+    return delete_indexes;
+}
+
+int cbm_cmd_uninstall(int argc, char **argv) {
+    /* `uninstall --help` used to UNINSTALL.
+     *
+     * The top-level dispatcher matches the subcommand at argv[1] and hands the
+     * rest here, so its own --help check never sees argv[2]. Nothing downstream
+     * looked either, and --help is the one flag a person types precisely
+     * BECAUSE they are not sure what a command does. It removed the binary and
+     * every agent configuration (#1038).
+     *
+     * Checked before parse_auto_answer so a `-y` sitting elsewhere on the line
+     * cannot auto-confirm the destruction we are trying to prevent. */
+    if (argc < 0 || (argc > 0 && !argv)) {
+        return CLI_TRUE;
+    }
+    if (cli_uninstall_print_help_if_requested(argc, argv)) {
+        return CLI_OK;
+    }
+    parse_auto_answer(argc, argv);
+    cli_uninstall_options_t options = {0};
+    if (!cli_uninstall_parse_options(argc, argv, &options)) {
+        return CLI_TRUE;
+    }
+
+    const char *home = cbm_get_home_dir();
+    if (!home) {
+        (void)fprintf(stderr, "error: HOME not set (use USERPROFILE on Windows)\n");
+        return CLI_TRUE;
+    }
+
+    printf("memory-for-ai uninstall\n\n");
+
+    g_agent_uninstall_errors = 0;
+    cbm_detected_agents_t agents = cbm_detect_agents(home);
+
+    /* Confirm index removal outside the startup lock, but defer the mutation
+     * until the final guarded activation. Dry-run never removes indexes. */
+    bool dry_run = options.dry_run;
+    bool delete_indexes = cli_uninstall_choose_index_removal(home, dry_run);
 
     char bin_path_storage[CLI_BUF_1K];
     const char *bin_path = bin_path_storage;
@@ -12076,10 +12127,11 @@ int cbm_cmd_uninstall(int argc, char **argv) {
 #else
     static const char kBinaryLeaf[] = "memory-for-ai";
 #endif
-    int bin_path_length = requested_bin_dir ? snprintf(bin_path_storage, sizeof(bin_path_storage),
-                                                       "%s/%s", requested_bin_dir, kBinaryLeaf)
-                                            : snprintf(bin_path_storage, sizeof(bin_path_storage),
-                                                       "%s/.local/bin/%s", home, kBinaryLeaf);
+    int bin_path_length = options.requested_bin_dir
+                              ? snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/%s",
+                                         options.requested_bin_dir, kBinaryLeaf)
+                              : snprintf(bin_path_storage, sizeof(bin_path_storage),
+                                         "%s/.local/bin/%s", home, kBinaryLeaf);
     if (bin_path_length <= 0 || (size_t)bin_path_length >= sizeof(bin_path_storage)) {
         (void)fprintf(stderr, "error: uninstall target path is too long\n");
         return CLI_TRUE;

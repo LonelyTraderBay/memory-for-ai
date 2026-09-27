@@ -157,7 +157,7 @@ require(
     and "--expected-sha256" in build_workflow,
     "_build.yml must hand hash-bound selected bytes to the canonical packager",
 )
-for target in ("windows-amd64", "windows-arm64"):
+for target in ("windows-amd64",):
     require(
         target in build_workflow,
         f"_build.yml must retain the {target} release product",
@@ -746,8 +746,8 @@ require(
 require(
     'SMOKE_UPDATE_FIXTURE_DIR="$FIXTURE_DIR"' in vm_smoke
     and 'SMOKE_UPDATE_FIXTURE_DIR="$FIXTURE_DIR"' in smoke_local
-    and "scripts/smoke-local.sh" in smoke_workflow
-    and smoke_workflow.count("CBM_SMOKE_ARTIFACT_DIR") >= 2,
+    and "scripts/verify-windows.ps1" in read(".github/workflows/_test.yml")
+    and smoke_workflow.count("CBM_SMOKE_ARTIFACT_DIR") >= 1,
     "Unix and Windows release smoke must identify their local update fixture via the "
     "canonical wrappers",
 )

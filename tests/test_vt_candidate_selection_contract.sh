@@ -20,6 +20,7 @@ done
 # token or Developer Mode). A venue without that capability cannot exercise
 # this contract — SKIP loudly instead of crashing mid-fixture, exactly like
 # the build-dir safety contract skips its symlink traversal cases.
+export CBM_TEST_SYMLINK_CAPABLE=1
 if ! python3 - <<'PROBE' >/dev/null 2>&1; then
 import os
 import sys
@@ -32,8 +33,8 @@ except OSError:
     sys.exit(1)
 sys.exit(0)
 PROBE
-    echo "SKIP: no symlink creation privilege on this venue (Windows needs an elevated token or Developer Mode); candidate-selection adversarial fixtures not exercisable"
-    exit 0
+    echo "SKIP: no symlink creation privilege on this venue (Windows needs an elevated token or Developer Mode); only the symlink fixture is skipped"
+    export CBM_TEST_SYMLINK_CAPABLE=0
 fi
 
 python3 - "$ROOT" "$FIX" <<'PY'
@@ -58,11 +59,7 @@ stage_tool = root / "scripts/ci/stage-release-candidates.py"
 select_tool = root / "scripts/ci/select-release-candidates.py"
 verify_tool = root / "scripts/ci/verify-release-selection.py"
 
-TARGETS = (
-    "linux-amd64", "linux-arm64", "linux-amd64-portable",
-    "linux-arm64-portable", "darwin-amd64", "darwin-arm64",
-    "windows-amd64", "windows-arm64",
-)
+TARGETS = ("windows-amd64",)
 VARIANTS = ("unstripped", "debug-stripped", "stripped")
 ORDER = ("stripped", "debug-stripped", "unstripped")
 FIELDS = (
@@ -179,21 +176,21 @@ def make_artifacts(directory: pathlib.Path, *, reverse: bool = False) -> dict[tu
 
 
 def invoke_stage(source: pathlib.Path, output: pathlib.Path) -> subprocess.CompletedProcess[str]:
-    return run(stage_tool, source, output, "--expect-targets", 8, "--expect-candidates", 24)
+    return run(stage_tool, source, output, "--expect-targets", 1, "--expect-candidates", 3)
 
 
 artifacts = fix / "artifacts"
 candidate_data = make_artifacts(artifacts)
 staged = fix / "scan"
 result = invoke_stage(artifacts, staged)
-require(result.returncode == 0, f"valid 8-target candidate set rejected: {result.stdout}{result.stderr}")
+require(result.returncode == 0, f"valid 1-target candidate set rejected: {result.stdout}{result.stderr}")
 require(sorted(path.name for path in staged.iterdir()) ==
         ["associations.tsv", "candidates.tsv", "notices", "objects", "scan-set.tsv"],
         "stager output is not the exact atomic bundle")
 
 cmeta, candidates = manifest(staged / "candidates.tsv")
 require(cmeta["marker"] == "# cbm-release-candidates-v1", "candidate marker changed")
-require(cmeta.get("targets") == "8" and cmeta.get("candidates") == "24", "candidate counts not bound")
+require(cmeta.get("targets") == "1" and cmeta.get("candidates") == "3", "candidate counts not bound")
 require([(row["target"], row["variant"]) for row in candidates] ==
         [(target, variant) for target in TARGETS for variant in VARIANTS],
         "candidate rows are not in canonical target/variant order")
@@ -239,14 +236,12 @@ def replace_candidate_with_symlink(path: pathlib.Path) -> None:
     # which must be cleared before unlink; Unix only needs a writable parent.
     binary.chmod(0o700)
     binary.unlink()
-    target = provenances[1].parent / "unstripped" / (
-        "memory-for-ai.exe" if "windows" in str(provenances[1])
-        else "memory-for-ai"
-    )
+    target = next(provenances[0].parent.glob("stripped/*"))
     binary.symlink_to(target)
 
 
-expect_stage_failure("symlink", replace_candidate_with_symlink)
+if os.environ.get("CBM_TEST_SYMLINK_CAPABLE") == "1":
+    expect_stage_failure("symlink", replace_candidate_with_symlink)
 
 
 def tamper_candidate(path: pathlib.Path) -> None:
@@ -281,7 +276,7 @@ def result_rows(classifications: dict[tuple[str, str], str], *, shuffle: bool = 
 
 def write_results(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
     write_tsv(path, "cbm-virustotal-results-v2", {
-        "scan_objects": 24, "associations": 24, "min_engines_policy": 50,
+        "scan_objects": 3, "associations": 3, "min_engines_policy": 50,
         "min_completed_engines": 71, "max_completed_engines": 71,
     }, RESULT_FIELDS, rows)
 
@@ -316,36 +311,36 @@ def selection_rows(directory: pathlib.Path) -> tuple[dict[str, str], list[dict[s
 
 # Exhaustive truth table: distribute all four pairs across eight targets and
 # repeat once, proving exact decision behavior and both result bindings.
-classes: dict[tuple[str, str], str] = {}
-expected: dict[str, str] = {}
-expected_decisions: dict[str, str] = {}
-require(len(TRUTH_KEYS) == len(TARGETS), "truth table must map one combination per target")
-for index, target in enumerate(TARGETS):
-    key = TRUTH_KEYS[index]
-    for variant, classification in zip(ORDER, key):
-        classes[target, variant] = classification
-    expected[target], expected_decisions[target] = expected_choice(key)
-results_file = fix / "vt-results.tsv"
-write_results(results_file, result_rows(classes, shuffle=True))
-selected = fix / "selected"
-result = run(select_tool, "--candidates", staged / "candidates.tsv",
-             "--objects-dir", staged / "objects", "--out-dir", selected,
-             "--results", results_file)
-require(result.returncode == 0, f"valid truth-table results rejected: {result.stdout}{result.stderr}")
-smeta, selections = selection_rows(selected)
-require(smeta["marker"] == "# cbm-release-selection-v1", "selection marker changed")
-require(smeta.get("policy") == "virustotal-v2", "scanned selection policy not recorded")
-require([row["target"] for row in selections] == list(TARGETS), "selection order is not canonical")
-for row in selections:
-    target = row["target"]
-    require(row["selected_variant"] == expected[target], f"truth-table decision wrong for {target}")
-    expected_decision = expected_decisions[target]
-    require(row["decision"] == expected_decision,
-            f"truth-table decision reason wrong for {target}: {row['decision']!r}")
-    chosen = next(c for c in candidates if c["target"] == target and c["variant"] == expected[target])
-    path = selected / "selected" / target / ("memory-for-ai.exe" if target.startswith("windows-") else "memory-for-ai")
-    require(path.read_bytes() == candidate_data[target, expected[target]], f"wrong selected bytes for {target}")
-    require(row["selected_sha256"] == chosen["sha256"], f"selection hash wrong for {target}")
+for truth_index, truth_key in enumerate(TRUTH_KEYS):
+    classes: dict[tuple[str, str], str] = {}
+    expected: dict[str, str] = {}
+    expected_decisions: dict[str, str] = {}
+    for index, target in enumerate(TARGETS):
+        key = truth_key
+        for variant, classification in zip(ORDER, key):
+            classes[target, variant] = classification
+        expected[target], expected_decisions[target] = expected_choice(key)
+    results_file = fix / "vt-results.tsv"
+    write_results(results_file, result_rows(classes, shuffle=True))
+    selected = fix / f"selected-{truth_index}"
+    result = run(select_tool, "--candidates", staged / "candidates.tsv",
+                 "--objects-dir", staged / "objects", "--out-dir", selected,
+                 "--results", results_file)
+    require(result.returncode == 0, f"valid truth-table results rejected: {result.stdout}{result.stderr}")
+    smeta, selections = selection_rows(selected)
+    require(smeta["marker"] == "# cbm-release-selection-v1", "selection marker changed")
+    require(smeta.get("policy") == "virustotal-v2", "scanned selection policy not recorded")
+    require([row["target"] for row in selections] == list(TARGETS), "selection order is not canonical")
+    for row in selections:
+        target = row["target"]
+        require(row["selected_variant"] == expected[target], f"truth-table decision wrong for {target}")
+        expected_decision = expected_decisions[target]
+        require(row["decision"] == expected_decision,
+                f"truth-table decision reason wrong for {target}: {row['decision']!r}")
+        chosen = next(c for c in candidates if c["target"] == target and c["variant"] == expected[target])
+        path = selected / "selected" / target / ("memory-for-ai.exe" if target.startswith("windows-") else "memory-for-ai")
+        require(path.read_bytes() == candidate_data[target, expected[target]], f"wrong selected bytes for {target}")
+        require(row["selected_sha256"] == chosen["sha256"], f"selection hash wrong for {target}")
 
 # Same logical results in canonical/reverse order produce identical evidence.
 ordered_results = fix / "ordered-results.tsv"
@@ -391,7 +386,7 @@ expect_select_failure("incomplete", lambda rows: rows[0].update(completed_engine
 expect_select_failure("missing", lambda rows: rows.pop())
 expect_select_failure("surplus", lambda rows: rows.append(dict(rows[0], analysis_id="extra-analysis")))
 expect_select_failure("tampered-hash", lambda rows: rows[0].update(sha256="0" * 64))
-expect_select_failure("cross-target", lambda rows: (
+expect_select_failure("cross-candidate", lambda rows: (
     rows[0].update(scan_path=rows[2]["scan_path"], sha256=rows[2]["sha256"], size=rows[2]["size"]),
     rows[2].update(scan_path=candidates[0]["scan_path"], sha256=candidates[0]["sha256"], size=candidates[0]["size"]),
 ))
@@ -450,31 +445,13 @@ def mutate_zip(path: pathlib.Path) -> None:
 expect_verify_failure("mutation", mutate_zip)
 
 
-def remove_unix_executable_mode(path: pathlib.Path) -> None:
-    archive = next(path.rglob("memory-for-ai-darwin-arm64.mcpb"))
-    with zipfile.ZipFile(archive, "r") as handle:
-        entries = [(info, handle.read(info)) for info in handle.infolist()]
-    with zipfile.ZipFile(archive, "w") as handle:
-        for info, payload in entries:
-            if info.filename == "server/memory-for-ai":
-                info.create_system = 3
-                info.external_attr = (stat.S_IFREG | 0o644) << 16
-            handle.writestr(info, payload)
-
-
-expect_verify_failure("unix-executable-mode", remove_unix_executable_mode)
 
 
 def wrong_target(path: pathlib.Path) -> None:
-    archive = next(path.rglob("memory-for-ai-linux-amd64.tar.gz"))
-    with tarfile.open(archive, "w:gz") as handle:
-        data = archive_for["linux-arm64"]
-        info = tarfile.TarInfo("memory-for-ai")
-        info.size = len(data)
-        handle.addfile(info, io.BytesIO(data))
+    archive = next(path.rglob("memory-for-ai-windows-amd64.zip"))
+    archive.rename(archive.with_name("memory-for-ai-windows-arm64.zip"))
 
+expect_verify_failure("unsupported-target", wrong_target)
 
-expect_verify_failure("wrong-target", wrong_target)
-
-print("PASS: exact candidate staging, exhaustive VT truth table, fail-closed selection, deterministic evidence, dry-run marking, and 14-container reconciliation")
+print("PASS: exact candidate staging, exhaustive VT truth table, fail-closed selection, deterministic evidence, dry-run marking, and 2-container reconciliation")
 PY

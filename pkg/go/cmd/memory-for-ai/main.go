@@ -362,6 +362,9 @@ func archiveNamesForOS(platform, binaryName string) []string {
 func download(dest string) error {
 	platform := goos()
 	arch := goarch()
+	if platform != "windows" || arch != "amd64" {
+		return fmt.Errorf("memory-for-ai supports Windows x64 only")
+	}
 	ext := "tar.gz"
 	if platform == "windows" {
 		ext = "zip"

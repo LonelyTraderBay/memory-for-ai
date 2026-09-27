@@ -113,15 +113,15 @@ edit_symbol: APPLIED  myproj.src.handlers.ProcessOrder  (Method)
 
 ## 5. Tool 2: `delete_symbol`
 
-Khác biệt then chốt so với safe-delete của LSP: usage check dùng **graph bắc cầu**, thấy cả caller qua Route/cross-service mà LSP không thấy.
+Usage check dùng các quan hệ caller được ghi nhận trong graph (có thể gồm Route/cross-service edges). Độ bao phủ phụ thuộc parser/index; đây không phải bằng chứng đầy đủ rằng không còn tham chiếu trong source.
 
 ### Luồng
 
 ```
 1. RESOLVE + GATE như edit_symbol
 2. USAGE CHECK  trace_path(qn, direction="inbound", depth=5, include_evidence=true)
-   → callers_total == 0  → safe, confidence HIGH
-   → callers chỉ trong test files → safe-with-note (đề xuất xóa test kèm theo)
+   → callers_total == 0  → không có caller nào được ghi nhận trong graph; CHƯA đủ để kết luận an toàn
+   → callers chỉ trong test files → chỉ có caller đã ghi nhận trong test; vẫn kiểm tra coverage/source
    → callers thật → danh sách callers (prefix-grouped, giới hạn 20 + total)
 3. Nếu có callers thật và force=false → TỪ CHỐI, trả caller list + gợi ý
    ("xóa/cập nhật N caller trước, hoặc force=true")
@@ -325,3 +325,15 @@ Response prefixes: `move_symbol: DRY-RUN` / `move_symbol: APPLIED` / `move_symbo
 3. **5c** ✅ (`54a56cda`) — `handle_move_symbol` trong mcp.c: plan/apply, circular check, re-export detection, schema + tool count 22→23.
 4. **5d** ✅ (`98eab359`) — Integration + fault-injection tests (suite `edit_integration` 17 test). Phát hiện và sửa 2 bug thật: TS importer resolve về Module node (không phải symbol) nên sweep phải nhìn cả 2 target; và use-after-free con trỏ `irel` sau `cbm_edit_free_node`.
 5. **5e** ✅ — Docs (AGENT_GUIDE, llms.txt 22→23 tools) + metadata đã regen ở 5c.
+
+## Cập nhật 2026-09-26: định danh backup và phát hiện drift
+
+Thiết kế hiện hành nằm tại [PRIORITY-HARDENING.md](PRIORITY-HARDENING.md).
+Backup dùng `backups/<sha256(canonical-parent + filename)>/bk_<sequence>`;
+không còn chọn theo basename/epoch/PID. Record đã công bố không bị ghi đè.
+File tạm hoặc tên record sai không được chọn để undo. Backup kiểu cũ vẫn giữ
+nguyên và cần người dùng xác định nguồn trước khi phục hồi thủ công.
+
+Guard so sánh SHA-256 nội dung, mtime độ phân giải cao và size; sửa cùng kích
+thước hoặc khôi phục mtime không đủ để vượt guard. Đây vẫn là optimistic
+concurrency: không khóa các trình sửa file bên ngoài sau lần kiểm tra cuối.

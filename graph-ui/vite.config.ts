@@ -35,6 +35,12 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    include: ["src/**/*.test.{ts,tsx}"],
+    coverage: {
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.test.{ts,tsx}", "src/main.tsx", "src/lib/types.ts"],
+      reporter: ["text", "json-summary", "html"],
+    },
   },
   build: {
     outDir: "dist",

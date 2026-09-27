@@ -59,7 +59,15 @@ function Set-ProtectedAcl([string]$Path) {
     $acl.SetOwner($sid)
     $acl.SetAccessRuleProtection($true, $false)
     $acl.AddAccessRule($rule) | Out-Null
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    # Persist only the owner/DACL sections changed above. Set-Acl in some
+    # PowerShell hosts also requests SACL access (SeSecurityPrivilege), even
+    # though this fixture never reads or changes audit rules.
+    $directory = [System.IO.DirectoryInfo]::new($Path)
+    if ('System.IO.FileSystemAclExtensions' -as [type]) {
+        [System.IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
+    } else {
+        $directory.SetAccessControl($acl)
+    }
 }
 
 $root = Join-Path $env:USERPROFILE ($Prefix + [guid]::NewGuid().ToString('N'))

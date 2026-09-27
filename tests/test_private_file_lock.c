@@ -81,8 +81,9 @@ static bool private_lock_fixture_start(private_lock_fixture_t *fixture) {
     if (written <= 0 || written >= (int)sizeof(fixture->parent) || !cbm_mkdtemp(fixture->parent)) {
         return false;
     }
-    written = snprintf(fixture->root, sizeof(fixture->root), "%s/root", fixture->parent);
-    if (written <= 0 || written >= (int)sizeof(fixture->root) || cbm_mkdir(fixture->root) != 0) {
+    written = snprintf(fixture->root, sizeof(fixture->root), "%s/root-XXXXXX", fixture->parent);
+    if (written <= 0 || written >= (int)sizeof(fixture->root) ||
+        !cbm_mkdtemp(fixture->root)) {
         return false;
     }
     FILE *seed = cbm_daemon_ipc_private_log_open(fixture->root, "seed", 64);

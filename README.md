@@ -4,13 +4,13 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/LonelyTraderBay/memory-for-ai/dry-run.yml?label=CI)](https://github.com/LonelyTraderBay/memory-for-ai/actions/workflows/dry-run.yml)
 [![Languages](https://img.shields.io/badge/languages-162-orange)](#language-support)
-[![Platform](https://img.shields.io/badge/macOS_%7C_Linux_%7C_Windows-supported-lightgrey)](https://github.com/LonelyTraderBay/memory-for-ai/releases/latest)
+[![Platform](https://img.shields.io/badge/Windows_x64-supported-lightgrey)](https://github.com/LonelyTraderBay/memory-for-ai/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/LonelyTraderBay/memory-for-ai/badge)](https://scorecard.dev/viewer/?uri=github.com/LonelyTraderBay/memory-for-ai)
 [![arXiv](https://img.shields.io/badge/arXiv-2603.27277-b31b1b?logo=arxiv)](https://arxiv.org/abs/2603.27277)
 
 An MCP server that turns a codebase into a persistent knowledge graph — functions, classes, call chains, HTTP routes, cross-service links — so an AI coding agent answers structural questions with **graph queries instead of reading file after file**.
 
-One self-contained native executable. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 23 MCP tools. No language runtime, no Docker, no API key, no telemetry — everything runs locally.
+Windows native x64 only; MSYS2 CLANG64 is the development toolchain. See [support and verification](docs/WINDOWS-X64.md). One self-contained native executable. 162 languages via vendored tree-sitter grammars, refined by embedded Hybrid-LSP type resolution. 23 MCP tools. No language runtime, no Docker, no API key, no telemetry — everything runs locally.
 
 - **Are you an AI agent?** Read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the complete operating manual (tool catalog, task→tool playbooks, correctness protocol, per-project tuning). [docs/llms.txt](docs/llms.txt) is the machine-readable index.
 - **Installing for a specific project?** Jump to [Per-project install](#per-project-install) — one command, zero global config, one isolated graph named after the repo.
@@ -22,16 +22,10 @@ One self-contained native executable. 162 languages via vendored tree-sitter gra
 
 **30-second machine check first** (details: [docs/INSTALL.md — Preflight](docs/INSTALL.md#preflight-check-your-machine-first)):
 
-1. Platform is macOS / Linux / Windows on amd64 or arm64, with ~2 GB free disk.
+1. Platform is native Windows x64 (Intel/AMD), with ~2 GB free disk. ARM64, emulation, Linux, macOS and WSL are unsupported.
 2. **Windows:** `powershell -Command "$PSVersionTable.PSVersion"` must print a version — `search_code` shells out to PowerShell at runtime; if the `WindowsPowerShell\v1.0` directory is missing from PATH, add it before installing.
 3. `git --version` works (watcher freshness + `detect_changes`).
 4. Already installed once? `memory-for-ai --version` tells you — re-running the installer *is* the update, indexes survive.
-
-**macOS / Linux** (one line):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/LonelyTraderBay/memory-for-ai/main/install.sh | bash
-```
 
 **Windows** (PowerShell):
 
@@ -51,12 +45,12 @@ The installer downloads the verified release archive for your platform, verifies
 
 One binary can serve any number of repositories, but sometimes a project deserves its own fenced memory: an MCP server named after the repo, an index no other repo can see, and zero edits to global agent config. That is `--project`:
 
-```bash
-# From the repository root, after downloading install.sh (any OS)
-bash install.sh --project
+```powershell
+# From the repository root, after downloading install.ps1
+.\install.ps1 --project
 ```
 
-What it does: installs/refreshes the shared binary, writes a project-local `.mcp.json` entry named `memory-for-ai-<repo-directory>` pinned with `--scope=<repo>`, and indexes the repository immediately. An agent opened in that repo sees exactly one server serving exactly that graph; opening a different repo sees its own. The same flag works through the one-line pipes (`... | bash -s -- --project`) and PowerShell. Details and guarantees: [docs/INSTALL.md](docs/INSTALL.md#per-project-install) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md#3b-per-project-scoped-sessions---scope-install---project).
+What it does: installs/refreshes the shared binary, writes a project-local `.mcp.json` entry named `memory-for-ai-<repo-directory>` pinned with `--scope=<repo>`, and indexes the repository immediately. An agent opened in that repo sees exactly one server serving exactly that graph; opening a different repo sees its own. Use the PowerShell installer for this supported platform. Details and guarantees: [docs/INSTALL.md](docs/INSTALL.md#per-project-install) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md#3b-per-project-scoped-sessions---scope-install---project).
 
 ## What it does
 
@@ -66,14 +60,14 @@ What it does: installs/refreshes the shared binary, writes a project-local `.mcp
 You: "what calls ProcessOrder?"
 
 Agent calls: trace_path(function_name="ProcessOrder", direction="inbound")
-             → complete caller tree, one call, ~250 tokens
+             → caller tree for indexed CALLS edges, one call, ~250 tokens
 
-File-by-file alternative: grep 38 files, read ~33,000 tokens, still miss indirect callers.
+In the maintainer's measured C example: grep 38 files, read ~33,000 tokens, and still miss indirect callers. This is a task-specific result, not a completeness guarantee for every repository.
 ```
 
 There is **no built-in LLM**: your MCP client is the intelligence layer; this tool is the structural memory. Typical wins:
 
-- **Callers / callees / blast radius** — `trace_path`, `detect_changes` answer in one call what grep cannot answer at any cost (transitive chains live in no single file).
+- **Callers / callees / blast radius** — `trace_path`, `detect_changes` follow indexed relationships across files. The counts are exact for stored edges, but event callbacks (such as JSX props) or partially parsed code may not be represented; verify coverage and source before relying on an empty trace.
 - **Architecture in one call** — `get_architecture`: languages, packages, entry points, routes, hotspots, layers, community-detection clusters.
 - **Dead code, complexity hotspots, dependency graph, security-evidence graph** — via `query_graph` (read-only Cypher subset).
 - **Memory across sessions** — the graph persists; `manage_adr` persists architecture decisions beside it.

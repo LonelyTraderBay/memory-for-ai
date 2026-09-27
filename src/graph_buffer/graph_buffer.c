@@ -65,10 +65,6 @@ static bool gbuf_test_write_failure_fires(void) {
     }
     return false;
 }
-#else
-static bool gbuf_test_write_failure_fires(void) {
-    return false;
-}
 #endif
 
 static inline void *intptr_to_ptr(intptr_t v) {
@@ -1809,46 +1805,24 @@ int cbm_gbuf_dump_to_sqlite(cbm_gbuf_t *gb, const char *path) {
  * and indexes on a best-effort basis before returning -1 — the same pattern
  * cbm_delta_patch already follows. Before this contract, a failed write
  * mid-flush could leave the project half-written and committed. */
-int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store) {
-    if (!gb || !store) {
-        return CBM_NOT_FOUND;
-    }
-
-    /* Upsert project */
-    if (cbm_store_upsert_project(store, gb->project, gb->root_path) != CBM_STORE_OK) {
+/* Apply the same remapping/write contract for full flush and incremental merge.
+ * The caller owns the transaction; this helper owns only the temporary ID map. */
+static int64_t gbuf_store_write_result(int64_t result) {
+#ifdef CBM_ENABLE_TEST_SEAMS
+    if (result > 0 && gbuf_test_write_failure_fires()) {
         return GB_ERR;
     }
+#endif
+    return result;
+}
 
-    /* Begin bulk mode; drop_indexes runs outside the transaction so its
-     * failure leaves nothing to roll back. */
-    if (cbm_store_begin_bulk(store) != CBM_STORE_OK ||
-        cbm_store_drop_indexes(store) != CBM_STORE_OK) {
-        (void)cbm_store_end_bulk(store);
-        return GB_ERR;
-    }
-    if (cbm_store_begin(store) != CBM_STORE_OK) {
-        (void)cbm_store_create_indexes(store);
-        (void)cbm_store_end_bulk(store);
-        return GB_ERR;
-    }
-
-    /* Build temp_id → real_id map.
-     * Temp IDs start at 1 and are sequential, but can have gaps from edge inserts.
-     * Use max_id as size. */
+static int gbuf_copy_nodes_edges(cbm_gbuf_t *gb, cbm_store_t *store) {
     int64_t max_temp_id = gb->next_id;
-    int64_t *temp_to_real = NULL;
-
-    /* Delete existing project data */
-    if (cbm_store_delete_edges_by_project(store, gb->project) != CBM_STORE_OK ||
-        cbm_store_delete_nodes_by_project(store, gb->project) != CBM_STORE_OK) {
-        goto fail;
-    }
-
-    temp_to_real = calloc(max_temp_id > 0 ? (size_t)max_temp_id : 1, sizeof(int64_t));
+    int64_t *temp_to_real =
+        calloc(max_temp_id > 0 ? (size_t)max_temp_id : SKIP_ONE, sizeof(int64_t));
     if (!temp_to_real) {
-        goto fail;
+        return GB_ERR;
     }
-
     for (int i = 0; i < gb->nodes.count; i++) {
         cbm_gbuf_node_t *n = gb->nodes.items[i];
 
@@ -1867,8 +1841,8 @@ int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store) {
             .end_line = n->end_line,
             .properties_json = n->properties_json,
         };
-        int64_t real_id = cbm_store_upsert_node(store, &sn);
-        if (real_id <= 0 || gbuf_test_write_failure_fires()) {
+        int64_t real_id = gbuf_store_write_result(cbm_store_upsert_node(store, &sn));
+        if (real_id <= 0) {
             goto fail;
         }
         if (n->id < max_temp_id) {
@@ -1892,15 +1866,54 @@ int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store) {
             .type = e->type,
             .properties_json = e->properties_json,
         };
-        if (cbm_store_insert_edge(store, &se) <= 0 || gbuf_test_write_failure_fires()) {
+        if (gbuf_store_write_result(cbm_store_insert_edge(store, &se)) <= 0) {
             goto fail;
         }
+    }
+
+    free(temp_to_real);
+    return 0;
+fail:
+    free(temp_to_real);
+    return GB_ERR;
+}
+
+int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store) {
+    if (!gb || !store) {
+        return CBM_NOT_FOUND;
+    }
+
+    /* Upsert project */
+    if (cbm_store_upsert_project(store, gb->project, gb->root_path) != CBM_STORE_OK) {
+        return GB_ERR;
+    }
+
+    /* Begin bulk mode; drop_indexes runs outside the transaction so its
+     * failure leaves nothing to roll back. */
+    if (cbm_store_begin_bulk(store) != CBM_STORE_OK ||
+        cbm_store_drop_indexes(store) != CBM_STORE_OK) {
+        (void)cbm_store_end_bulk(store);
+        return GB_ERR;
+    }
+    if (cbm_store_begin(store) != CBM_STORE_OK) {
+        (void)cbm_store_create_indexes(store);
+        (void)cbm_store_end_bulk(store);
+        return GB_ERR;
+    }
+
+    /* Delete existing project data */
+    if (cbm_store_delete_edges_by_project(store, gb->project) != CBM_STORE_OK ||
+        cbm_store_delete_nodes_by_project(store, gb->project) != CBM_STORE_OK) {
+        goto fail;
+    }
+
+    if (gbuf_copy_nodes_edges(gb, store) != 0) {
+        goto fail;
     }
 
     if (cbm_store_commit(store) != CBM_STORE_OK) {
         goto fail; /* ROLLBACK after a failed COMMIT is harmless best-effort */
     }
-    free(temp_to_real);
     if (cbm_store_create_indexes(store) != CBM_STORE_OK ||
         cbm_store_end_bulk(store) != CBM_STORE_OK) {
         return GB_ERR; /* data is committed; only bulk/index restore failed */
@@ -1909,7 +1922,6 @@ int cbm_gbuf_flush_to_store(cbm_gbuf_t *gb, cbm_store_t *store) {
                                                                                            : GB_ERR;
 
 fail:
-    free(temp_to_real);
     (void)cbm_store_rollback(store);
     (void)cbm_store_create_indexes(store); /* indexes were dropped pre-transaction */
     (void)cbm_store_end_bulk(store);
@@ -1926,67 +1938,16 @@ int cbm_gbuf_merge_into_store(cbm_gbuf_t *gb, cbm_store_t *store) {
         return GB_ERR;
     }
 
-    /* Build temp_id → real_id map */
-    int64_t max_temp_id = gb->next_id;
-    int64_t *temp_to_real = calloc(max_temp_id > 0 ? (size_t)max_temp_id : 1, sizeof(int64_t));
-    if (!temp_to_real) {
+    if (gbuf_copy_nodes_edges(gb, store) != 0) {
         goto fail;
-    }
-
-    for (int i = 0; i < gb->nodes.count; i++) {
-        cbm_gbuf_node_t *n = gb->nodes.items[i];
-
-        if (!n->qualified_name || !cbm_ht_get(gb->node_by_qn, n->qualified_name)) {
-            continue;
-        }
-
-        cbm_node_t sn = {
-            .project = gb->project,
-            .label = n->label,
-            .name = n->name,
-            .qualified_name = n->qualified_name,
-            .file_path = n->file_path,
-            .start_line = n->start_line,
-            .end_line = n->end_line,
-            .properties_json = n->properties_json,
-        };
-        int64_t real_id = cbm_store_upsert_node(store, &sn);
-        if (real_id <= 0 || gbuf_test_write_failure_fires()) {
-            goto fail;
-        }
-        if (n->id < max_temp_id) {
-            temp_to_real[n->id] = real_id;
-        }
-    }
-
-    for (int i = 0; i < gb->edges.count; i++) {
-        cbm_gbuf_edge_t *e = gb->edges.items[i];
-        int64_t real_src = (e->source_id < max_temp_id) ? temp_to_real[e->source_id] : 0;
-        int64_t real_tgt = (e->target_id < max_temp_id) ? temp_to_real[e->target_id] : 0;
-        if (real_src == 0 || real_tgt == 0) {
-            continue;
-        }
-
-        cbm_edge_t se = {
-            .project = gb->project,
-            .source_id = real_src,
-            .target_id = real_tgt,
-            .type = e->type,
-            .properties_json = e->properties_json,
-        };
-        if (cbm_store_insert_edge(store, &se) <= 0 || gbuf_test_write_failure_fires()) {
-            goto fail;
-        }
     }
 
     if (cbm_store_commit(store) != CBM_STORE_OK) {
         goto fail;
     }
-    free(temp_to_real);
     return 0;
 
 fail:
-    free(temp_to_real);
     (void)cbm_store_rollback(store);
     return GB_ERR;
 }

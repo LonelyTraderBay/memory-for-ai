@@ -22,6 +22,11 @@
 #include "discover/discover.h"    /* cbm_ignored_file_t (#963) */
 #include "foundation/constants.h" /* CBM_SZ_512 */
 
+/* cbm_pipeline_run result for a discovery path that exceeds the walker's
+ * bounded UTF-8 path representation. The current database generation is not
+ * replaced when this error is returned. */
+enum { CBM_PIPELINE_ERROR_PATH_TOO_LONG = -5 };
+
 /* Forward declarations */
 typedef struct cbm_store cbm_store_t;
 typedef struct cbm_gbuf cbm_gbuf_t;
@@ -63,9 +68,9 @@ void cbm_pipeline_free(cbm_pipeline_t *p);
  * need to know whether the PREVIOUS generation survived can distinguish the
  * failures by value: the run publishes by renaming a fully validated staging
  * database over the destination, so every abort before that rename leaves the
- * existing database in place. Those codes (CBM_PIPELINE_ABORT_PRESERVE_DB and
- * CBM_PIPELINE_PERSIST_FAILED) are defined in pipeline_internal.h alongside the
- * stages that raise them. */
+ * existing database in place. CBM_PIPELINE_ERROR_PATH_TOO_LONG is also a
+ * specific pre-publish failure; the discovery status is available to callers
+ * through that pipeline code. */
 int cbm_pipeline_run(cbm_pipeline_t *p);
 
 /* Request cancellation of a running pipeline (thread-safe). */

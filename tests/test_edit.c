@@ -514,26 +514,79 @@ TEST(write_atomic_null_expected_writes_anyway) {
 
 /* ── backup discovery / undo (cbm_edit_latest_backup) ───────────── */
 
-TEST(latest_backup_picks_newest_epoch_then_pid) {
-    char *dir = th_mktempdir("cbm_edit_bkfind");
+TEST(latest_backup_isolates_paths_and_orders_repeated_edits) {
+    char *dir = th_mktempdir("cbm_edit_scoped");
     ASSERT_NOT_NULL(dir);
-    /* TH_PATH rotates a 4-slot ring — pin long-lived paths into locals. */
-    char bk[1024];
-    snprintf(bk, sizeof(bk), "%s", TH_PATH(dir, "backups"));
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_100_1_target.c"), "v1"), 0);
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_300_1_target.c"), "v3"), 0);
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_200_2_target.c"), "v2"), 0);
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_999_9_other.c"), "other"), 0);
-    /* junk names must be ignored */
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "notes.txt"), "x"), 0);
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_abc_1_target.c"), "x"), 0);
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_400_1_target.c.bak"), "x"), 0);
+    char a[4096], b[4096], backups[4096];
+    snprintf(a, sizeof(a), "%s/project-a/src/index.ts", dir);
+    snprintf(b, sizeof(b), "%s/project-b/src/index.ts", dir);
+    snprintf(backups, sizeof(backups), "%s/backups", dir);
+    ASSERT_EQ(th_write_file(a, "A0"), 0);
+    ASSERT_EQ(th_write_file(b, "B0"), 0);
+    char first[4096], second[4096], other[4096], latest[4096];
+    ASSERT_EQ(cbm_edit_write_atomic(a, "A1", 2, NULL, backups, first, sizeof(first)), CBM_EDIT_OK);
+    ASSERT_EQ(cbm_edit_write_atomic(b, "B1", 2, NULL, backups, other, sizeof(other)), CBM_EDIT_OK);
+    ASSERT_EQ(cbm_edit_write_atomic(a, "A2", 2, NULL, backups, second, sizeof(second)),
+              CBM_EDIT_OK);
+    ASSERT_TRUE(strcmp(first, second) != 0 && strcmp(first, other) != 0);
+    ASSERT_EQ(cbm_edit_latest_backup(backups, a, latest, sizeof(latest)), CBM_EDIT_OK);
+    ASSERT_STR_EQ(latest, second);
+    char *data = NULL;
+    size_t len;
+    ASSERT_EQ(cbm_edit_read_file(first, &data, &len), CBM_EDIT_OK);
+    ASSERT_STR_EQ(data, "A0");
+    free(data);
+    ASSERT_EQ(cbm_edit_read_file(latest, &data, &len), CBM_EDIT_OK);
+    ASSERT_STR_EQ(data, "A1");
+    free(data);
+    ASSERT_EQ(cbm_edit_latest_backup(backups, b, latest, sizeof(latest)), CBM_EDIT_OK);
+    ASSERT_STR_EQ(latest, other);
+    ASSERT_EQ(cbm_edit_read_file(latest, &data, &len), CBM_EDIT_OK);
+    ASSERT_STR_EQ(data, "B0");
+    free(data);
+    /* Deleted files retain their exact history, including after process restart
+     * (lookup derives order from disk and has no in-memory counter). */
+    ASSERT_EQ(cbm_unlink(a), 0);
+    ASSERT_EQ(cbm_edit_latest_backup(backups, a, latest, sizeof(latest)), CBM_EDIT_OK);
+    ASSERT_STR_EQ(latest, second);
+    th_cleanup(dir);
+    PASS();
+}
 
-    char out[1024];
-    ASSERT_EQ(cbm_edit_latest_backup(bk, "target.c", out, sizeof(out)), CBM_EDIT_OK);
-    ASSERT_NOT_NULL(strstr(out, "bk_300_1_target.c"));
-    ASSERT_EQ(cbm_edit_latest_backup(bk, "other.c", out, sizeof(out)), CBM_EDIT_OK);
-    ASSERT_NOT_NULL(strstr(out, "bk_999_9_other.c"));
+TEST(write_atomic_unicode_backup_and_failed_replace_cleanup) {
+    char *dir = th_mktempdir("cbm_edit_unicode");
+    ASSERT_NOT_NULL(dir);
+    const char *path = TH_PATH(dir, "dữ-liệu.c");
+    const char *backups = TH_PATH(dir, "backups");
+    ASSERT_EQ(th_write_file(path, "before"), 0);
+    cbm_edit_file_state_t state;
+    ASSERT_EQ(cbm_edit_file_stat(path, &state), CBM_EDIT_OK);
+    char backup[4096], latest[4096];
+    ASSERT_EQ(cbm_edit_write_atomic(path, "after", 5, &state, backups, backup, sizeof(backup)),
+              CBM_EDIT_OK);
+    ASSERT_EQ(cbm_edit_latest_backup(backups, path, latest, sizeof(latest)), CBM_EDIT_OK);
+    ASSERT_STR_EQ(backup, latest);
+    /* A complete-looking temporary record must not shadow the published backup. */
+    char *slash = strrchr(backup, '/');
+    ASSERT_NOT_NULL(slash);
+    *slash = '\0';
+    ASSERT_EQ(th_write_file(TH_PATH(backup, "pending-999999"), "partial"), 0);
+    ASSERT_EQ(th_write_file(TH_PATH(backup, "bk_99999999999999999999"), "overflow"), 0);
+    ASSERT_EQ(cbm_edit_latest_backup(backups, path, backup, sizeof(backup)), CBM_EDIT_OK);
+    ASSERT_STR_EQ(backup, latest);
+
+    const char *blocked = TH_PATH(dir, "directory");
+    ASSERT_EQ(cbm_mkdir(blocked), 0);
+    ASSERT_EQ(cbm_edit_write_atomic(blocked, "after", 5, NULL, NULL, NULL, 0), CBM_EDIT_ERR_IO);
+    cbm_dir_t *entries = cbm_opendir(dir);
+    ASSERT_NOT_NULL(entries);
+    cbm_dirent_t *entry;
+    bool leftover = false;
+    while ((entry = cbm_readdir(entries)) != NULL)
+        if (strstr(entry->name, ".cbm-edit-") != NULL)
+            leftover = true;
+    cbm_closedir(entries);
+    ASSERT_FALSE(leftover);
     th_cleanup(dir);
     PASS();
 }
@@ -541,13 +594,45 @@ TEST(latest_backup_picks_newest_epoch_then_pid) {
 TEST(latest_backup_no_match) {
     char *dir = th_mktempdir("cbm_edit_bknone");
     ASSERT_NOT_NULL(dir);
-    char bk[1024];
-    snprintf(bk, sizeof(bk), "%s", TH_PATH(dir, "backups"));
-    ASSERT_EQ(th_write_file(TH_PATH(bk, "bk_100_1_other.c"), "x"), 0);
-    char out[1024];
-    ASSERT_EQ(cbm_edit_latest_backup(bk, "target.c", out, sizeof(out)), CBM_EDIT_ERR_RANGE);
-    ASSERT_EQ(cbm_edit_latest_backup(TH_PATH(dir, "no-such-dir"), "target.c", out, sizeof(out)),
-              CBM_EDIT_ERR_IO);
+    char bk[4096], path[4096], legacy[4096], out[4096];
+    snprintf(bk, sizeof(bk), "%s/backups", dir);
+    snprintf(path, sizeof(path), "%s/target.c", dir);
+    snprintf(legacy, sizeof(legacy), "%s/backups/bk_999_9_target.c", dir);
+    ASSERT_EQ(th_write_file(legacy, "unattributed legacy bytes"), 0);
+    ASSERT_EQ(cbm_edit_latest_backup(bk, path, out, sizeof(out)), CBM_EDIT_ERR_RANGE);
+    /* Refusing legacy lookup must leave the recovery evidence untouched. */
+    char *data = NULL;
+    size_t len;
+    ASSERT_EQ(cbm_edit_read_file(legacy, &data, &len), CBM_EDIT_OK);
+    ASSERT_STR_EQ(data, "unattributed legacy bytes");
+    free(data);
+    th_cleanup(dir);
+    PASS();
+}
+
+TEST(write_atomic_same_metadata_different_content_refuses) {
+    char *dir = th_mktempdir("cbm_edit_hash");
+    ASSERT_NOT_NULL(dir);
+    char path[4096], backups[4096];
+    snprintf(path, sizeof(path), "%s/source.c", dir);
+    snprintf(backups, sizeof(backups), "%s/backups", dir);
+    ASSERT_EQ(th_write_file(path, "AAAA"), 0);
+    cbm_edit_file_state_t expected, current;
+    ASSERT_EQ(cbm_edit_file_stat(path, &expected), CBM_EDIT_OK);
+    ASSERT_EQ(th_write_file(path, "BBBB"), 0);
+    ASSERT_EQ(cbm_edit_file_stat(path, &current), CBM_EDIT_OK);
+    /* Model restored/coarse metadata exactly: only the bytes distinguish them. */
+    expected.mtime_ns = current.mtime_ns;
+    ASSERT_EQ(expected.size, current.size);
+    ASSERT_EQ(cbm_edit_write_atomic(path, "agent", 5, &expected, backups, NULL, 0),
+              CBM_EDIT_ERR_MTIME);
+    char *data = NULL;
+    size_t len;
+    ASSERT_EQ(cbm_edit_read_file(path, &data, &len), CBM_EDIT_OK);
+    ASSERT_STR_EQ(data, "BBBB");
+    free(data);
+    char out[4096];
+    ASSERT_EQ(cbm_edit_latest_backup(backups, path, out, sizeof(out)), CBM_EDIT_ERR_RANGE);
     th_cleanup(dir);
     PASS();
 }
@@ -565,8 +650,7 @@ TEST(undo_roundtrip_via_latest_backup) {
     ASSERT_EQ(cbm_edit_write_atomic(path, v2, strlen(v2), NULL, bk, NULL, 0), CBM_EDIT_OK);
 
     char backup_path[1024];
-    ASSERT_EQ(cbm_edit_latest_backup(bk, "target.c", backup_path, sizeof(backup_path)),
-              CBM_EDIT_OK);
+    ASSERT_EQ(cbm_edit_latest_backup(bk, path, backup_path, sizeof(backup_path)), CBM_EDIT_OK);
     char *data = NULL;
     size_t len = 0;
     ASSERT_EQ(cbm_edit_read_file(backup_path, &data, &len), CBM_EDIT_OK);
@@ -1053,8 +1137,10 @@ SUITE(edit) {
     RUN_TEST(write_atomic_replaces_and_backups_up);
     RUN_TEST(write_atomic_mtime_mismatch_refuses);
     RUN_TEST(write_atomic_null_expected_writes_anyway);
-    RUN_TEST(latest_backup_picks_newest_epoch_then_pid);
+    RUN_TEST(latest_backup_isolates_paths_and_orders_repeated_edits);
+    RUN_TEST(write_atomic_same_metadata_different_content_refuses);
     RUN_TEST(latest_backup_no_match);
+    RUN_TEST(write_atomic_unicode_backup_and_failed_replace_cleanup);
     RUN_TEST(undo_roundtrip_via_latest_backup);
     RUN_TEST(move_extract_middle);
     RUN_TEST(move_extract_unterminated_last_line);

@@ -12,7 +12,7 @@ Usage: scripts/ci/prepare-release-candidates.sh <goos> <goarch> \
          --binary FILE --out-dir DIR
 
 Derive three final executables - unstripped, debug-stripped and stripped - for
-exactly one of the eight release product tuples. All three come from the same
+the Windows x64 release product tuple. All three come from the same
 linker output
 and are finalized before hashing and atomic publication. Runtime testing starts
 only after VirusTotal selection, using the selected candidate.
@@ -56,8 +56,7 @@ done
 
 TARGET="$GOOS-$GOARCH"
 case "$TARGET" in
-linux-amd64 | linux-arm64 | linux-amd64-portable | linux-arm64-portable | \
-darwin-amd64 | darwin-arm64 | windows-amd64 | windows-arm64) ;;
+windows-amd64) ;;
 *) echo "prepare-release-candidates: unsupported release target '$TARGET'" >&2; exit 2 ;;
 esac
 

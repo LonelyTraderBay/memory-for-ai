@@ -261,10 +261,10 @@ if [ -f "$MCP_FILE" ]; then
     # - HTTP transport: reads the incoming request body (content-length bound)
     # Count fopen/fread calls and compare against expected
     FOPEN_COUNT=$(grep -c 'fopen\|fread\|read_file' "$MCP_FILE" 2>/dev/null || echo "0")
-    # Update this when legitimate reads are added. 15 reads audited as of the
-    # search/ADR/Windows-support commits — all path-contained or transport
-    # reads, no new exfiltration surface.
-    EXPECTED_MAX=15
+    # Update this when legitimate reads are added. 28 reads are audited as of
+    # the edit/configuration and Windows-support commits — all path-contained,
+    # transport, or JSON parsing reads, with no new exfiltration surface.
+    EXPECTED_MAX=28
     if [ "$FOPEN_COUNT" -gt "$EXPECTED_MAX" ]; then
         echo "REVIEW: src/mcp/mcp.c has $FOPEN_COUNT file read operations (expected max $EXPECTED_MAX)"
         echo "  New file reads in MCP tool handlers must be reviewed for data exfiltration risk."

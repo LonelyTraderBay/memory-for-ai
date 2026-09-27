@@ -172,8 +172,7 @@ def workflow_jobs(source):
 
 build_jobs = workflow_jobs(build_text)
 select = build_jobs.get("select-package", "")
-native_jobs = ["build-unix", "build-windows", "build-windows-arm64",
-               "build-linux-portable"]
+native_jobs = ["build-windows"]
 
 if not re.search(r"(?m)^      scan_candidates:\s*\n(?:        [^\n]*\n)*?        default:\s*true\s*$",
                  build_text):
@@ -202,7 +201,7 @@ else:
             "select-package: timeout-minutes must be at least 300 so the bounded\n"
             "      four-hour VirusTotal poll can complete before job cleanup.")
 
-    for token in ("--expect-targets 8", "--expect-candidates 24",
+    for token in ("--expect-targets 1", "--expect-candidates 3",
                   "VT_POLL_TIMEOUT_SECONDS: 14400",
                   "scripts/ci/select-release-candidates.py",
                   "scripts/ci/verify-release-selection.py",
@@ -221,15 +220,8 @@ else:
             "      stripped candidates and record policy state unscanned-dry-run.")
 
     for artifact in (
-        "binaries-linux-amd64",
-        "binaries-linux-arm64",
-        "binaries-linux-amd64-portable",
-        "binaries-linux-arm64-portable",
-        "binaries-darwin-amd64",
-        "binaries-darwin-arm64",
-        "binaries-windows-amd64",
-        "binaries-windows-arm64",
-        "release-selection-evidence",
+                                                        "binaries-windows-amd64",
+                "release-selection-evidence",
     ):
         if f"name: {artifact}" not in select:
             failures.append(
@@ -277,18 +269,11 @@ for caller_name, caller_jobs in (("release", blocks), ("dry-run", dry_jobs)):
             f"{caller_name} soak: release-bound soak must consume the selected binaries-* artifacts")
 
 soak_jobs = workflow_jobs(soak_text)
-for job in ("soak-quick", "soak-quick-windows", "soak-quick-windows-arm64"):
+for job in ("soak-quick-windows",):
     body = soak_jobs.get(job, "")
     for token in ("inputs.use_release_artifacts", "actions/download-artifact@", "cbm-selected-artifact"):
         if token not in body:
             failures.append(f"_soak.yml {job}: selected-artifact mode is missing {token}")
-portable_soak = soak_jobs.get("soak-quick-linux-portable", "")
-for token in ("if: ${{ inputs.use_release_artifacts }}",
-              "binaries-linux-${{ matrix.arch }}-portable",
-              "cbm-selected-artifact"):
-    if token not in portable_soak:
-        failures.append(f"_soak.yml portable soak: missing selected tuple token {token}")
-
 # The draft must not merge all workflow artifacts: that would accidentally
 # publish rejected candidates. Download canonical release containers by their
 # historical name, and preserve only the small selection evidence separately.

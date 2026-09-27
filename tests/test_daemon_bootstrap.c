@@ -80,6 +80,11 @@ static bool bootstrap_endpoint_fixture_start(bootstrap_endpoint_fixture_t *fixtu
         return false;
     }
     fixture->endpoint = cbm_daemon_bootstrap_endpoint_new(fixture->parent);
+    if (!fixture->endpoint) {
+        printf("  bootstrap endpoint creation detail: %s\n",
+               cbm_daemon_ipc_validation_detail());
+        return false;
+    }
     const char *runtime_dir =
         fixture->endpoint ? cbm_daemon_ipc_endpoint_runtime_dir(fixture->endpoint) : NULL;
     if (!runtime_dir) {

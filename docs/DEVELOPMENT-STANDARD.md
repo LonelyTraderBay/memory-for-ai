@@ -33,31 +33,17 @@ For C/C++ changes, review NULL handling, integer overflow, buffer capacity, allo
 Run the smallest relevant checks first, then the full checks when the environment supports them:
 
 ```powershell
-python scripts/check-product-metadata.py
-scripts/test.sh --suites <related-suite>
-scripts/lint.sh
-
-cd graph-ui
-npm.cmd test -- --run
-npm.cmd run build
-cd ..
+./scripts/setup-windows-toolchain.ps1
+./scripts/verify-windows.ps1
+# Explicit native-only iteration:
+./scripts/verify-windows.ps1 -Suites "edit,mcp,edit_integration"
 ```
 
-For the bundled native Windows MinGW toolchain, run the unsanitized full
-runner explicitly because its GCC installation does not ship the ASan/UBSan
-runtime archives:
-
-```powershell
-$make = (Resolve-Path '.toolchain/mingw64/bin/mingw32-make.exe').Path
-$gcc = (Resolve-Path '.toolchain/mingw64/bin/gcc.exe').Path
-$gxx = (Resolve-Path '.toolchain/mingw64/bin/g++.exe').Path
-& $make -f Makefile.cbm build/c/test-runner CC=$gcc CXX=$gxx SANITIZE= -j1
-& .\build\c\test-runner.exe
-```
-
-Run `scripts/test.sh` in Linux/WSL or CI for ASan/UBSan/TSan coverage. Do not
-claim sanitizer coverage from the Windows native runner; report the native
-result and the unavailable sanitizer lane separately.
+Only native Windows x64 is supported, using MSYS2 CLANG64. The default
+verification uses ASan/UBSan. `-NoSanitizer` is a declared functional-only
+run, not equivalent sanitizer coverage. Full-product TSan/MSan coverage is
+not available in this supported matrix. Source/artifact analysis and isolated
+portable helper fuzzers may still run on Linux CI.
 
 At handoff, report the exact commands, pass/fail result, and any environment limitation. A compile-only result is not completion for a behaviour change.
 

@@ -26,9 +26,14 @@ TEST(project_lock_coordinates_instances_projects_wildcard_and_case_aliases) {
 
     cbm_daemon_ipc_endpoint_t *endpoint =
         cbm_daemon_ipc_endpoint_new("0123456789abcdef", runtime_parent);
+    if (!endpoint) {
+        char detail[512];
+        (void)snprintf(detail, sizeof(detail), "endpoint creation failed: %s",
+                       cbm_daemon_ipc_validation_detail());
+        FAIL(detail);
+    }
     cbm_project_lock_manager_t *first = cbm_project_lock_manager_new(endpoint);
     cbm_project_lock_manager_t *second = cbm_project_lock_manager_new(endpoint);
-    ASSERT_NOT_NULL(endpoint);
     ASSERT_NOT_NULL(first);
     ASSERT_NOT_NULL(second);
 

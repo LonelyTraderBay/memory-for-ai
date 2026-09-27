@@ -54,7 +54,11 @@ enum {
      * the OS finishes reclaiming a dead holder's lock. This only bounds a peer
      * that never finishes, so a command cannot hang indefinitely. */
     MAIN_STARTUP_CONTENTION_CEILING_MS = 120000,
-    MAIN_MCP_STARTUP_TIMEOUT_MS = 30000,
+    /* Concurrent cold CLI clients can contend while the daemon listener is
+     * becoming ready, especially on busy Windows hosts. Keep the wait bounded. */
+    MAIN_MCP_STARTUP_TIMEOUT_MS = 60000,
+    /* Allow one fresh generation to be claimed after a connected daemon starts shutting down. */
+    MAIN_DAEMON_CTL_START_RECOVERY_TIMEOUT_MS = 10000,
     MAIN_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000,
     MAIN_HOOK_CONNECT_TIMEOUT_MS = 250,
     MAIN_HOOK_REQUEST_TIMEOUT_MS = 1500,
@@ -88,6 +92,7 @@ enum {
 #include <yyjson/yyjson.h>
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1496,10 +1501,10 @@ static int main_parse_scope_arg(int argc, const char *const argv[], char *scope_
     return 0;
 }
 
-static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const char *preferred_root,
-                                    cbm_mcp_tool_profile_t tool_profile, const char *hook_event,
-                                    const char *hook_dialect, const char *scope_path,
-                                    uint32_t timeout_ms) {
+static cbm_daemon_runtime_application_status_t main_set_client_context_status(
+    cbm_daemon_runtime_client_t *client, const char *preferred_root,
+    cbm_mcp_tool_profile_t tool_profile, const char *hook_event, const char *hook_dialect,
+    const char *scope_path, uint32_t timeout_ms) {
     char root[MAIN_PATH_CAP];
     char allowed[MAIN_PATH_CAP];
     const char *allowed_ptr = NULL;
@@ -1508,17 +1513,26 @@ static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const c
          * is both the session root and the indexing boundary, so no tool of
          * this session can touch anything outside the scoped repo. */
         if (strlen(scope_path) >= sizeof(root) || strlen(scope_path) >= sizeof(allowed)) {
-            return false;
+            return CBM_DAEMON_RUNTIME_APPLICATION_REJECTED;
         }
         snprintf(root, sizeof(root), "%s", scope_path);
         snprintf(allowed, sizeof(allowed), "%s", scope_path);
         allowed_ptr = allowed;
     } else if (!main_session_context(preferred_root, root, allowed, &allowed_ptr)) {
-        return false;
+        return CBM_DAEMON_RUNTIME_APPLICATION_REJECTED;
     }
-    return cbm_daemon_application_client_set_context(
-               client, root, allowed_ptr, tool_profile, hook_event, hook_dialect,
-               scope_path != NULL, timeout_ms) == CBM_DAEMON_RUNTIME_APPLICATION_OK;
+    return cbm_daemon_application_client_set_context(client, root, allowed_ptr, tool_profile,
+                                                     hook_event, hook_dialect, scope_path != NULL,
+                                                     timeout_ms);
+}
+
+static bool main_set_client_context(cbm_daemon_runtime_client_t *client, const char *preferred_root,
+                                    cbm_mcp_tool_profile_t tool_profile, const char *hook_event,
+                                    const char *hook_dialect, const char *scope_path,
+                                    uint32_t timeout_ms) {
+    return main_set_client_context_status(client, preferred_root, tool_profile, hook_event,
+                                          hook_dialect, scope_path,
+                                          timeout_ms) == CBM_DAEMON_RUNTIME_APPLICATION_OK;
 }
 
 /* Parse a strict MAJOR.MINOR.PATCH triple; false for anything else (dev
@@ -2276,7 +2290,8 @@ static int main_daemon_ctl_finish_ui_open(cbm_daemon_runtime_client_t **client_i
     cbm_secure_zero(&readiness, sizeof(readiness));
     if (!ready) {
         (void)fprintf(stderr,
-                      "error: UI endpoint did not become ready within %u ms; browser was not "
+                      "error: UI endpoint did not become ready within %" PRIu32
+                      " ms; browser was not "
                       "opened\n",
                       timeout_ms);
         (void)fprintf(stderr,
@@ -2436,40 +2451,59 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
         .spawn_permanent = true,
     };
     cbm_daemon_bootstrap_result_t start_result;
-    cbm_daemon_bootstrap_status_t start_status =
-        main_client_bootstrap_with_upgrade(&start_config, &start_result);
-    if (start_status != CBM_DAEMON_BOOTSTRAP_CONNECTED || !start_result.client) {
-        (void)fprintf(stderr, "error: %s\n",
-                      start_result.message[0] ? start_result.message
-                                              : "the permanent daemon could not be started");
-        if (start_status == CBM_DAEMON_BOOTSTRAP_CONFLICT) {
-            (void)fprintf(stderr, "hint: a daemon of a different build is active; "
-                                  "`memory-for-ai daemon stop` retires it.\n");
-        }
-        return EXIT_FAILURE;
-    }
-
-    /* The committed control connection satisfied the daemon's no-client
-     * startup window; configure the UI before departing. */
+    cbm_daemon_bootstrap_status_t start_status = CBM_DAEMON_BOOTSTRAP_FAILED;
     int ui_port = 0;
-    if ((CBM_EMBEDDED_FILE_COUNT > 0)) {
-        cbm_ui_config_t ui_config;
-        cbm_ui_config_load(&ui_config);
-        ui_port = requested_port > 0 ? requested_port : ui_config.ui_port;
-        uint8_t update_mask = 0x03U; /* enabled + port */
-        bool context_set =
-            main_set_client_context(start_result.client, ".", CBM_MCP_TOOL_PROFILE_ALL, NULL, NULL,
-                                    NULL, MAIN_CONNECT_TIMEOUT_MS);
-        if (!context_set || cbm_daemon_application_client_set_ui_config(
-                                start_result.client, update_mask, true, ui_port,
-                                MAIN_CONNECT_TIMEOUT_MS) != CBM_DAEMON_RUNTIME_APPLICATION_OK) {
-            (void)fprintf(stderr,
-                          "error: the daemon did not accept the UI configuration; browser was "
-                          "not opened\n");
-            (void)cbm_daemon_runtime_client_close(start_result.client, MAIN_CLOSE_TIMEOUT_MS);
+    for (unsigned attempt = 0; attempt < 2U; attempt++) {
+        start_status = main_client_bootstrap_with_upgrade(&start_config, &start_result);
+        if (start_status != CBM_DAEMON_BOOTSTRAP_CONNECTED || !start_result.client) {
+            (void)fprintf(stderr, "error: %s\n",
+                          start_result.message[0] ? start_result.message
+                                                  : "the permanent daemon could not be started");
+            if (start_status == CBM_DAEMON_BOOTSTRAP_CONFLICT) {
+                (void)fprintf(stderr, "hint: a daemon of a different build is active; "
+                                      "`memory-for-ai daemon stop` retires it.\n");
+            }
             return EXIT_FAILURE;
         }
-    } else if (requested_port > 0 || open_browser) {
+
+        /* The committed control connection satisfied the daemon's no-client
+         * startup window; configure the UI before departing. */
+        if (CBM_EMBEDDED_FILE_COUNT > 0) {
+            cbm_ui_config_t ui_config;
+            cbm_ui_config_load(&ui_config);
+            ui_port = requested_port > 0 ? requested_port : ui_config.ui_port;
+            uint8_t update_mask = 0x03U; /* enabled + port */
+            cbm_daemon_runtime_application_status_t ui_status =
+                main_set_client_context_status(start_result.client, ".", CBM_MCP_TOOL_PROFILE_ALL,
+                                               NULL, NULL, NULL, MAIN_CONNECT_TIMEOUT_MS);
+            if (ui_status == CBM_DAEMON_RUNTIME_APPLICATION_OK) {
+                ui_status = cbm_daemon_application_client_set_ui_config(
+                    start_result.client, update_mask, true, ui_port, MAIN_CONNECT_TIMEOUT_MS);
+            }
+            if (ui_status != CBM_DAEMON_RUNTIME_APPLICATION_OK) {
+                (void)cbm_daemon_runtime_client_close(start_result.client, MAIN_CLOSE_TIMEOUT_MS);
+                start_result.client = NULL;
+                bool retryable = ui_status == CBM_DAEMON_RUNTIME_APPLICATION_TRANSPORT_ERROR ||
+                                 ui_status == CBM_DAEMON_RUNTIME_APPLICATION_BUSY ||
+                                 ui_status == CBM_DAEMON_RUNTIME_APPLICATION_UNAVAILABLE ||
+                                 ui_status == CBM_DAEMON_RUNTIME_APPLICATION_CANCELLED;
+                if (attempt == 0U && retryable) {
+                    /* The connected generation may have crossed into shutdown
+                     * after bootstrap's probe. Drop it and allow one bounded
+                     * bootstrap to wait for teardown and claim the next generation. */
+                    start_config.startup_timeout_ms = MAIN_DAEMON_CTL_START_RECOVERY_TIMEOUT_MS;
+                    continue;
+                }
+                (void)fprintf(stderr,
+                              "error: the daemon did not accept the UI configuration; browser "
+                              "was not opened (status=%d)\n",
+                              (int)ui_status);
+                return EXIT_FAILURE;
+            }
+        }
+        break;
+    }
+    if (CBM_EMBEDDED_FILE_COUNT == 0 && (requested_port > 0 || open_browser)) {
         (void)fprintf(stderr, "warning: this binary was built without UI support; "
                               "--port/--open have no effect\n");
     }

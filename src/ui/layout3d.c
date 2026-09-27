@@ -632,75 +632,45 @@ cbm_layout_result_t *cbm_layout_compute(cbm_store_t *store, const char *project,
     }
     qsort(id_map, (size_t)n, sizeof(node_id_entry_t), cmp_node_id_entry);
 
-    /* 3. Query edges — filter during fetch via binary search (O(e log n)) */
+    /* 3. Fetch the induced subgraph, not every edge in the project. */
+    int64_t *selected_ids = malloc((size_t)n * sizeof(*selected_ids));
     int *deg = calloc((size_t)n, sizeof(int));
+    cbm_edge_t *all_edges = NULL;
     int mapped = 0;
-    int edge_cap = CBM_SZ_256;
-    cbm_edge_t *all_edges = malloc((size_t)edge_cap * sizeof(cbm_edge_t));
-    int *es = malloc((size_t)edge_cap * sizeof(int));
-    int *ed = malloc((size_t)edge_cap * sizeof(int));
-    cbm_schema_info_t schema;
-    memset(&schema, 0, sizeof(schema));
-    if (deg && all_edges && es && ed &&
-        cbm_store_get_schema(store, project, &schema) == CBM_STORE_OK) {
-        for (int t = 0; t < schema.edge_type_count; t++) {
-            cbm_edge_t *te = NULL;
-            int tc = 0;
-            if (cbm_store_find_edges_by_type(store, project, schema.edge_types[t].type, &te, &tc) ==
-                CBM_STORE_OK) {
-                for (int e = 0; e < tc; e++) {
-                    int si = find_node_index(id_map, n, te[e].source_id);
-                    int di = find_node_index(id_map, n, te[e].target_id);
-                    if (si >= 0 && di >= 0) {
-                        if (mapped >= edge_cap) {
-                            int nc = edge_cap * PAIR_LEN;
-                            cbm_edge_t *te2 = realloc(all_edges, (size_t)nc * sizeof(cbm_edge_t));
-                            int *ts = realloc(es, (size_t)nc * sizeof(int));
-                            int *td = realloc(ed, (size_t)nc * sizeof(int));
-                            if (!te2 || !ts || !td) {
-                                if (te2)
-                                    all_edges = te2;
-                                if (ts)
-                                    es = ts;
-                                if (td)
-                                    ed = td;
-                                /* The loop already moved or freed te[0..e)'s
-                                 * strings; free the remaining ones, then the
-                                 * array from its BASE. The old call passed the
-                                 * interior pointer te+e to free_edge_array,
-                                 * whose trailing free() is an invalid-pointer
-                                 * heap corruption under any allocator. */
-                                for (int k = e; k < tc; k++) {
-                                    free((void *)te[k].project);
-                                    free((void *)te[k].type);
-                                    free((void *)te[k].properties_json);
-                                }
-                                free(te);
-                                goto edges_done;
-                            }
-                            all_edges = te2;
-                            es = ts;
-                            ed = td;
-                            edge_cap = nc;
-                        }
-                        all_edges[mapped] = te[e];
-                        memset(&te[e], 0, sizeof(cbm_edge_t));
-                        es[mapped] = si;
-                        ed[mapped] = di;
-                        deg[si]++;
-                        deg[di]++;
-                        mapped++;
-                    } else {
-                        free((void *)te[e].project);
-                        free((void *)te[e].type);
-                        free((void *)te[e].properties_json);
-                    }
-                }
-                free(te);
-            }
+    if (selected_ids) {
+        for (int i = 0; i < n; i++)
+            selected_ids[i] = search_out.results[i].node.id;
+    }
+    int edge_rc = selected_ids && deg ? cbm_store_find_edges_among(store, project, selected_ids, n,
+                                                                   &all_edges, &mapped)
+                                      : CBM_STORE_ERR;
+    free(selected_ids);
+    size_t edge_slots = mapped > 0 ? (size_t)mapped : 1;
+    int *es = edge_rc == CBM_STORE_OK ? malloc(edge_slots * sizeof(int)) : NULL;
+    int *ed = edge_rc == CBM_STORE_OK ? malloc(edge_slots * sizeof(int)) : NULL;
+    if (!es || !ed) {
+        free(es);
+        free(ed);
+        free(deg);
+        free(id_map);
+        cbm_store_free_edges(all_edges, mapped);
+        cbm_store_search_free(&search_out);
+        return NULL;
+    }
+    for (int e = 0; e < mapped; e++) {
+        es[e] = find_node_index(id_map, n, all_edges[e].source_id);
+        ed[e] = find_node_index(id_map, n, all_edges[e].target_id);
+        if (es[e] < 0 || ed[e] < 0) {
+            free(es);
+            free(ed);
+            free(deg);
+            free(id_map);
+            cbm_store_free_edges(all_edges, mapped);
+            cbm_store_search_free(&search_out);
+            return NULL;
         }
-    edges_done:
-        cbm_store_schema_free(&schema);
+        deg[es[e]]++;
+        deg[ed[e]]++;
     }
     free(id_map);
 

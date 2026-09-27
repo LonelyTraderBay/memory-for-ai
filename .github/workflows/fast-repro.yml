@@ -1,37 +1,28 @@
-# Fast repro lane — single platform, NO sanitizers — for quick fix-iteration
-# feedback (the red-count after a fix) without waiting ~15 min for the full
-# 5-platform ASan board. The full bug-repro.yml board remains the comprehensive
-# all-platform check; this is just the fast inner loop.
-#
-# Trigger: workflow_dispatch, or push to a qa/fast-** branch. Non-gating.
 name: Fast Repro
-
-on:
+'on':
   workflow_dispatch:
     inputs:
       suites:
-        description: 'Comma list of suite-name substrings to run (empty = all)'
+        description: Comma list of suite-name substrings to run (empty = all)
         type: string
         default: ''
   push:
-    branches: ['qa/fast-**']
-
+    branches: [qa/fast-**]
 permissions:
   contents: read
-
 jobs:
   fast:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
-      - name: test-repro (single platform, ASan; CBM_REPRO_ONLY filters suites)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: CLANG64
+          path-type: inherit
+          install: mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-compiler-rt mingw-w64-clang-x86_64-zlib make git
+      - name: Run bug-reproduction board
+        shell: msys2 {0}
+        run: scripts/repro.sh CC=clang CXX=clang++
         env:
-          # Optionally narrow to specific suites for a fast targeted check, e.g.
-          # CBM_REPRO_ONLY="repro_invariant_enclosing_parity,repro_grammar_systems".
-          # Empty = run all. (No-sanitizer builds crash on some suites, so ASan
-          # stays on; the single-platform run is the speedup vs the 5-platform board.)
           CBM_REPRO_ONLY: ${{ github.event.inputs.suites }}
-        run: scripts/repro.sh CC=gcc CXX=g++

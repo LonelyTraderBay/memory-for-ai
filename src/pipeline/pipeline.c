@@ -2264,13 +2264,18 @@ static int cbm_pipeline_run_staged(cbm_pipeline_t *p) {
                               &p->excluded_count, &p->ignored_files, &p->ignored_count,
                               &p->ignored_total);
     if (rc != 0) {
-        cbm_log_error("pipeline.err", "phase", "discover", "rc", itoa_buf(rc));
+        if (rc == CBM_DISCOVER_PATH_TOO_LONG) {
+            cbm_log_error("pipeline.err", "phase", "discover", "reason", "path_too_long",
+                          "max_path_bytes", itoa_buf(CBM_SZ_4K - 1));
+        } else {
+            cbm_log_error("pipeline.err", "phase", "discover", "rc", itoa_buf(rc));
+        }
     }
     CBM_PROF_END_N("pipeline", "1_discover", t_discover, file_count);
     cbm_log_info("pipeline.discover", "files", itoa_buf(file_count), "elapsed_ms",
                  itoa_buf((int)elapsed_ms(t0)));
     if (rc != 0 || check_cancel(p)) {
-        rc = CBM_NOT_FOUND;
+        rc = rc == CBM_DISCOVER_PATH_TOO_LONG ? CBM_PIPELINE_ERROR_PATH_TOO_LONG : CBM_NOT_FOUND;
         goto cleanup;
     }
 
@@ -2285,7 +2290,13 @@ static int cbm_pipeline_run_staged(cbm_pipeline_t *p) {
                                                     &p->git_ctx, p->userconfig, &baseline_manifest,
                                                     &baseline_count);
     if (rc != 0) {
-        rc = CBM_PIPELINE_ABORT_PRESERVE_DB;
+        if (rc == CBM_DISCOVER_PATH_TOO_LONG) {
+            cbm_log_error("pipeline.err", "phase", "semantic_manifest", "reason", "path_too_long",
+                          "max_path_bytes", itoa_buf(CBM_SZ_4K - 1));
+            rc = CBM_PIPELINE_ERROR_PATH_TOO_LONG;
+        } else {
+            rc = CBM_PIPELINE_ABORT_PRESERVE_DB;
+        }
         goto cleanup;
     }
 
@@ -2329,7 +2340,13 @@ static int cbm_pipeline_run_staged(cbm_pipeline_t *p) {
         cbm_log_info("pipeline.rediscover", "requested_mode", pipeline_mode_name(p->requested_mode),
                      "effective_mode", pipeline_mode_name(p->mode), "files", itoa_buf(file_count));
         if (rc != 0 || check_cancel(p)) {
-            rc = CBM_NOT_FOUND;
+            if (rc == CBM_DISCOVER_PATH_TOO_LONG) {
+                cbm_log_error("pipeline.err", "phase", "rediscover", "reason", "path_too_long",
+                              "max_path_bytes", itoa_buf(CBM_SZ_4K - 1));
+                rc = CBM_PIPELINE_ERROR_PATH_TOO_LONG;
+            } else {
+                rc = CBM_NOT_FOUND;
+            }
             goto cleanup;
         }
     }

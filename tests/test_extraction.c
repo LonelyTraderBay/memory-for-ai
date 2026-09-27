@@ -12,6 +12,9 @@
 #include <time.h>
 #include "macro_table.h"
 #include "iris_export_xml.h"
+#include "../internal/cbm/helpers.h"
+#include "../internal/cbm/lang_specs.h"
+#include "tree_sitter/api.h"
 
 /* ── Helpers ───────────────────────────────────────────────────── */
 
@@ -108,6 +111,33 @@ static CBMFileResult *extract_with_macros(const char *src, CBMLanguage lang, con
     CBMFileResult *r =
         cbm_extract_file_ex(src, (int)strlen(src), lang, proj, path, 0, NULL, NULL, mt, NULL);
     return r;
+}
+
+TEST(node_text_uses_parser_byte_range) {
+    const char original[] = {'i', 'n', 't', '\0', 'v', 'a', 'l', 'u', 'e', ';'};
+    TSParser *parser = ts_parser_new();
+    ASSERT_NOT_NULL(parser);
+    ASSERT(ts_parser_set_language(parser, cbm_ts_language(CBM_LANG_C)));
+    TSTree *tree = ts_parser_parse_string(parser, NULL, original, (uint32_t)sizeof(original));
+    ASSERT_NOT_NULL(tree);
+
+    TSNode root = ts_tree_root_node(tree);
+    ASSERT_EQ(ts_node_start_byte(root), 0);
+    ASSERT_EQ(ts_node_end_byte(root), sizeof(original));
+
+    CBMArena arena;
+    cbm_arena_init(&arena);
+    char *text = cbm_node_text(&arena, root, original);
+    ASSERT_NOT_NULL(text);
+    ASSERT_EQ(memcmp(text, original, sizeof(original)), 0);
+    ASSERT_EQ(text[sizeof(original)], '\0');
+    ASSERT_NULL(cbm_node_text(&arena, root, NULL));
+    ASSERT_NULL(cbm_node_text(NULL, root, original));
+
+    cbm_arena_destroy(&arena);
+    ts_tree_delete(tree);
+    ts_parser_delete(parser);
+    PASS();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -6437,6 +6467,8 @@ TEST(non_config_language_module_has_no_promoted_description_issue519) {
 SUITE(extraction) {
     /* Initialize extraction library */
     cbm_init();
+
+    RUN_TEST(node_text_uses_parser_byte_range);
 
     /* Wide-flat-file linearity (ms-typescript hang) */
     RUN_TEST(extract_wide_flat_file_is_linear);

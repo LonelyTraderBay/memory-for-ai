@@ -17,15 +17,10 @@
 #include <stdio.h>  /* snprintf */
 #include <string.h> /* memset */
 
-#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#else
-#include <sys/mman.h>
-#include <unistd.h> /* sysconf, _SC_PAGESIZE */
-#endif
 
 /* ── Static state (initialized once) ──────────────────────────── */
 
@@ -38,14 +33,9 @@ static atomic_int g_initialized = 0;  /* init guard */
 /* ── Page size ─────────────────────────────────────────────────── */
 
 static size_t page_size(void) {
-#ifdef _WIN32
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return (size_t)si.dwPageSize;
-#else
-    long ps = sysconf(_SC_PAGESIZE);
-    return ps > 0 ? (size_t)ps : 4096;
-#endif
 }
 
 /* Round up to page boundary. */
@@ -134,14 +124,7 @@ void *cbm_vmem_alloc(size_t size) {
 
     size_t alloc_size = round_to_page(size);
 
-#ifdef _WIN32
     void *ptr = VirtualAlloc(NULL, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-#else
-    void *ptr = mmap(NULL, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ptr == MAP_FAILED) {
-        ptr = NULL;
-    }
-#endif
 
     if (!ptr) {
         cbm_log_error("vmem.alloc.fail", "size_mb", size > MB_DIVISOR ? "large" : "small");
@@ -162,11 +145,7 @@ void cbm_vmem_free(void *ptr, size_t size) {
 
     size_t free_size = round_to_page(size);
 
-#ifdef _WIN32
     VirtualFree(ptr, 0, MEM_RELEASE);
-#else
-    munmap(ptr, free_size);
-#endif
 
     size_t new_total = atomic_fetch_sub(&g_allocated, free_size) - free_size;
     check_pressure(new_total);

@@ -6,8 +6,7 @@
 #   <checksums.txt>  the release's checksum file ("<sha256>  <filename>" lines)
 #
 # Covers the manifests the release pipeline does NOT inject at publish time
-# (npm/PyPI versions are already synced inside release.yml): homebrew, scoop,
-# aur, chocolatey, winget. Every substitution is verified — the script fails
+# (npm/PyPI versions are already synced inside release.yml): scoop, chocolatey, winget. Every substitution is verified — the script fails
 # closed rather than writing a half-synced manifest.
 set -euo pipefail
 
@@ -29,38 +28,10 @@ hash_of() {
     printf '%s' "$h"
 }
 
-H_DARWIN_ARM64=$(hash_of memory-for-ai-darwin-arm64.tar.gz)
-H_DARWIN_AMD64=$(hash_of memory-for-ai-darwin-amd64.tar.gz)
-H_LINUX_ARM64=$(hash_of memory-for-ai-linux-arm64.tar.gz)
-H_LINUX_AMD64=$(hash_of memory-for-ai-linux-amd64.tar.gz)
 H_WIN_AMD64=$(hash_of memory-for-ai-windows-amd64.zip)
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
-
-# ── homebrew ─────────────────────────────────────────────────────
-# The formula lists sha256 lines in this exact order: darwin-arm64,
-# darwin-amd64, linux-arm64, linux-amd64.
-RB=pkg/homebrew/Formula/memory-for-ai.rb
-awk -v v="$V" \
-    -v h1="$H_DARWIN_ARM64" -v h2="$H_DARWIN_AMD64" \
-    -v h3="$H_LINUX_ARM64" -v h4="$H_LINUX_AMD64" '
-    /^  version "/ { sub(/"[^"]*"/, "\"" v "\"") }
-    /sha256 "/ {
-        n++
-        h = (n == 1 ? h1 : n == 2 ? h2 : n == 3 ? h3 : h4)
-        sub(/sha256 "[0-9a-f]+"/, "sha256 \"" h "\"")
-    }
-    { print }
-' "$RB" > "$RB.tmp"
-if [ "$(grep -c 'sha256 "' "$RB.tmp")" -ne 4 ]; then
-    echo "error: expected 4 sha256 lines in $RB" >&2
-    exit 1
-fi
-mv "$RB.tmp" "$RB"
-grep -q "version \"$V\"" "$RB"
-grep -q "$H_DARWIN_ARM64" "$RB"
-grep -q "$H_LINUX_AMD64" "$RB"
 
 # ── scoop ────────────────────────────────────────────────────────
 SCOOP=pkg/scoop/memory-for-ai.json
@@ -79,16 +50,6 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 grep -q "\"version\": \"$V\"" "$SCOOP"
 grep -q "$H_WIN_AMD64" "$SCOOP"
-
-# ── aur ──────────────────────────────────────────────────────────
-PKGBUILD=pkg/aur/PKGBUILD
-sed -i \
-    -e "s/^pkgver=.*/pkgver=$V/" \
-    -e "s/^sha256sums_x86_64=('.*')/sha256sums_x86_64=('$H_LINUX_AMD64')/" \
-    -e "s/^sha256sums_aarch64=('.*')/sha256sums_aarch64=('$H_LINUX_ARM64')/" \
-    "$PKGBUILD"
-grep -q "^pkgver=$V$" "$PKGBUILD"
-grep -q "$H_LINUX_AMD64" "$PKGBUILD"
 
 # ── chocolatey ───────────────────────────────────────────────────
 NUSPEC=pkg/chocolatey/memory-for-ai.nuspec

@@ -343,10 +343,6 @@ def _version() -> str:
 
 def _os_name() -> str:
     p = sys.platform
-    if p == "linux":
-        return "linux"
-    if p == "darwin":
-        return "darwin"
     if p == "win32":
         return "windows"
     sys.exit(f"memory-for-ai: unsupported platform: {p}")
@@ -354,8 +350,6 @@ def _os_name() -> str:
 
 def _arch() -> str:
     m = platform.machine().lower()
-    if m in ("arm64", "aarch64"):
-        return "arm64"
     if m in ("x86_64", "amd64"):
         return "amd64"
     sys.exit(f"memory-for-ai: unsupported architecture: {m}")

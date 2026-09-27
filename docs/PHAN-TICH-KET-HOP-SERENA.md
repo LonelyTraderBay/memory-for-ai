@@ -89,7 +89,7 @@ Từ [phân tích so sánh](SO-SANH-SERENA.md), phần giá trị Serena có mà
 Sắp xếp theo độ khó tăng dần — mỗi bước đều tận dụng tài sản graph sẵn có:
 
 1. **`edit_symbol` (replace body / insert before / insert after)** — graph đã lưu exact byte/line range của từng symbol từ tree-sitter parse. Edit = ghi đè range + trigger re-index file đó (watcher đã có). Rủi ro thấp, giá trị cao ngay.
-2. **`delete_symbol` (safe delete)** — chạy `trace_path` inbound depth đủ; nếu còn caller (ngoài test) thì từ chối hoặc cảnh báo kèm danh sách. Mạnh hơn bản LSP vì thấy cả Route/cross-service callers.
+2. **`delete_symbol` (dry-run by default, graph-guarded)** — chạy `trace_path` inbound để xem caller edges đã ghi nhận; nếu còn caller (ngoài test) thì từ chối hoặc cảnh báo kèm danh sách. Một số Route/cross-service edges có thể được mô hình hóa, nhưng coverage phụ thuộc parser/index; luôn kiểm tra source trước khi kết luận không còn reference hoặc áp dụng xóa.
 3. **`rename_symbol`** — dùng USAGE/CALLS edges + vị trí; **bắt buộc** chạy `check_index_coverage` trên mọi file chứa occurrence trước khi sửa (đây là lợi thế khác biệt: Serena tin LSP mù, bạn có thể *chứng minh* vùng an toàn). Với dynamic languages, degrade gracefully: báo rõ số occurrence "low-confidence" thay vì sửa mò.
 4. (Tùy chọn, xa hơn) **`apply_refactor` theo graph diff** — dùng `compare_graphs` để audit lại chính refactor vừa làm ("sau rename, edge nào đổi?") — vòng kiểm chứng khép kín mà không tool nào trên thị trường có.
 

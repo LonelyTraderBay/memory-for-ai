@@ -14,6 +14,7 @@
 
 #include "../src/foundation/compat.h"
 #include "../src/foundation/compat_fs.h"
+#include "../src/foundation/constants.h"
 #include "../src/foundation/platform.h"
 
 #include <stdio.h>
@@ -21,9 +22,14 @@
 #include <string.h>
 #include <sys/stat.h>
 #ifdef _WIN32
+#include <direct.h>
 #include "../src/foundation/win_utf8.h"
+#define TH_CHDIR _chdir
+#define TH_GETCWD _getcwd
 #else
 #include <unistd.h>
+#define TH_CHDIR chdir
+#define TH_GETCWD getcwd
 #endif
 
 /* ── Path building ────────────────────────────────────────────── */
@@ -137,10 +143,26 @@ static inline int th_rmtree(const char *path) {
             continue;
         }
         /* A directory entry can be close to CBM_DIRENT_NAME_MAX while the
-         * parent path is also long. Keep enough room for both components and
-         * the separator/NUL instead of relying on truncation. */
-        char child[4096];
-        snprintf(child, sizeof(child), "%s/%s", path, entry->name);
+         * parent path is also long. Allocate for the complete path instead
+         * of silently recursing into a truncated sibling. */
+        size_t path_len = strlen(path);
+        size_t name_len = strlen(entry->name);
+        if (path_len > (size_t)-1 - name_len - 2U) {
+            rc = -1;
+            continue;
+        }
+        size_t child_size = path_len + name_len + 2U;
+        char *child = (char *)malloc(child_size);
+        if (!child) {
+            rc = -1;
+            continue;
+        }
+        int child_len = snprintf(child, child_size, "%s/%s", path, entry->name);
+        if (child_len < 0 || (size_t)child_len >= child_size) {
+            free(child);
+            rc = -1;
+            continue;
+        }
         if (entry->is_dir) {
             if (th_rmtree(child) != 0) {
                 rc = -1;
@@ -150,12 +172,192 @@ static inline int th_rmtree(const char *path) {
                 rc = -1;
             }
         }
+        free(child);
     }
     cbm_closedir(d);
     if (cbm_rmdir(path) != 0) {
         rc = -1;
     }
     return rc;
+}
+
+static inline int th_remove_path_limit_tree(const char *root, size_t component_count);
+
+static inline int th_path_limit_component(size_t index, char *out, size_t out_size) {
+    int written = snprintf(out, out_size,
+                           "path_limit_%04zu_abcdefghijklmnopqrstuvwxyz"
+                           "_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789",
+                           index);
+    return written > 0 && (size_t)written < out_size ? written : -1;
+}
+
+/* Create a directory chain whose final absolute path exceeds the discovery
+ * path limit. POSIX creates each level relative to its parent so no syscall
+ * receives a path longer than PATH_MAX; Windows uses the extended-path-aware
+ * filesystem wrapper. Caller removes it with th_remove_path_limit_tree. */
+static inline int th_make_path_limit_tree(const char *root, size_t *component_count,
+                                          size_t *final_path_len) {
+    if (!root || !component_count || !final_path_len) {
+        return -1;
+    }
+    *component_count = 0;
+    *final_path_len = 0;
+
+#ifdef _WIN32
+    char path[CBM_SZ_4K + 128U];
+    int root_len = snprintf(path, sizeof(path), "%s", root);
+    if (root_len <= 0 || (size_t)root_len >= sizeof(path)) {
+        return -1;
+    }
+    size_t path_len = (size_t)root_len;
+    int result = -1;
+    for (size_t index = 0; index < CBM_SZ_4K; index++) {
+        char component[96];
+        int component_len = th_path_limit_component(index, component, sizeof(component));
+        if (component_len < 0 || path_len > (size_t)-1 - (size_t)component_len - 1U) {
+            break;
+        }
+        size_t next_len = path_len + (size_t)component_len + 1U;
+        if (next_len >= sizeof(path)) {
+            break;
+        }
+        int append_len = snprintf(path + path_len, sizeof(path) - path_len, "/%s", component);
+        if (append_len <= 0 || (size_t)append_len >= sizeof(path) - path_len ||
+            !cbm_mkdir_p(path, 0755)) {
+            break;
+        }
+        (*component_count)++;
+        path_len = next_len;
+        if (path_len > CBM_SZ_4K - 1U) {
+            *final_path_len = path_len;
+            result = 0;
+            break;
+        }
+    }
+#else
+    char original_cwd[CBM_SZ_4K];
+    if (!TH_GETCWD(original_cwd, sizeof(original_cwd)) || TH_CHDIR(root) != 0) {
+        return -1;
+    }
+
+    size_t path_len = strlen(root);
+    int result = -1;
+    for (size_t index = 0; index < CBM_SZ_4K; index++) {
+        char component[96];
+        int component_len = th_path_limit_component(index, component, sizeof(component));
+        if (component_len < 0 || path_len > (size_t)-1 - (size_t)component_len - 1U) {
+            break;
+        }
+        size_t next_len = path_len + (size_t)component_len + 1U;
+        if (!cbm_mkdir_p(component, 0755)) {
+            break;
+        }
+        if (TH_CHDIR(component) != 0) {
+            (void)cbm_rmdir(component);
+            break;
+        }
+        (*component_count)++;
+        path_len = next_len;
+        if (path_len > CBM_SZ_4K - 1U) {
+            *final_path_len = path_len;
+            result = 0;
+            break;
+        }
+    }
+
+    if (TH_CHDIR(original_cwd) != 0) {
+        result = -1;
+    }
+#endif
+    if (result != 0 && *component_count > 0U) {
+        (void)th_remove_path_limit_tree(root, *component_count);
+        *component_count = 0;
+    }
+    return result;
+}
+
+/* Remove the relative component chain created by th_make_path_limit_tree. */
+static inline int th_remove_path_limit_tree(const char *root, size_t component_count) {
+    if (!root) {
+        return -1;
+    }
+#ifdef _WIN32
+    char path[CBM_SZ_4K + 128U];
+    int root_len = snprintf(path, sizeof(path), "%s", root);
+    if (root_len <= 0 || (size_t)root_len >= sizeof(path)) {
+        return -1;
+    }
+    size_t root_path_len = (size_t)root_len;
+    size_t path_len = root_path_len;
+    size_t entered = 0;
+    int result = 0;
+    for (; entered < component_count; entered++) {
+        char component[96];
+        int component_len = th_path_limit_component(entered, component, sizeof(component));
+        if (component_len < 0 || path_len > (size_t)-1 - (size_t)component_len - 1U ||
+            path_len + (size_t)component_len + 1U >= sizeof(path)) {
+            result = -1;
+            break;
+        }
+        int append_len = snprintf(path + path_len, sizeof(path) - path_len, "/%s", component);
+        if (append_len <= 0 || (size_t)append_len >= sizeof(path) - path_len) {
+            result = -1;
+            break;
+        }
+        path_len += (size_t)append_len;
+    }
+    if (entered != component_count) {
+        return -1;
+    }
+    while (entered > 0U) {
+        if (cbm_rmdir(path) != 0) {
+            result = -1;
+        }
+        size_t parent_len = path_len;
+        while (parent_len > root_path_len && path[parent_len - 1U] != '/') {
+            parent_len--;
+        }
+        if (parent_len <= root_path_len) {
+            result = -1;
+            break;
+        }
+        path_len = parent_len - 1U;
+        path[path_len] = '\0';
+        entered--;
+    }
+    return result;
+#else
+    char original_cwd[CBM_SZ_4K];
+    if (!TH_GETCWD(original_cwd, sizeof(original_cwd)) || TH_CHDIR(root) != 0) {
+        return -1;
+    }
+
+    size_t entered = 0;
+    for (; entered < component_count; entered++) {
+        char component[96];
+        int component_len = th_path_limit_component(entered, component, sizeof(component));
+        if (component_len < 0 || TH_CHDIR(component) != 0) {
+            break;
+        }
+    }
+
+    int result = entered == component_count ? 0 : -1;
+    while (entered > 0U) {
+        char component[96];
+        size_t index = entered - 1U;
+        int component_len = th_path_limit_component(index, component, sizeof(component));
+        if (TH_CHDIR("..") != 0 || component_len <= 0 ||
+            (size_t)component_len >= sizeof(component) || cbm_rmdir(component) != 0) {
+            result = -1;
+            break;
+        }
+        entered--;
+    }
+    if (TH_CHDIR(original_cwd) != 0) {
+        result = -1;
+    }
+    return result;
+#endif
 }
 
 /* ── Temp directory creation ──────────────────────────────────── */

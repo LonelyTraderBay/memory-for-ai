@@ -9,8 +9,6 @@
 #ifndef CBM_FOUNDATION_COMPAT_FS_INTERNAL_H
 #define CBM_FOUNDATION_COMPAT_FS_INTERNAL_H
 
-#ifdef _WIN32
-
 #include <wchar.h>
 
 /*
@@ -40,7 +38,5 @@ wchar_t *cbm_build_cmdline(const char *const *argv);
  * assertions only.
  */
 int cbm_popen_last_was_isolated(void);
-
-#endif /* _WIN32 */
 
 #endif /* CBM_FOUNDATION_COMPAT_FS_INTERNAL_H */

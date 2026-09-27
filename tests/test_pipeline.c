@@ -3040,6 +3040,90 @@ TEST(pipeline_source_mutation_before_publication_preserves_previous_generation) 
     PASS();
 }
 
+/* Discovery must fail closed when any descendant path crosses the fixed
+ * representation limit. The existing published generation stays live: this
+ * is an integration assertion across discovery, pipeline error mapping, and
+ * database publication, not just a unit test of the input-root length. */
+TEST(pipeline_descendant_path_too_long_preserves_previous_generation) {
+    char *created_root = th_mktempdir("cbm_path_limit_repo");
+    if (!created_root) {
+        FAIL("could not create repository fixture");
+    }
+    char repo[256];
+    snprintf(repo, sizeof(repo), "%s", created_root);
+
+    char *created_db_dir = th_mktempdir("cbm_path_limit_db");
+    if (!created_db_dir) {
+        (void)th_rmtree(repo);
+        FAIL("could not create database fixture");
+    }
+    char db_dir[256];
+    snprintf(db_dir, sizeof(db_dir), "%s", created_db_dir);
+
+    char source_path[512];
+    char db_path[512];
+    int source_len = snprintf(source_path, sizeof(source_path), "%s/main.py", repo);
+    int db_len = snprintf(db_path, sizeof(db_path), "%s/preserved.db", db_dir);
+    bool paths_fit = source_len > 0 && (size_t)source_len < sizeof(source_path) && db_len > 0 &&
+                     (size_t)db_len < sizeof(db_path);
+    bool source_ready =
+        paths_fit && th_write_file(source_path, "def StableGeneration():\n    return 1\n") == 0;
+
+    char project[CBM_SZ_256] = {0};
+    int baseline_rc = CBM_PIPELINE_ERROR_PATH_TOO_LONG;
+    if (source_ready) {
+        cbm_pipeline_t *baseline = cbm_pipeline_new(repo, db_path, CBM_MODE_FULL);
+        if (baseline) {
+            const char *baseline_project = cbm_pipeline_project_name(baseline);
+            if (baseline_project) {
+                snprintf(project, sizeof(project), "%s", baseline_project);
+                baseline_rc = cbm_pipeline_run(baseline);
+            }
+            cbm_pipeline_free(baseline);
+        }
+    }
+
+    size_t component_count = 0;
+    size_t final_path_len = 0;
+    bool deep_tree_ready =
+        baseline_rc == 0 && th_make_path_limit_tree(repo, &component_count, &final_path_len) == 0;
+    bool source_changed =
+        deep_tree_ready &&
+        th_write_file(source_path, "def ChangedGeneration():\n    return 2\n") == 0;
+    int failed_rc = CBM_NOT_FOUND;
+    if (source_changed) {
+        cbm_pipeline_t *failed = cbm_pipeline_new(repo, db_path, CBM_MODE_FULL);
+        if (failed) {
+            failed_rc = cbm_pipeline_run(failed);
+            cbm_pipeline_free(failed);
+        }
+    }
+
+    int stable_count = -1;
+    int changed_count = -1;
+    if (project[0] != '\0') {
+        observe_named_generation(db_path, project, "StableGeneration", "ChangedGeneration",
+                                 &stable_count, &changed_count);
+    }
+    int stage_count = count_generation_stage_artifacts(db_dir, "preserved.db");
+    int deep_tree_cleanup = deep_tree_ready ? th_remove_path_limit_tree(repo, component_count) : -1;
+    int repo_cleanup = th_rmtree(repo);
+    int db_dir_cleanup = th_rmtree(db_dir);
+
+    ASSERT_EQ(baseline_rc, 0);
+    ASSERT_TRUE(deep_tree_ready);
+    ASSERT_GT(final_path_len, CBM_SZ_4K - 1);
+    ASSERT_TRUE(source_changed);
+    ASSERT_EQ(failed_rc, CBM_PIPELINE_ERROR_PATH_TOO_LONG);
+    ASSERT_EQ(stable_count, 1);
+    ASSERT_EQ(changed_count, 0);
+    ASSERT_EQ(stage_count, 0);
+    ASSERT_EQ(deep_tree_cleanup, 0);
+    ASSERT_EQ(repo_cleanup, 0);
+    ASSERT_EQ(db_dir_cleanup, 0);
+    PASS();
+}
+
 /* Publication must never write through a name another local process can
  * predict. The staging database used to be "<db>.stage.<pid>.<counter>",
  * which anyone can compute in advance; publication then unlinked that name
@@ -13193,6 +13277,7 @@ SUITE(pipeline_semantic_manifest_repro) {
     RUN_TEST(pipeline_global_extension_config_change_forces_full);
     RUN_TEST(pipeline_publication_never_uses_a_predictable_staging_path);
     RUN_TEST(pipeline_source_mutation_before_publication_preserves_previous_generation);
+    RUN_TEST(pipeline_descendant_path_too_long_preserves_previous_generation);
     RUN_TEST(pipeline_source_addition_before_publication_preserves_previous_generation);
     RUN_TEST(pipeline_tsconfig_mutation_before_publication_preserves_previous_generation);
     RUN_TEST(pipeline_exact_inputs_migrate_coverage_metadata_and_index_mode);
